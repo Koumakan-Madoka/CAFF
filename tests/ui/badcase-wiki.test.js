@@ -112,6 +112,96 @@ test('assertion editor saves manual changes as new versions, offers eligible mod
   const second = panel().querySelectorAll('[data-rubric-question]')[1]; second.value = '回复解释依据。'; second.dispatchEvent(new h.window.Event('input', { bubbles: true }));
   await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(h.saved().rubrics[0], frozen); assert.equal(h.saved().rubrics[1].version, 2);
 });
+test('freeze button explains each disabled condition beside it and preserves the existing eligibility rules', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  for (const scenario of ['unsaved', 'no-model', 'ineligible', 'frozen', 'dirty-text', 'dirty-model', 'eligible']) {
+    const h = setup(t), c = h.saved().cases[0];
+    h.saved().eligibleJudges = [model];
+    const rubric = createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: scenario === 'no-model' || scenario === 'dirty-model' ? null : scenario === 'ineligible' ? { backend: 'jev', model: 'jev-latest' } : model });
+    if (scenario === 'frozen') rubric.status = 'frozen';
+    h.saved().rubrics = scenario === 'unsaved' ? [] : [rubric];
+    await h.panel.load(); await h.click('[data-tab="cases"]');
+    if (scenario === 'frozen') await h.click('#c-1 [data-edit-rubric]');
+    const panel = h.root.querySelector('#c-1 [data-rubric-panel]');
+    if (scenario === 'dirty-text') {
+      const input = panel.querySelector('[data-rubric-question]'); input.value = '尚未保存的修订。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    }
+    if (scenario === 'dirty-model') {
+      const select = panel.querySelector('[data-rubric-model]'); select.value = 'deepseek'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+    }
+    const button = panel.querySelector('[data-freeze-rubric]'), reason = button.parentElement.querySelector('[data-freeze-rubric-reason]');
+    assert.ok(reason, `${scenario}: a visible adjacent explanation is required, not only a tooltip`);
+    assert.equal(button.disabled, scenario !== 'eligible'); assert.equal(reason.hidden, scenario === 'eligible');
+    assert.equal(button.getAttribute('aria-describedby'), reason.id);
+    const expected = { unsaved: /尚未保存草稿/, 'no-model': /未选择打分模型.*保存/, ineligible: /打分模型.*不在.*达标/, frozen: /最新.*不是草稿.*新草稿/, 'dirty-text': /未保存的修改.*保存/, 'dirty-model': /未保存的修改.*打分模型.*保存/ };
+    if (expected[scenario]) assert.match(reason.textContent, expected[scenario], scenario);
+    else assert.equal(reason.textContent, '');
+    if (button.disabled) { button.click(); await tick(); assert.equal(h.posts().length, 0, scenario); }
+    await h.click('[data-cases-mode="list"]');
+    const rerendered = h.root.querySelector('#c-1 [data-freeze-rubric-reason]');
+    assert.equal(rerendered.hidden, scenario === 'eligible');
+    if (expected[scenario]) assert.match(rerendered.textContent, expected[scenario]);
+  }
+});
+test('freeze reason tracks pending and failed writes without enabling or retrying them', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  let rejectWrite;
+  const h = setup(t, (_url, options) => options.method === 'POST' ? new Promise((_resolve, reject) => { rejectWrite = reject; }) : undefined);
+  const c = h.saved().cases[0], model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  h.saved().eligibleJudges = [model]; h.saved().rubrics = [createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: model })];
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('#c-1 [data-save-rubric]');
+  const panel = () => h.root.querySelector('#c-1 [data-rubric-panel]');
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true);
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]')?.textContent || '', /正在.*请稍候/);
+  rejectWrite(Error('synthetic-rejection')); await tick(); await tick();
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true);
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]').textContent, /不可写.*刷新/);
+  await h.click('[data-cases-mode="list"]');
+  assert.match(panel().querySelector('[data-freeze-rubric-reason]').textContent, /不可写.*刷新/); assert.equal(h.posts().length, 1);
+});
+test('refreshing an already rendered Cases editor locks during GET, finishes and preserves unsaved edits without model calls', async t => {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  for (const view of ['cases', 'wiki']) {
+    let finishRead, defer = false;
+    const h = setup(t, (url, options) => url === '/api/wikiskill' && options.method !== 'POST' && defer ? new Promise(resolve => { finishRead = resolve; }) : undefined);
+    const c = h.saved().cases[0], model = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+    h.saved().eligibleJudges = [model]; h.saved().rubrics = [createWikiRubric({ caseId: c.id, actual: c.actual, expected: c.expected, version: 1, model: model.model, questions: [{ id: 'q1', question: '回复先给结论。', evidence: 'reply' }], scoringModel: model })];
+    await h.panel.load(); await h.click('[data-tab="cases"]');
+    const input = h.root.querySelector('#c-1 [data-rubric-question]'); input.value = '本地尚未保存的断言。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    if (view === 'wiki') await h.click('[data-tab="wiki"]');
+    defer = true; await h.click('#wsk-refresh');
+    assert.equal(typeof finishRead, 'function', 'refresh must reach GET even with existing visible or hidden rubric panels');
+    assert.equal(h.root.getAttribute('aria-busy'), 'true'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, true);
+    for (const el of h.root.querySelectorAll('#c-1 [data-rubric-panel] textarea,#c-1 [data-rubric-panel] select,#c-1 [data-rubric-panel] button')) assert.equal(el.disabled, true);
+    assert.match(h.root.querySelector('#c-1 [data-freeze-rubric-reason]').textContent, /正在读取/);
+    finishRead(clone(h.saved())); await tick(); await tick();
+    assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+    if (view === 'wiki') await h.click('[data-tab="cases"]');
+    assert.equal(h.root.querySelector('#c-1 [data-rubric-question]').value, '本地尚未保存的断言。');
+    assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, false);
+    assert.equal(h.root.querySelector('#c-1 [data-freeze-rubric]').disabled, true, 'refresh must not freeze an unsaved edit');
+    assert.match(h.root.querySelector('#c-1 [data-freeze-rubric-reason]').textContent, /未保存的修改/);
+    assert.equal(h.posts().length, 0); assert.deepEqual(h.calls.map(c => c.url), ['/api/wikiskill', '/api/wikiskill']);
+  }
+});
+test('failed Cases refresh releases the busy lock, keeps writes closed and permits an explicit successful refresh', async t => {
+  let failNext = false;
+  const h = setup(t, (url, options) => { if (url === '/api/wikiskill' && options.method !== 'POST' && failNext) throw Error('synthetic-read-failure'); });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  const input = h.root.querySelector('#c-1 [data-rubric-question]'); input.value = '读取失败也保留本地编辑。'; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  failNext = true; await h.click('#wsk-refresh');
+  assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+  assert.match(h.root.querySelector('#toast').textContent, /读取失败/);
+  assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, true);
+  const reason = h.root.querySelector('#c-1 [data-freeze-rubric-reason]'); assert.equal(reason.hidden, false); assert.match(reason.textContent, /不可写.*刷新/);
+  assert.equal(h.posts().length, 0); assert.equal(h.calls.length, 2, 'failure must not trigger retries');
+  failNext = false; await h.click('#wsk-refresh');
+  assert.equal(h.root.getAttribute('aria-busy'), 'false'); assert.equal(h.root.querySelector('#wsk-refresh').disabled, false);
+  assert.equal(h.root.querySelector('#c-1 [data-rubric-question]').value, '读取失败也保留本地编辑。');
+  assert.equal(h.root.querySelector('#c-1 [data-save-rubric]').disabled, false);
+  assert.equal(h.posts().length, 0); assert.equal(h.calls.length, 3);
+});
 test('assertion editor offers file evidence only for the same case with file-literals collection', async t => {
   const h = setup(t);
   h.saved().replayCases = [
@@ -483,6 +573,18 @@ test('D14/D15 display Goal numbers and train/gate/test without changing stored s
   assert.doesNotMatch(h.root.querySelector('#view-cases').textContent,/entry-1|entry-999/);assert.equal(h.posts().length,0);
   assert.equal(h.saved().cases[0].split,'train');
 });
+test('mixed run results and live progress show invalid counts and trace/run reports without inventing a sealed replay',async t=>{
+ const t1={planned:10,attempted:11,passed:0,failed:10,errors:0,invalid:1,notRun:0,scored:10,passRate:0},t2={...t1,attempted:10,passed:6,failed:4,invalid:0,passRate:.6},totals={original:t1,candidate:t2};
+ const paired={original:{passed:0,total:10,invalid:1,errors:0},candidate:{passed:6,total:10,invalid:0,errors:0}};
+ const result={id:'mixed',createdAt:'2026-11-06T10:00:00Z',kind:'wiki-staged-batch-comparison-v2',evaluation:{splitPolicy:'d15-frozen-v1'},model:'openai-codex/gpt-6.1-sol',modelCallsKnown:21,completed:true,
+  gateDecision:{outcome:'accepted',repair:{...paired,pValue:.0054,passed:true},noHarm:{original:{passed:10,total:10},candidate:{passed:10,total:10},loss:0,allowedLoss:1,passed:true},byLevel:{trace:{...paired},run:{...paired}}},byStage:{gate:totals},
+  cases:[{sourceCaseId:'c1',stage:'gate',category:'reproduction',execution:{level:'run'},status:'completed',totals,rubric:{version:1,hash:'f'.repeat(64)},runs:[{variant:'original',iteration:1,status:'invalid',reason:'other_tool_requested'}]}]};
+ const h=setup(t);h.saved().replayCases=[];h.saved().comparisons=[result];h.saved().executions=[{id:'batch-execution-mixed',status:'running',updatedAt:new Date().toISOString(),
+  plan:{kind:'wiki-staged-batch-comparison-v2',model:result.model,modelConfig:{thinking:'xhigh',transport:'sse'},scoringKind:'wiki-score-v2',cases:[]},current:null,summary:{plannedRuns:20,completedRuns:21,knownTokens:42,usageComplete:true,totals,byStage:{gate:totals,test:totals}},cases:[{sourceCaseId:'c1',stage:'gate',totals}]}];
+ await h.panel.load();await h.click('[data-tab="impact"]');const text=h.root.querySelector('#impact-runs').textContent;
+ for(const s of ['trace 级门槛','run 级门槛','无效 1','冻结前缀单次决策','无效（不进有效分母）'])assert.ok(text.includes(s),s);
+ assert.doesNotMatch(text,/未登记可回放封存/);assert.match(h.root.querySelector('#execution-progress').textContent,/无效 1/);assert.equal(h.posts().length,0);
+});
 test('D16 impact separates gate/test rates, shows mechanical inputs and a durable rejection event with tests unexecuted',async t=>{
   const totals={original:{passed:0,planned:10,failed:10,errors:1,notRun:0,scored:10,passRate:0},candidate:{passed:4,planned:10,failed:6,errors:0,notRun:0,scored:10,passRate:.4}};
   const zero={original:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null},candidate:{passed:0,planned:10,failed:0,errors:0,notRun:10,scored:0,passRate:null}};
@@ -497,8 +599,8 @@ test('D16 impact separates gate/test rates, shows mechanical inputs and a durabl
   const chip=h.root.querySelector('.runs [data-entry="entry-1"]');assert.equal(chip.textContent,'模式 1');assert.match(chip.title,/未经要求引入额外机制/);
   const rows=[...h.root.querySelectorAll('#impact-log li')],policies=rows.filter(li=>li.querySelector('.kind')?.textContent==='规则');
   assert.equal(policies.length,2);
-  const current=policies.find(li=>li.textContent.includes('现行规则')),superseded=policies.find(li=>li.textContent.includes('旧规则'));
-  assert.ok(current);assert.match(current.querySelector('time').textContent,/11-02/);assert.match(current.textContent,/先待预分类.*按模式配额.*训练50%.*门槛25%.*测试25%.*组别冻结/);assert.doesNotMatch(current.textContent,/hash/);
+  const historical=policies.find(li=>li.textContent.includes('历史规则')),superseded=policies.find(li=>li.textContent.includes('旧规则'));
+  assert.ok(historical);assert.match(historical.querySelector('time').textContent,/11-02/);assert.match(historical.textContent,/已由首次分组确认流程替代.*先待预分类.*按模式配额.*训练50%.*门槛25%.*测试25%.*组别冻结/);assert.doesNotMatch(historical.textContent,/hash/);
   assert.ok(superseded);assert.match(superseded.querySelector('time').textContent,/11-01/);assert.match(superseded.textContent,/旧规则.*2026-11-02.*已被取代.*固定 hash/);
   const imported=rows.find(li=>li.querySelector('.kind')?.textContent==='用例');assert.doesNotMatch(imported.textContent,/固定 hash|50%|25%/);
   assert.equal(h.posts().length,0);

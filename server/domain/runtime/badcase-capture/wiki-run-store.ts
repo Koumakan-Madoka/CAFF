@@ -7,6 +7,21 @@ import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiRunHash } from './wiki-run-replay';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const MAX = 128 * 1024 * 1024;
+export interface WikiRunAttempt { planHash: string; executionId: string; iteration: number }
+function reservationId(request: any, attempt?: WikiRunAttempt) {
+  const requestHash = wikiRunHash(request);
+  if (attempt === undefined) return requestHash;
+  if (!attempt || Object.keys(attempt).sort().join('|') !== 'executionId|iteration|planHash'
+    || typeof attempt.planHash !== 'string' || !/^[a-f0-9]{64}$/.test(attempt.planHash)
+    || typeof attempt.executionId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(attempt.executionId)
+    || !Number.isSafeInteger(attempt.iteration) || attempt.iteration < 1 || attempt.iteration > 15
+    || typeof request.metadata?.caseId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.metadata.caseId)
+    || !['original', 'candidate'].includes(request.variant?.kind)) throw fail('wiki_run_attempt_invalid');
+  // The logical slot, not mutable request content, owns the claim. A changed
+  // request cannot silently obtain a second send for an already claimed slot.
+  return wikiRunHash({ kind: 'wiki-run-attempt-v1', planHash: attempt.planHash, executionId: attempt.executionId,
+    caseId: request.metadata.caseId, variant: request.variant.kind, iteration: attempt.iteration });
+}
 // Current B7 accounting is a read-only projection. In particular, legacy
 // unreached/countAsFailure results keep their original bytes and hashes.
 export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) {
@@ -40,7 +55,8 @@ export function createWikiRunStore(input: any) {
       const bytes = fs.readFileSync(file); if (bytes.length > MAX) throw Error();
       const envelope = JSON.parse(bytes.toString('utf8')), value = envelope[result ? 'result' : 'reservation'];
       if (envelope.schemaVersion !== 1 || value?.id !== id || envelope.hash !== wikiRunHash(value)) throw Error();
-      if (!result && wikiRunHash(value.request) !== id) throw Error();
+      if (!result && (reservationId(value.request, value.attempt) !== id
+        || value.attempt !== undefined && value.requestHash !== wikiRunHash(value.request))) throw Error();
       return value;
     } catch (e: any) { if (e.code === 'ENOENT') return null; throw fail('wiki_run_record_invalid'); }
   }
@@ -60,20 +76,23 @@ export function createWikiRunStore(input: any) {
   function read(id: string) {
     const reservation = readFile(id); if (!reservation) throw fail('wiki_run_not_found');
     const result = readFile(id, true);
-    if (result && (result.requestHash !== id || result.caseId !== reservation.request.metadata.caseId
-      || result.decisionHash !== reservation.request.metadata.decisionHash)) throw fail('wiki_run_record_invalid');
+    if (result && (result.requestHash !== wikiRunHash(reservation.request) || result.caseId !== reservation.request.metadata.caseId
+      || result.decisionHash !== reservation.request.metadata.decisionHash
+      || JSON.stringify(result.attempt) !== JSON.stringify(reservation.attempt))) throw fail('wiki_run_record_invalid');
     return { reservation, result };
   }
   return {
-    reserve(request: any) {
+    reserve(request: any, attempt?: WikiRunAttempt) {
       if (request?.kind !== 'wikiskill-run-request' || request.schemaVersion !== 1) throw fail('wiki_run_record_invalid');
-      const id = wikiRunHash(request), reservation = { schemaVersion: 1, id, createdAt: new Date().toISOString(), request: structuredClone(request) };
+      const id = reservationId(request, attempt), reservation = { schemaVersion: 1, id, createdAt: new Date().toISOString(), request: structuredClone(request),
+        ...(attempt === undefined ? {} : { attempt: structuredClone(attempt), requestHash: wikiRunHash(request) }) };
       publish(id, 'reservation', reservation); return reservation;
     },
     finish(id: string, value: any) {
       const { reservation, result } = read(id); if (result) throw fail('wiki_run_already_reserved');
-      const r = { schemaVersion: 1, id, requestHash: id, caseId: reservation.request.metadata.caseId, decisionHash: reservation.request.metadata.decisionHash,
-        finishedAt: new Date().toISOString(), ...structuredClone(value) };
+      const r = { ...structuredClone(value), schemaVersion: 1, id, requestHash: wikiRunHash(reservation.request),
+        caseId: reservation.request.metadata.caseId, decisionHash: reservation.request.metadata.decisionHash,
+        finishedAt: new Date().toISOString(), ...(reservation.attempt === undefined ? {} : { attempt: structuredClone(reservation.attempt) }) };
       publish(id, 'result', r); return r;
     },
     read,

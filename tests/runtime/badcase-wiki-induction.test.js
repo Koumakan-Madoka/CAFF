@@ -17,7 +17,7 @@ function setup(t) {
   const oldCaseId = imported.cases[0].id;
   const version = store.saveDraft({ caseIds: [oldCaseId], model: MODEL, entries: [{ title: '先核验', failureMode: '未核验就汇报', symptoms: '没有检查', rootCauseHypothesis: '跳过验证', guideline: '先核验再汇报。', caseIds: [oldCaseId] }], unclassified: [] });
   store.review({ versionId: version.id, entryId: 'entry-1', expectedRevision: 2, decision: 'approved' });
-  const markedInput = { source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: 'new-message', agentId: 'role-family-kimi' }, role: 'Kimi',
+  const markedInput = { source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: 'new-message', agentId: 'role-family-gpt' }, role: 'GPT', sealedCheckpointId: 'synthetic-checkpoint',
     actual: '简单任务外又增加流程', expected: '直接完成用户要求', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false };
   const marked = store.addMarkedCase(markedInput);
   return { root, config, store, oldCaseId, markedInput, marked, caseId: marked.case.id };
@@ -44,26 +44,27 @@ test('D15 preclassification selects all unallocated marks, never the old trainin
   assert.deepEqual(h.store.read(), before);
 });
 
-test('pending -> assign suggestion -> confirmed/manual membership persists without rewriting approved entries', t => {
+test('pending -> proposed label -> confirmed/manual classification persists without allocating or rewriting entries', t => {
   const h = setup(t), before = JSON.stringify(h.store.read().versions[0].entries[0]);
   const saved = h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'a'.repeat(64), calls: [], cleaned: true }, results: [
     { caseId: h.caseId, kind: 'assign', entryId: 'entry-1', reason: '同属额外流程', confidence: '中' },
   ] }, 4);
   assert.equal(saved.version, null); assert.equal(saved.suggestions[0].status, 'pending');
-  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'suggested');
+  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'classification-pending');
   assert.equal(JSON.stringify(h.store.read().versions[0].entries[0]), before);
   h.store.resolveSuggestion({ suggestionId: saved.suggestions[0].id, decision: 'accepted', expectedRevision: 5 });
   let current = h.store.getCaseStates().find(s => s.caseId === h.caseId);
-  assert.equal(current.status, 'assigned'); assert.equal(current.memberships[0].source, 'model-confirmed');
+  assert.equal(current.status, 'pending-allocation'); assert.equal(h.store.read().classifications[0].source, 'model-confirmed');
   assert.equal(JSON.stringify(h.store.read().versions[0].entries[0]), before);
   assert.deepEqual(createWikiStore(h.config).getCaseStates().find(s => s.caseId === h.caseId), current);
   h.store.assignCase({ caseId: h.caseId, entryId: null, expectedRevision: 6 });
-  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'pending');
+  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'pending-allocation');
   h.store.assignCase({ caseId: h.caseId, entryId: 'entry-1', expectedRevision: 7 });
   current = h.store.getCaseStates().find(s => s.caseId === h.caseId);
-  assert.equal(current.memberships[0].source, 'manual');
+  assert.equal(h.store.read().classifications[0].source, 'manual');
+  assert.equal(h.store.read().cases.find(c => c.id === h.caseId).split, null);
   assert.deepEqual(createWikiStore(h.config).getCaseStates().find(s => s.caseId === h.caseId), current);
-  assert.equal(h.store.read().events.filter(e => ['suggestion-confirmed', 'manual-assigned', 'manual-removed'].includes(e.type)).length, 3);
+  assert.equal(h.store.read().events.filter(e => e.type === 'classification-confirmed').length, 3);
 });
 
 test('new-pattern suggestion creates a draft for normal review; approval assigns, rejection does not', t => {
@@ -71,12 +72,16 @@ test('new-pattern suggestion creates a draft for normal review; approval assigns
     const h = setup(t), before = JSON.stringify(h.store.read().versions[0].entries[0]);
     h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'b'.repeat(64), calls: [], cleaned: true },
       results: [{ caseId: h.caseId, kind: 'new', reason: '需要新模式，先定为训练', confidence: '中' }] }, 4);
+    const { projectWikiPatternLabels, planWikiInitialSplit } = require('../../build/server/domain/runtime/badcase-capture/wiki-initial-split');
+    h.store.confirmPatternLabel({ caseId: h.caseId, entryId: null, labelHash: projectWikiPatternLabels(h.store.read()).find(r => r.caseId === h.caseId).labelHash, expectedRevision: h.store.read().revision });
+    const proposal = planWikiInitialSplit(h.store.read(), []);
+    h.store.confirmInitialSplit({ proposalHash: proposal.hash, patternKey: 'unclassified', expectedRevision: h.store.read().revision });
     const saved = h.store.recordInduction({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'b'.repeat(64), calls: [], cleaned: true }, results: [
       { caseId: h.caseId, kind: 'new', reason: '现有模式不覆盖', confidence: '中', proposal: { title: '额外流程', failureMode: '自行加流程', symptoms: '简单任务变复杂', rootCauseHypothesis: '过度设计', guideline: '先完成明确要求。', caseIds: [h.caseId] } },
-    ] }, 5);
+    ] }, h.store.read().revision);
     assert.equal(saved.version.entries.length, 2); assert.equal(saved.version.entries[1].status, 'draft');
     assert.equal(saved.version.entries[0].status, 'approved'); assert.equal(JSON.stringify(saved.version.entries[0]), before);
-    h.store.review({ versionId: saved.version.id, entryId: saved.version.entries[1].id, expectedRevision: 6, patch: { guideline: '先完成明确要求，再考虑扩展。' }, decision });
+    h.store.review({ versionId: saved.version.id, entryId: saved.version.entries[1].id, expectedRevision: h.store.read().revision, patch: { guideline: '先完成明确要求，再考虑扩展。' }, decision });
     const state = h.store.getCaseStates().find(s => s.caseId === h.caseId);
     assert.equal(h.store.read().suggestions[0].status, decision === 'approved' ? 'accepted' : 'rejected');
     assert.equal(state.status, decision === 'approved' ? 'assigned' : 'pending');
@@ -86,13 +91,14 @@ test('new-pattern suggestion creates a draft for normal review; approval assigns
   }
 });
 
-test('none suggestion is explicit unfit and does not create a pattern or membership', t => {
+test('none suggestion stays unconfirmed and does not create a group, pattern or membership', t => {
   const h = setup(t);
   h.store.recordPreclassification({ caseIds: [h.caseId], model: MODEL, proof: { inputHash: 'c'.repeat(64), calls: [], cleaned: true }, results: [
     { caseId: h.caseId, kind: 'none', reason: '只有孤立事实错误', confidence: '低' },
   ] }, 4);
   assert.equal(h.store.read().versions.length, 1); assert.equal(h.store.read().suggestions[0].kind, 'none');
-  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'unfit');
+  assert.equal(h.store.getCaseStates().find(s => s.caseId === h.caseId).status, 'classification-pending');
+  assert.equal(h.store.read().cases.find(c => c.id === h.caseId).split, null);
   assert.match(h.store.getCaseStates().find(s => s.caseId === h.caseId).reason, /孤立/);
 });
 

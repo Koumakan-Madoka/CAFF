@@ -20,13 +20,108 @@ function setup(t, fetcher, options = {}) {
   async function expand() { const d = root.querySelector('[data-trace-case="c1"]'); d.open = true; d.dispatchEvent(new dom.window.Event('toggle')); await tick(); await tick(); }
   return { root, data, packet, calls, panel, window: dom.window, expand };
 }
+test('steps 6–9 and funnels use the actual pipeline projection; frozen assertions stay read-only with a case-editor link', t => {
+  const h = setup(t), row = (caseId, level) => ({ caseId, level, stopReason: null, assertion: { status: 'frozen', version: 3, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: '<script>plain conclusion</script>', evidence: 'reply' }] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 10, pass: 0, fail: 10, unscored: 0, invalid: 2, errors: 1, reproduced: true, comparisonId: 'comparison-real' }, inLibrary: true });
+  h.data.pipelineStates = [row('c1', 'run'), row('c2', 'trace')];
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { level: 'run', kind: 'single', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]');
+  assert.deepEqual([...card.querySelector('.stepper').children].slice(5).map(li => li.className), ['done', 'done', 'done', 'done']);
+  assert.match(card.textContent, /已冻结 v3.*deepseek\/deepseek-v4-flash/); assert.match(card.textContent, /原版.*0.*10.*已复现/s);
+  assert.equal(card.querySelector('[data-assertion-slot] script'), null); assert.match(card.querySelector('[data-assertion-slot]').textContent, /<script>plain conclusion<\/script>/);
+  assert.equal(card.querySelector('[data-assertion-slot] a').getAttribute('href'), '#case-1');
+  assert.equal(card.querySelector('[data-draft-rubric],[data-freeze-rubric],[data-start-replay]'), null);
+  assert.deepEqual([...h.root.querySelectorAll('[data-lane="trace"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
+  assert.deepEqual([...h.root.querySelectorAll('[data-lane="run"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
+  assert.doesNotMatch(h.root.textContent, /评分 v2 待接入|评分 v2 接入后|尚未接入判分|等待评分 v2/); assert.equal(h.calls.length, 0);
+});
+test('missing assertions, incompatible run evidence, pending reproduction and unscored raw replies are distinct, never fake library readiness', t => {
+  const h = setup(t); const row = { caseId: 'c1', level: 'run', stopReason: null, assertion: { status: 'missing', version: null, questions: [] }, replay: { status: 'pending' }, original: { valid: 0, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data); let card = h.root.querySelector('[data-case-id="c1"]');
+  assert.match(card.textContent, /没有冻结.*断言/); assert.match(card.textContent, /待判分.*有效.*1/); assert.doesNotMatch(card.textContent, /待复现/);
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  row.assertion = { status: 'incompatible', version: 1, model: 'deepseek/deepseek-v4-flash', questions: [{ id: 'q1', question: 'continued', evidence: 'trace' }] };
+  h.panel.render(h.data); card = h.root.querySelector('[data-case-id="c1"]');
+  assert.equal(card.querySelector('.stepper').children[5].className, 'warn'); assert.match(card.textContent, /run 级.*只能.*回复.*另存.*版/s);
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending'); assert.equal(h.calls.length, 0);
+});
+test('minority/tied failures show counts and the unmet majority condition, never claim all originals passed', t => {
+  const h = setup(t), row = { caseId: 'c2', level: 'trace', assertion: { status: 'frozen', version: 1, questions: [] }, replay: { status: 'supported' }, original: { valid: 10, pass: 9, fail: 1, unscored: 0, invalid: 2, errors: 1, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row];
+  for (const [pass, fail] of [[9, 1], [5, 5]]) {
+    Object.assign(row.original, { pass, fail }); h.panel.render(h.data); h.panel.focus(19);
+    const card = h.root.querySelector('[data-case-id="c2"]');
+    assert.ok(card.textContent.includes(`原版 ${pass}/10 通过 · ${fail} 不通过`));
+    assert.match(card.textContent, /不通过未超过有效次数的一半/); assert.doesNotMatch(card.textContent, /原版均通过|已复现问题/);
+    assert.notEqual(card.querySelector('.stepper').children[7].className, 'done');
+    assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  }
+  assert.equal(h.calls.length, 0);
+});
+test('unscored run output says awaiting scoring only; freezing or loading never promises or starts automatic scoring', t => {
+  const h = setup(t);
+  h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { hash: 'd'.repeat(64), kind: 'single', level: 'run', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  h.data.runReplays = [{ id: 'run-raw', caseId: 'c1', traceHash: 'a'.repeat(64), decisionHash: 'd'.repeat(64), status: 'reached', variant: { kind: 'original' } }];
+  const row = { caseId: 'c1', level: 'run', assertion: { status: 'frozen', version: 4, questions: [{ id: 'q1', question: 'The reply is plain.', evidence: 'reply' }] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 0, outputs: 1, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data);
+  const card = h.root.querySelector('[data-case-id="c1"]');
+  assert.match(card.querySelector('.next-line').textContent, /待判分/); assert.doesNotMatch(card.textContent, /待复现|已复现问题/);
+  assert.match(card.querySelector('[data-run-details] summary').textContent, /待判分/);
+  assert.notEqual(card.querySelector('.stepper').children[7].className, 'done');
+  assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
+  assert.doesNotMatch(h.root.textContent, /冻结后系统会.*判分|冻结后.*自动判分|系统会自动.*评分/);
+  assert.equal(card.querySelector('[data-draft-rubric],[data-freeze-rubric],[data-start-replay]'), null); assert.equal(h.calls.length, 0);
+  row.original.outputs = row.original.unscored = 0; h.data.runReplays = []; h.panel.render(h.data);
+  assert.match(h.root.querySelector('.next-line').textContent, /待复现|受信操作方/);
+});
+test('pattern labels require explicit consent, bind the displayed hash, and support legacy holdouts and unclassified without learning', t => {
+  const sent = [], prompts = []; let accept = false;
+  const h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
+  h.data.casePatterns = ['c1', 'c3'].map(caseId => ({ caseId, confirmed: false, entryId: null, patternKey: null, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: '<script>pattern</script>' }] }));
+  h.panel.render(h.data); assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+  const host = h.root.querySelector('[data-pattern-label="c3"]'); assert.ok(host); assert.equal(host.querySelector('script'), null);
+  const select = host.querySelector('[data-pattern-entry]'); assert.ok([...select.options].some(o => o.textContent === '未归入现有模式'));
+  select.value = 'entry-1'; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent.length, 0);
+  accept = true; host.querySelector('[data-pattern-confirm]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c3', entryId: 'entry-1', labelHash: 'c'.repeat(64) });
+  assert.match(prompts.at(-1), /不改组别.*不.*归纳/);
+  select.value = ''; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent[1].entryId, null);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-pattern-confirm]').disabled, true);
+  assert.equal(h.data.cases.find(c => c.id === 'c3').split, 'test');
+});
+test('assigned-label blockers are shown verbatim and suppress all first-split confirmation buttons', t => {
+  const sent = [], h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => true });
+  h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', blockingReason: 'assigned_pattern_labels_unconfirmed', blockingMessage: '先确认 #1 的模式标签', blockers: [{ caseId: 'c1', caseNumber: 1 }], rows: [], patterns: [] };
+  h.panel.render(h.data);
+  const host = h.root.querySelector('[data-initial-split-blocked]'); assert.ok(host);
+  assert.match(host.textContent, /先确认 #1 的模式标签/);
+  assert.equal(host.querySelector('[data-initial-split-confirm]'), null);
+  assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+});
+
+test('initial split preview never activates groups until explicit per-pattern hash-bound confirmation', t => {
+  let accept = false; const sent = [];
+  const h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => accept });
+  h.data.cases[0].split = h.data.cases[1].split = null;
+  const rows = [{ caseId: 'c1', patternKey: 'entry-1', level: 'run', previousSplit: null, proposedSplit: 'train' }, { caseId: 'c2', patternKey: 'entry-1', level: 'trace', previousSplit: null, proposedSplit: 'gate' }];
+  h.data.casePatterns = rows.map(r => ({ caseId: r.caseId, confirmed: true, entryId: 'entry-1', patternKey: 'entry-1', options: [{ entryId: 'entry-1', title: '模式一' }] }));
+  h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', rows, patterns: [{ patternKey: 'entry-1', rows, counts: { trace: { train: 0, gate: 1, test: 0 }, run: { train: 1, gate: 0, test: 0 } } }] };
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="entry-1"]').click(); assert.equal(h.calls.length, 0); assert.equal(sent.length, 0);
+  const host = h.root.querySelector('[data-initial-split]'); assert.ok(host); assert.match(host.textContent, /尚未生效|你确认后/);
+  host.querySelector('[data-initial-split-confirm]').click(); assert.equal(sent.length, 0);
+  accept = true; host.querySelector('[data-initial-split-confirm]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { proposalHash: 'd'.repeat(64), patternKey: 'entry-1' });
+  assert.equal(h.data.cases[0].split, null); assert.equal(h.data.cases[1].split, null);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-initial-split-confirm]').disabled, true);
+});
+
 test('pipeline has truthful stepper, actor groups, two funnels, backfill states and source-only exclusions without writes', t => {
   const h = setup(t); assert.equal(h.calls.length, 0);
   assert.equal(h.root.querySelectorAll('[data-lane]').length, 2);
   assert.equal(h.root.querySelector('[data-case-id="c1"] .stepper').children.length, 9);
-  for (const text of ['按下一步分组', '旧题的来源', '非 GPT 来源', '回填部分完成', '历史现场元数据缺失', '评分 v2', 'DeepSeek 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
+  for (const text of ['按下一步分组', '旧题来源', '非 GPT 来源', '回填部分完成', '历史现场元数据缺失', '评分 v2', 'DeepSeek 推荐尚未生成']) assert.ok(h.root.textContent.includes(text), text);
   assert.doesNotMatch(h.root.textContent, /批准补全|示例.*JEV|已成为测试用例.*[1-9]/);
-  assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
+  h.panel.focus(4); assert.equal(h.root.querySelector('[data-case-id="c3"]').closest('[data-actor]').dataset.actor, 'source');
 });
 test('legacy context reason means missing newer archive, not missing recovered input or reused turns', t => {
   const h = setup(t);
@@ -134,32 +229,34 @@ test('fallback output explains the exact failure and never presents missing answ
   h.data.dehydrations[0].recommendation.fallbackReason = 'evidence_mismatch'; h.panel.render(h.data);
   assert.match(h.root.textContent, /依据与该步卡片原文不匹配/); assert.equal(h.calls.length, 0);
 });
-test('regroup proposal shows before/after and exclusions read-only, never claiming a new group is active', t => {
+test('legacy regroup proposal stays read-only in collapsed audit, never claiming a new group is active', t => {
   const h = setup(t); h.data.regroupProposals = [{ status: 'proposed', hash: 'f'.repeat(64), seed: 'fixed-seed', policy: 'trace-run-stratified-v1',
     counts: { trace: { train: 1, gate: 1, test: 0 }, run: { train: 5, gate: 1, test: 0 } }, warnings: ['no_new_trace_test'],
     rows: [{ caseId: 'c1', caseNumber: 1, level: 'run', previousSplit: 'train', proposedSplit: 'gate', reason: null },
       { caseId: 'deleted-case', caseNumber: 7, previousSplit: 'train', proposedSplit: null, reason: 'deleted_missing_system_prompt' }] }];
-  h.panel.render(h.data); const panel = h.root.querySelector('[data-regroup-proposal]'); assert.ok(panel);
-  assert.match(panel.textContent, /分组提议.*尚未生效/s); assert.match(panel.textContent, /分组前后对照/);
-  assert.match(panel.textContent, /没有新的 trace 级测试题/); assert.match(panel.textContent, /#7.*删除/s);
+  h.panel.render(h.data); const panel = h.root.querySelector('[data-group-audit]'); assert.ok(panel);
+  assert.equal(panel.open, false); assert.equal(h.root.querySelector('.regroup-table'), null);
+  assert.match(panel.textContent, /deleted_missing_system_prompt/); assert.match(panel.textContent, /no_new_trace_test/);
+  assert.deepEqual(JSON.parse(panel.querySelector('pre').textContent).proposals, h.data.regroupProposals);
   assert.equal(h.data.cases[0].split, 'train'); assert.equal(h.calls.length, 0);
-  assert.match(h.root.querySelector('[data-case-id="c1"]').textContent, /提议：门槛.*尚未生效/);
+  assert.match(h.root.querySelector('[data-case-id="c1"] .bc-meta').textContent, /训练/);
+  assert.doesNotMatch(h.root.querySelector('[data-case-id="c1"]').textContent, /提议：门槛/);
   assert.equal(panel.querySelector('button'), null, 'no auto-application or intermediate confirmation endpoint');
 });
-test('unassigned cases are separately listed before/after a proposal, never described as participating or confirmed', t => {
+test('unassigned cases stay in the board out column across legacy proposals and confirmations', t => {
   const h = setup(t); h.data.cases[1].split = null; h.data.cases[1].actual = '<script>pending scene</script>';
   h.panel.render(h.data);
-  const pending = () => h.root.querySelector('[data-regroup-pending]');
-  assert.ok(pending()); assert.match(pending().textContent, /待分配.*#19/s);
-  assert.match(pending().textContent, /不参与本次重新分组/); assert.equal(pending().querySelector('script'), null);
-  const card = h.root.querySelector('[data-case-id="c2"]');
+  const pending = () => h.root.querySelector('[data-board-column="out"]');
+  assert.ok(pending()); assert.match(pending().textContent, /#19/);
+  assert.match(pending().textContent, /待分配/); assert.equal(pending().querySelector('script'), null);
+  h.panel.focus(19); const card = h.root.querySelector('[data-case-id="c2"]');
   assert.match(card.querySelector('.bc-meta').textContent, /待分配/);
   assert.match(card.querySelector('.steps-detail').textContent, /待分配/);
   h.data.regroupProposals = [{ hash: 'f'.repeat(64), seed: 'fixed', rows: [], warnings: [], counts: { trace: { train: 0, gate: 0, test: 0 }, run: { train: 0, gate: 0, test: 0 } } }];
   h.panel.render(h.data);
-  assert.ok(pending()); assert.equal(h.root.querySelector('[data-regroup-proposal] tbody').children.length, 0);
+  assert.ok(pending()); assert.deepEqual(JSON.parse(h.root.querySelector('[data-group-audit] pre').textContent).proposals[0].rows, []);
   h.data.regroupConfirmations = [{ status: 'active', hash: 'e'.repeat(64), proposalHash: 'f'.repeat(64), rows: [], counts: h.data.regroupProposals[0].counts, confirmation: {} }];
-  h.panel.render(h.data); assert.ok(pending()); assert.match(pending().textContent, /后续分组流程/);
+  h.panel.render(h.data); assert.ok(pending()); assert.match(pending().textContent, /待分配/);
   assert.equal(h.data.cases[1].split, null); assert.equal(h.calls.length, 0);
 });
 test('confirmed grouping shows original proposal, user adjustment and active groups read-only without claiming scoring readiness', t => {
@@ -173,26 +270,27 @@ test('confirmed grouping shows original proposal, user adjustment and active gro
   h.data.regroupConfirmations = [{ status: 'active', hash: confirmHash, proposalHash, rows, counts: { trace: { train: 0, gate: 1, test: 1 }, run: { train: 0, gate: 1, test: 0 } },
     confirmation: { source: 'user-via-planner', reference: '<script>confirmed-message</script>' }, reason: '组别冻结；#20 仍供评分 v2 测试',
     adjustments: [rows[2]], confirmedAt: '2026-11-05T00:00:00Z' }];
-  h.panel.render(h.data); const panel = h.root.querySelector('[data-regroup-confirmed]'); assert.ok(panel);
-  assert.match(panel.textContent, /用户确认的分组.*已生效/s); assert.ok(panel.textContent.includes(proposalHash)); assert.ok(panel.textContent.includes(confirmHash));
-  assert.match(panel.textContent, /用户经规划者转达/); assert.match(panel.textContent, /原提议/); assert.match(panel.textContent, /保留.*trace.*组别/);
-  const r = [...panel.querySelectorAll('tbody tr')].find(r => r.firstElementChild.textContent === '#20'); assert.match(r.textContent, /测试.*训练.*测试/s);
+  h.panel.render(h.data); const panel = h.root.querySelector('[data-group-audit]'); assert.ok(panel);
+  assert.equal(panel.open, false); assert.ok(panel.textContent.includes(proposalHash)); assert.ok(panel.textContent.includes(confirmHash));
+  const audit = JSON.parse(panel.querySelector('pre').textContent);
+  assert.deepEqual(audit.confirmations, h.data.regroupConfirmations); assert.deepEqual(audit.proposals, h.data.regroupProposals);
+  const r = audit.confirmations[0].rows.find(r => r.caseNumber === 20); assert.deepEqual([r.previousSplit, r.proposedSplit, r.confirmedSplit], ['test', 'train', 'test']);
   assert.equal(panel.querySelector('script'), null); assert.match(panel.textContent, /<script>confirmed-message<\/script>/);
   assert.doesNotMatch(panel.textContent, /没有新的 trace 级测试题|分组提议 · 尚未生效/);
   for (const n of [1, 19, 20]) {
-    const card = h.root.querySelector('#bc-' + n); assert.match(card.textContent, /用户确认.*组/); assert.doesNotMatch(card.textContent, /尚未生效|等待分组|重新分组待用户确认/);
+    h.panel.focus(n); const card = h.root.querySelector('#bc-' + n); assert.match(card.textContent, /用户确认.*组/); assert.doesNotMatch(card.textContent, /尚未生效|等待分组|重新分组待用户确认/);
     assert.equal(card.querySelector('.stepper').children[4].className, 'done');
   }
-  assert.match(h.root.textContent, /分组不代表.*判分/); assert.equal(h.calls.length, 0); assert.equal(panel.querySelector('button'), null);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测/); assert.equal(h.calls.length, 0); assert.equal(panel.querySelector('button'), null);
 });
 test('new checkpoint metadata is shown separately from legacy missing fields and never claims replay success', t => {
   const h = setup(t);
   h.data.cases[1].traceBundle.scene = { metadataStatus: 'recorded', metadataSource: 'checkpoint_git_snapshot_v2', head: 'a'.repeat(40), branch: 'room/test', skippedCount: 0 };
-  h.panel.render(h.data);
+  h.panel.render(h.data); h.panel.focus(19);
   const card = h.root.querySelector('[data-case-id="c2"]');
   assert.match(card.textContent, /现场元数据已冻结/); assert.doesNotMatch(card.textContent, /待采集能力合入|现场待接入/);
   assert.equal(card.querySelector('.stepper').children[1].className, 'done');
-  assert.equal(card.closest('[data-actor]').dataset.actor, 'system');
+  assert.equal(card.closest('[data-actor]').dataset.actor, 'you', 'missing assertion still needs user drafting/confirmation');
   assert.match(card.querySelector('.next-line').textContent, /有现场，走 trace 级/);
   assert.doesNotMatch(card.querySelector('.next-line').textContent, /请确认能否脱水/);
   assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /不能把封存当作已通过回放检查/);
@@ -203,7 +301,7 @@ test('new checkpoint metadata is shown separately from legacy missing fields and
 test('sealed scenes show trace-only guidance and never offer recommendation even with stale eligibility', t => {
   const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => true });
   h.data.cases[1].dehydrationRecommendation = { eligible: true }; // stale server projection cannot reopen the action
-  h.panel.render(h.data); const card = h.root.querySelector('[data-case-id="c2"]');
+  h.panel.render(h.data); h.panel.focus(19); const card = h.root.querySelector('[data-case-id="c2"]');
   assert.equal(card.querySelector('[data-dehydration-recommend]'), null);
   assert.match(card.textContent, /有现场，走 trace 级/); assert.doesNotMatch(card.textContent, /可另选脱水/);
   assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
@@ -244,6 +342,106 @@ test('one failed parse offers fallback confirmation OR one manual retry and reta
   assert.equal(h.root.querySelector('[data-dehydration-recommend]'), null); assert.match(h.root.textContent, /此前推荐.*保留/s);
   assert.ok(h.root.textContent.includes(first.hash)); assert.match(h.root.textContent, /REAL INVALID JSON/);
   assert.equal(h.calls.length, 0);
+});
+test('approved layout renders one selected detail with searchable four-state list and nine-step mini rows', t => {
+  const h = setup(t);
+  assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 4);
+  assert.equal(h.root.querySelectorAll('[data-case-id]').length, 1);
+  assert.equal(h.root.querySelector('[data-bc-detail] [data-case-id]').dataset.caseId, 'c1');
+  assert.equal(h.root.querySelector('[data-bc-row="c2"] .mini').children.length, 9);
+  for (const key of ['all', 'you', 'system', 'library', 'stop']) assert.ok(h.root.querySelector(`[data-bc-filter="${key}"]`));
+  h.root.querySelector('[data-bc-row="c2"]').click();
+  assert.equal(h.root.querySelector('[data-bc-detail] [data-case-id]').dataset.caseId, 'c2');
+  assert.equal(h.root.querySelector('[data-bc-row="c2"]').getAttribute('aria-current'), 'true');
+  const q = h.root.querySelector('[data-bc-search]'); q.value = 'DO NOT MATCH'; q.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+  assert.equal(h.root.querySelectorAll('[data-case-id]').length, 0, 'do not leave a hidden nonmatching case in detail');
+  h.panel.focus(4); assert.equal(q.value, ''); assert.equal(h.root.querySelector('[data-case-id]').dataset.caseId, 'c3');
+  assert.equal(h.calls.length, 0);
+});
+test('mode-first board has solid effective groups, dashed proposals, per-mode quotas and integrated confirmations', t => {
+  const h = setup(t, null, { onConfirmInitialSplit() {}, onConfirmPatternLabel() {} }); h.data.cases[1].split = null;
+  const options = [{ entryId: 'p1', title: '<script>first mode</script>' }, { entryId: 'p2', title: 'Second mode' }];
+  h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, entryId: i === 3 ? 'p2' : 'p1', patternKey: i === 3 ? 'p2' : 'p1', confirmed: i !== 2, options }));
+  const rows = [{ caseId: 'c2', patternKey: 'p1', level: 'trace', proposedSplit: 'gate' }];
+  h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', rows, patterns: [{ patternKey: 'p1', rows, existingCounts: { trace: { train: 0, gate: 0, test: 0 }, run: { train: 1, gate: 0, test: 0 } }, counts: { trace: { train: 0, gate: 1, test: 0 }, run: { train: 1, gate: 0, test: 0 } } }] };
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
+  const board = h.root.querySelector('[data-grouping]'); assert.ok(board);
+  assert.equal(board.querySelectorAll('[data-board-column]').length, 4);
+  assert.ok(board.querySelector('[data-board-column="gate"] .prop[data-bc-pick="c2"]'));
+  assert.ok(board.querySelector('[data-initial-split-confirm="p1"]'));
+  assert.ok(board.querySelector('[data-board-quotas]')); assert.equal(board.querySelector('script'), null);
+  assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2, 'unconfirmed labels never silently join a suggested mode');
+  h.root.querySelector('[data-bc-pattern="pending"]').click();
+  assert.ok(board.querySelector('[data-pattern-confirm="c3"]'), 'legacy holdout label confirmation lives inside board');
+  h.root.querySelector('[data-bc-pattern="all"]').click();
+  assert.ok(board.querySelector('[data-pattern-overview]')); assert.equal(board.querySelector('[data-bc-pick]'), null, 'overview contains counts, not mixed-case chips');
+  assert.match(board.textContent, /不能|尚不能|缺/); assert.equal(h.calls.length, 0);
+});
+test('board gate counts do not claim readiness from grouping alone or treat legacy sources as runnable trace cases', t => {
+  const h = setup(t); const options = [{ entryId: 'p1', title: 'First mode' }];
+  h.data.casePatterns = h.data.cases.map(c => ({ caseId: c.id, confirmed: true, entryId: 'p1', patternKey: 'p1', options }));
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能|不能|缺/);
+  assert.ok(h.root.querySelector('[data-board-column="test"] .old[data-bc-pick="c3"]'));
+  h.root.querySelector('[data-bc-filter="stop"]').click();
+  assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2);
+  h.panel.focus(19); assert.equal(h.root.querySelector('[data-case-id]').dataset.caseId, 'c2');
+  assert.equal(h.root.querySelector('[data-bc-filter="all"]').getAttribute('aria-checked'), 'true');
+});
+test('next actor asks the user to freeze missing/incompatible assertions, not a system that cannot act; labels precede library', t => {
+  const h = setup(t); h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { kind: 'single', level: 'run', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
+  const row = { caseId: 'c1', assertion: { status: 'missing', version: null, questions: [] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 0, unscored: 1, outputs: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
+  h.data.pipelineStates = [row]; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you');
+  assert.equal(h.root.querySelector('.next-line a').getAttribute('href'), '#case-1'); assert.equal(h.calls.length, 0);
+  row.assertion = { status: 'incompatible', version: 1, model: 'fixture', questions: [{ id: 'q1', question: 'test', evidence: 'trace' }] }; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you');
+  row.assertion.status = 'frozen'; row.inLibrary = true; h.data.casePatterns = [{ caseId: 'c1', confirmed: false, options: [], labelHash: 'a'.repeat(64) }]; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you'); assert.match(h.root.querySelector('.next-line').textContent, /确认模式标签/);
+  row.inLibrary = false; row.assertion.status = 'missing'; row.original.outputs = row.original.unscored = 0; h.data.casePatterns = []; h.panel.render(h.data);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'system'); assert.match(h.root.querySelector('.next-line').textContent, /原版.*有效输出|受信操作方/);
+});
+test('selection rerenders retain keyboard focus and mode/filter radios support arrow navigation', t => {
+  const h = setup(t), button = h.root.querySelector('[data-bc-row="c2"]'); button.focus(); button.click();
+  assert.equal(h.window.document.activeElement.dataset.bcRow, 'c2');
+  const first = h.root.querySelector('[data-bc-filter="all"]'); first.focus(); first.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.equal(h.window.document.activeElement.dataset.bcFilter, 'you'); assert.equal(h.window.document.activeElement.getAttribute('aria-checked'), 'true');
+  const pending = h.root.querySelector('[data-bc-pattern="pending"]'); pending.focus(); pending.click();
+  assert.equal(h.window.document.activeElement.dataset.bcPattern, 'pending');
+});
+test('candidate-readiness overview never treats unconfirmed labels as an eligible mode, even with old ready results', t => {
+  const h = setup(t), scene = h.data.cases[1]; h.data.cases = [scene, { ...scene, id: 'test-ready', n: 30, split: 'test' }, { ...scene, id: 'control-ready', n: 31 }];
+  const options = [{ entryId: 'p1', title: 'First' }, { entryId: 'p2', title: 'Control' }];
+  h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, confirmed: i === 2, entryId: i === 2 ? 'p2' : null, patternKey: i === 2 ? 'p2' : null, options }));
+  h.data.pipelineStates = h.data.cases.map(c => ({ caseId: c.id, assertion: { status: 'frozen', version: 1, model: 'fixture', questions: [] }, replay: { status: 'supported' }, original: { valid: 10, pass: 0, fail: 10, reproduced: true, invalid: 0, errors: 0 }, inLibrary: true }));
+  h.panel.render(h.data); assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能|不能/);
+  for (const label of h.data.casePatterns.slice(0, 2)) Object.assign(label, { confirmed: true, entryId: 'p1', patternKey: 'p1' });
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用门槛、测试和其他模式的防误伤题/); assert.equal(h.calls.length, 0);
+});
+test('approved modes with zero active members remain selectable with zero quotas, not silently removed', t => {
+  const h = setup(t); h.data.versions = [{ entries: [{ id: 'empty-mode', title: 'Empty approved mode', status: 'approved' }, { id: 'draft-mode', title: 'Draft mode', status: 'draft' }] }];
+  h.panel.render(h.data); const tab = h.root.querySelector('[data-bc-pattern="empty-mode"]'); assert.ok(tab); assert.match(tab.textContent, /0/);
+  assert.equal(h.root.querySelector('[data-bc-pattern="draft-mode"]'), null);
+  tab.click(); assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 0); assert.equal(h.root.querySelectorAll('[data-case-id]').length, 0);
+  assert.match(h.root.querySelector('[data-board-quotas]').textContent, /训练 0.*门槛 0.*测试 0/); assert.equal(h.calls.length, 0);
+});
+test('list-only selection preserves open frozen viewer DOM, and returning to a case reuses its cached packet', async t => {
+  const h = setup(t); await h.expand();
+  const trace = h.root.querySelector('[data-trace-case="c1"]'), section = trace.querySelector('[data-trace-section]'); section.open = true;
+  h.root.querySelector('[data-bc-filter="all"]').click();
+  assert.equal(h.root.querySelector('[data-trace-case="c1"]'), trace); assert.equal(section.open, true);
+  h.panel.focus(19); h.panel.focus(1); await tick();
+  assert.equal(h.root.querySelector('[data-trace-case="c1"]').open, true); assert.equal(h.calls.length, 1);
+});
+test('layout styles are scoped, wide, responsive, and keep tall detail scrollable inside the real inner scroller', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../../public/badcase-pipeline.css'), 'utf8');
+  assert.match(css, /\.bc-master-detail\s*\{[^}]*grid-template-columns:/);
+  assert.match(css, /\.bc-detail\s*\{[^}]*position:\s*sticky[^}]*max-height:[^}]*overflow:\s*auto/s);
+  assert.match(css, /@media\s*\(max-width:\s*980px\)/);
+  assert.match(css, /\.bc-row\s*\{[^}]*color:\s*var\(--text\)/, 'management primary-button colors must not bleach row titles');
+  assert.match(css, /\.bc-rows\s*\{[^}]*grid-auto-rows:\s*max-content/, 'bounded list must not shrink rows until mini progress overlaps');
+  assert.match(fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8'), /max-width:\s*1680px/);
 });
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();

@@ -15,6 +15,7 @@ import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { extractWikiLiteralObservations } from './wiki-experience';
 import { WIKI_COMPARISON_V2_MAX_BYTES, wikiObjectiveRules, wikiObjectiveAssertionIds } from './wiki-comparison-scoring';
 import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
+import { verifyWikiRunPublication } from './wiki-run-comparison-verification';
 export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
@@ -126,6 +127,11 @@ export function createWikiComparisonStore(options: any) {
           try { replay = sampleVersion ? resolveSampleReplayVersion(state, c.sourceCaseId, c.replayId) : state.replayCases.find((s: any) => s.sourceCaseId === c.sourceCaseId); }
           catch { throw fail(); }
           check(source && source.split === c.split);
+          if (payload.kind === 'wiki-staged-batch-comparison-v2' && c.execution?.level === 'run') {
+            check(production && !c.reportOnly);
+            verifyWikiRunPublication(wiki, options, payload, c, source, candidate);
+            continue;
+          }
           if (c.topicExemption) {
             const e = c.topicExemption;
             check(production && source.kind === 'marked-badcase' && replay && e.taskHash === crypto.createHash('sha256').update(replay.task).digest('hex'));

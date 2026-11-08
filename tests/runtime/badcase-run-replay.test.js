@@ -52,6 +52,56 @@ test('durable reservation prevents duplicate sends after success, failure, crash
   const file = path.join(h.options.globalRoot, 'run-replays', row.id + '.result.json'); const env = JSON.parse(fs.readFileSync(file)); env.result.message.content = [];
   fs.writeFileSync(file, JSON.stringify(env)); assert.throws(() => runs.read(row.id), e => e.code === 'wiki_run_record_invalid');
 });
+test('formal attempts reserve identical frozen requests independently without adding attempt identity to model input', async t => {
+  const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  const runs = createWikiRunStore(h.options), q = h.request(), requestHash = hash(q), before = h.store.read(); let calls = 0;
+  const attempt = { planHash: 'c'.repeat(64), executionId: '1b947e3a-88c8-4a52-a9e1-c32dcd8c99df', iteration: 1 };
+  const input = { store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: requestHash, attempt };
+  const client = { async complete(request) { calls++; assert.deepEqual(request, q); assert.doesNotMatch(JSON.stringify(request), /executionId|iteration|planHash/);
+    return { message: output([{ type: 'text', text: 'result' }]), networkRequests: 1, durationMs: 2 }; } };
+  const a = await api().replayWikiRun(input, { client });
+  const b = await api().replayWikiRun({ ...input, attempt: { ...attempt, iteration: 2 } }, { client });
+  assert.equal(calls, 2); assert.notEqual(a.id, b.id); assert.notEqual(a.id, requestHash);
+  assert.equal(a.requestHash, requestHash); assert.equal(b.requestHash, requestHash);
+  assert.deepEqual(a.attempt, attempt); assert.deepEqual(runs.read(a.id).reservation.attempt, attempt);
+  assert.equal(runs.read(a.id).reservation.requestHash, requestHash);
+  await assert.rejects(api().replayWikiRun(input, { client }), { code: 'wiki_run_already_reserved' }); assert.equal(calls, 2);
+  await assert.rejects(api().replayWikiRun({ ...input, attempt: { iteration: 1, executionId: attempt.executionId, planHash: attempt.planHash } }, { client }), { code: 'wiki_run_already_reserved' });
+  assert.equal(calls, 2);
+  const drifted = structuredClone(q); drifted.context.systemPrompt += ' changed';
+  assert.throws(() => runs.reserve(drifted, attempt), { code: 'wiki_run_already_reserved' }, 'one logical slot cannot acquire another claim by changing its request');
+  const c = await api().replayWikiRun({ ...input, attempt: undefined }, { client });
+  assert.equal(c.id, requestHash); assert.ok(!Object.hasOwn(c, 'attempt')); assert.equal(calls, 3);
+  assert.equal(runs.list().length, 3); assert.deepEqual(h.store.read(), before);
+});
+test('formal crashed/failed/competing claims cannot send twice, but a distinct batch has its own claims', async t => {
+  const h = setup(t), create = () => require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.options);
+  const q = h.request(), attempt = { planHash: 'c'.repeat(64), executionId: '1b947e3a-88c8-4a52-a9e1-c32dcd8c99df', iteration: 1 };
+  const input = { store: h.store, runs: create(), caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(q), attempt };
+  const claim = input.runs.reserve(q, attempt); assert.equal(create().list()[0].status, 'reserved'); let calls = 0;
+  const client = { async complete() { calls++; throw Error('synthetic request error'); } };
+  await assert.rejects(api().replayWikiRun({ ...input, runs: create() }, { client }), { code: 'wiki_run_already_reserved' }); assert.equal(calls, 0);
+  const next = { ...input, attempt: { ...attempt, executionId: '2b947e3a-88c8-4a52-a9e1-c32dcd8c99df' } };
+  const failed = await api().replayWikiRun(next, { client }); assert.equal(failed.outcome.status, 'error'); assert.equal(calls, 1);
+  await assert.rejects(api().replayWikiRun(next, { client }), { code: 'wiki_run_already_reserved' }); assert.equal(calls, 1);
+  assert.equal(create().read(claim.id).result, null); assert.equal(create().read(failed.id).result.outcome.status, 'error');
+});
+test('formal attempt shape and immutable attempt/request identity are validated before any network', async t => {
+  const h = setup(t), runs = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.options), q = h.request();
+  const attempt = { planHash: 'c'.repeat(64), executionId: '1b947e3a-88c8-4a52-a9e1-c32dcd8c99df', iteration: 1 }; let calls = 0;
+  for (const patch of [{ iteration: 0 }, { iteration: 16 }, { iteration: 1.5 }, { planHash: 'invalid' }, { executionId: '../file' }, { extra: true }]) {
+    await assert.rejects(api().replayWikiRun({ store: h.store, runs, caseId: h.c.id, toolset: h.toolset,
+      approvedRequestHash: hash(q), attempt: { ...attempt, ...patch } }, { client: { complete() { calls++; } } }), { code: 'wiki_run_attempt_invalid' });
+  }
+  assert.equal(calls, 0); assert.equal(runs.list().length, 0);
+  const claim = runs.reserve(q, attempt), file = path.join(h.options.globalRoot, 'run-replays', claim.id + '.json');
+  const original = JSON.parse(fs.readFileSync(file));
+  for (const mutate of [e => e.reservation.attempt.iteration = 2, e => e.reservation.request.context.systemPrompt += ' drift',
+    e => e.reservation.requestHash = 'f'.repeat(64)]) {
+    const envelope = structuredClone(original); mutate(envelope); envelope.hash = hash(envelope.reservation);
+    fs.writeFileSync(file, JSON.stringify(envelope)); assert.throws(() => runs.read(claim.id), { code: 'wiki_run_record_invalid' });
+  }
+});
 test('a failed request is recorded once with a safe code and never retried; output known values are replaced', async t => {
   const { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
   for (const failing of [false, true]) {
@@ -78,6 +128,39 @@ test('candidate can replace only one approved global slot; remainder of frozen p
   assert.deepEqual(changed.context.messages.slice(1), original.context.messages.slice(1));
   assert.throws(() => api().buildWikiRunRequest({ ...input, candidate: { ...candidate, baseHash: 'f'.repeat(64) } }), e => e.code === 'wiki_run_candidate_invalid');
 });
+test('candidate rejects duplicate global declarations even when another prefix segment has one valid slot', t => {
+  const h = setup(t), target = require('../../build/lib/agent-prompt-targets').getGlobalPromptTarget('global-harness-behavior-v1');
+  const slot = 'prefix\n\nRoom work context:\noriginal\n\nRules:\n' + target.baseText + '\n- Unchanged rule\n\nRouting instructions:\ntail';
+  const duplicate = slot + '\n\nRules:\n' + target.baseText + '\n';
+  const candidate = { id: 'approved', targetId: target.id, baseText: target.baseText, baseHash: target.baseHash, replacement: 'NEW GLOBAL ONLY' };
+  for (const [system, user] of [[duplicate, slot], [slot, duplicate], [slot, slot], ['no target', 'no target']]) {
+    const bundle = structuredClone(h.bundle), item = structuredClone(h.item()), decision = structuredClone(h.decision);
+    bundle.context.systemPrompt = system; bundle.context.trigger.message.content = user;
+    item.traceBundle.hash = hash(bundle); decision.traceHash = item.traceBundle.hash; const { hash: ignored, ...content } = decision; decision.hash = hash(content);
+    assert.throws(() => api().buildWikiRunRequest({ item, bundle, decision, toolset: h.toolset, candidate }), { code: 'wiki_run_candidate_invalid' });
+  }
+});
+test('run rubrics reject trace and files on freeze, while reply freezes and historical frozen records stay readable', t => {
+  for (const evidence of ['trace', 'files', 'reply']) {
+    const h = setup(t), state = h.store.read(), item = h.item(), model = 'deepseek/deepseek-v4-flash';
+    const rubric = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').createWikiRubric({ caseId: item.id, version: 1, actual: item.actual, expected: item.expected,
+      model, scoringModel: { backend: 'deepseek', model }, questions: [{ id: 'q1', question: 'The reply states a concrete result.', evidence }] });
+    // A historical draft may predate the run decision. Read remains compatible;
+    // the new freeze must enforce the execution's actual evidence surface.
+    state.rubrics = [rubric]; const file = path.join(h.options.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+    const before = h.store.read(), bytes = fs.readFileSync(file), confirm = () => h.store.confirmRubric({ rubricId: rubric.id, hash: rubric.hash, confirmationRecord: 'Synthetic user consent' }, before.revision);
+    if (evidence === 'reply') assert.equal(confirm().status, 'frozen');
+    else {
+      assert.throws(confirm, { code: 'wiki_rubric_run_evidence_invalid' }); assert.deepEqual(h.store.read(), before);
+      Object.assign(rubric, { status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Historical approval' });
+      fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: hash(state), record: state }));
+      assert.deepEqual(createWikiStore(h.options).getFrozenRubric(item.id, rubric.hash), rubric, 'old versions are readable without migration or re-judging');
+    }
+    if (evidence === 'reply') assert.deepEqual(fs.readFileSync(file), bytes, 'old snapshot bytes unchanged');
+  }
+});
+
 test('crashed reservations remain unknown and cannot send again; known values in input block before creating a claim', async t => {
   const h = setup(t), { createWikiRunStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store'), runs = createWikiRunStore(h.options), q = h.request();
   const input = { store: h.store, runs, caseId: h.c.id, toolset: h.toolset, approvedRequestHash: hash(q) }; let calls = 0;

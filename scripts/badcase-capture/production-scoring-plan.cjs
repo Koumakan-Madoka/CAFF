@@ -2,7 +2,7 @@
 // No judge implementation/prompt/auth here. Never substitutes replay.task (an
 // operator label) or a whole runtime prompt for the triggering user message.
 const base='../../build/server/domain/runtime/badcase-capture/';
-const {createWikiExperimentPlan,assertWikiExperimentPlan}=require(base+'wiki-experiment-plan');
+const {createWikiExperimentPlan,assertWikiExperimentPlan,wikiExperimentRunSceneHash}=require(base+'wiki-experiment-plan');
 const {resolveFrozenWikiRubric,wikiExactKeys,wikiValueHash}=require(base+'wiki-rubric');
 const {bindWikiJudge}=require(base+'wiki-scoring-v2');
 const {readWikiEligibleJudges,assertWikiEligibleConfiguration}=require(base+'wiki-judge-catalog');
@@ -31,13 +31,22 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
    || !same(definition?.cases?.map(({judge,...selection})=>selection),selections))throw fail('wiki_experiment_changed');
  const eligibleJudges=readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
  for(const selection of definition.cases)assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,eligibleJudges);
+ function scoringFor(source,item,task){
+  if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
+  const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
+  const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
+  return {kind:'wiki-score-v2',rubric,binding:bindWikiJudge(judge,rubric),task,expected:source.expected};
+ }
  return {
-  forCase(source,replay,item){
-   if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
-   const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
-   const task=(options.prepareProductionTask || readProductionScoringTask)(replay,scope);
-   const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
-   return {kind:'wiki-score-v2',rubric,binding:bindWikiJudge(judge,rubric),task,expected:source.expected};
+  forCase(source,replay,item){return scoringFor(source,item,(options.prepareProductionTask || readProductionScoringTask)(replay,scope));},
+  forRun(source,item,task){
+   const scoring=scoringFor(source,item,task);
+   if(scoring.rubric.questions.some(q=>q.evidence!=='reply'))throw fail('wiki_rubric_run_evidence_invalid');
+   return scoring;
+  },
+  recordRun(source,execution,scoring){
+   catalog.push({id:source.id,sceneHash:wikiExperimentRunSceneHash(execution),execution:structuredClone(execution),
+    task:scoring.task,actual:source.actual,expected:source.expected,hardAssertions:{kind:'completion-public-reply-v1'},rubric:scoring.rubric});
   },
   recordCase(source,replay,comparison,scoring){
    if(!comparison.supported)throw fail('evaluation_batch_task_unavailable');

@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
-import { validateWikiExperimentPlan } from './wiki-experiment-plan';
+import { validateWikiExperimentPlan, wikiExperimentRunSceneHash } from './wiki-experiment-plan';
+import { wikiValueHash } from './wiki-rubric';
 const fail = (code = 'wiki_execution_invalid') => Object.assign(Error(code), { code });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
@@ -24,7 +25,13 @@ function projectPlan(v: any) {
   check(Array.isArray(v.cases) && v.cases.length > 0 && v.cases.length <= 20);
   const cases = v.cases.map((c: any) => {
     check(['gate', 'test'].includes(c.stage) && ['reproduction', 'probe', 'control'].includes(c.category) && typeof c.reportOnly === 'boolean');
-    return { sourceCaseId: id(c.sourceCaseId), stage: c.stage, category: c.category, reportOnly: c.reportOnly };
+    if (c.execution !== undefined) {
+      check(v2 && !c.reportOnly && c.execution.level === 'run' && c.stage === 'gate');
+      wikiExperimentRunSceneHash(c.execution);
+      if (v.experiment !== undefined) check(wikiValueHash(v.experiment.cases.find((p: any) => p.caseId === c.sourceCaseId)?.execution) === wikiValueHash(c.execution));
+    }
+    return { sourceCaseId: id(c.sourceCaseId), stage: c.stage, category: c.category, reportOnly: c.reportOnly,
+      ...(c.execution === undefined ? {} : { execution: structuredClone(c.execution) }) };
   });
   check(new Set(cases.map((c: any) => c.sourceCaseId)).size === cases.length);
   const experimentHash = v2 ? (v.experiment === undefined ? v.experimentHash : validateWikiExperimentPlan(v.experiment).planHash) : undefined;
@@ -32,11 +39,11 @@ function projectPlan(v: any) {
   return { kind: v.kind, model: v.model, modelConfig, variants: [...variants], repeats: 10, cases,
     ...(v2 ? { scoringKind: 'wiki-score-v2', experimentHash } : {}) };
 }
-const empty = (planned: number) => ({ planned, attempted: 0, passed: 0, failed: 0, errors: 0, notRun: planned });
+const empty = (planned: number, run = false) => ({ planned, attempted: 0, passed: 0, failed: 0, errors: 0, ...(run ? { invalid: 0 } : {}), notRun: planned });
 function summarize(record: any) {
   const sum = (rows: any[]) => Object.fromEntries(variants.map(v => [v, rows.reduce((s, c) => {
-    for (const k of Object.keys(s)) s[k] += c.totals[v][k]; return s;
-  }, empty(0))]));
+    for (const k of Object.keys(s)) s[k] += c.totals[v][k] ?? 0; return s;
+  }, empty(0, rows.some(c => Object.hasOwn(c.totals[v], 'invalid'))))]));
   const totals: any = sum(record.cases), knownTokens = record.cases.reduce((n: number, c: any) => n + (c.knownTokens || 0), 0);
   check(Number.isSafeInteger(knownTokens));
   return { plannedRuns: totals.original.planned + totals.candidate.planned, completedRuns: totals.original.attempted + totals.candidate.attempted,
@@ -57,9 +64,10 @@ function validate(record: any) {
     if (c.knownTokens !== null) count(c.knownTokens);
     check(Object.keys(c.totals).join(',') === variants.join(','));
     for (const v of variants) {
-      const t = c.totals[v]; check(Object.keys(t).sort().join(',') === Object.keys(empty(0)).sort().join(','));
+      const t = c.totals[v], run = record.plan.cases[i].execution?.level === 'run';
+      check(Object.keys(t).sort().join(',') === Object.keys(empty(0, run)).sort().join(','));
       Object.values(t).forEach(count);
-      check(t.planned === (c.reportOnly ? 0 : 10) && t.attempted === t.passed + t.failed + t.errors && t.notRun === t.planned - t.passed - t.failed);
+      check(t.planned === (c.reportOnly ? 0 : 10) && t.attempted === t.passed + t.failed + t.errors + (t.invalid ?? 0) && t.notRun === t.planned - t.passed - t.failed);
       check(c.status !== 'completed' || t.notRun === 0);
       check(!c.reportOnly || t.attempted === 0);
     }
@@ -118,7 +126,7 @@ export function createWikiBatchExecutionStore(options: any) {
         return write({ id: 'batch-execution-' + crypto.randomUUID(), createdAt: now, updatedAt: now, status: 'running', plan, planHash: input.planHash,
           current: null, gateOutcome: null, comparisonId: null, reason: null,
           cases: plan.cases.map((c: any) => ({ sourceCaseId: c.sourceCaseId, stage: c.stage, reportOnly: c.reportOnly, status: 'pending', knownTokens: null, usageComplete: true,
-            totals: Object.fromEntries(variants.map(v => [v, empty(c.reportOnly ? 0 : 10)])) })) }, true);
+            totals: Object.fromEntries(variants.map(v => [v, empty(c.reportOnly ? 0 : 10, c.execution?.level === 'run')])) })) }, true);
       });
     },
     heartbeat(recordId: string) { return update(recordId, () => {}); },
@@ -142,8 +150,9 @@ export function createWikiBatchExecutionStore(options: any) {
           check(r.current === null && c.totals.original.attempted + c.totals.candidate.attempted < 25);
           r.current = { sourceCaseId: c.sourceCaseId, stage: c.stage, variant: e.variant, iteration: e.iteration }; return;
         }
-        check(r.current?.sourceCaseId === c.sourceCaseId && r.current.variant === e.variant && r.current.iteration === e.iteration && ['pass', 'fail', 'error'].includes(e.status));
-        t.attempted++; t[e.status === 'pass' ? 'passed' : e.status === 'fail' ? 'failed' : 'errors']++; t.notRun = t.planned - t.passed - t.failed;
+        check(r.current?.sourceCaseId === c.sourceCaseId && r.current.variant === e.variant && r.current.iteration === e.iteration
+          && ['pass', 'fail', 'error', ...(Object.hasOwn(t, 'invalid') ? ['invalid'] : [])].includes(e.status));
+        t.attempted++; t[e.status === 'pass' ? 'passed' : e.status === 'fail' ? 'failed' : e.status === 'invalid' ? 'invalid' : 'errors']++; t.notRun = t.planned - t.passed - t.failed;
         const tokens = e.tokenUsage?.knownTokens?.totalTokens;
         if (tokens != null) { count(tokens); c.knownTokens = (c.knownTokens || 0) + tokens; }
         c.usageComplete &&= e.tokenUsage?.complete === true; r.current = null;
@@ -156,6 +165,11 @@ export function createWikiBatchExecutionStore(options: any) {
         check(saved.model === r.plan.model && saved.planHash === r.planHash && typeof saved.completed === 'boolean' && saved.gateDecision?.outcome === r.gateOutcome);
         check(r.current === null && r.cases.every((c: any) => c.status !== 'pending'));
         if (r.plan.scoringKind === 'wiki-score-v2') check(saved.kind === r.plan.kind && saved.experiment?.planHash === r.plan.experimentHash);
+        for (const planned of r.plan.cases.filter((c: any) => c.execution?.level === 'run')) {
+          const c = r.cases.find((c: any) => c.sourceCaseId === planned.sourceCaseId), result = saved.cases?.find((c: any) => c.sourceCaseId === planned.sourceCaseId);
+          check(result && wikiValueHash(result.execution) === wikiValueHash(planned.execution));
+          for (const v of variants) for (const k of Object.keys(c.totals[v])) check(c.totals[v][k] === result.totals[v][k]);
+        }
         r.comparisonId = id(saved.id); r.status = saved.completed ? 'completed' : 'stopped';
       });
     },

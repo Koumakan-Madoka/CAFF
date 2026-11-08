@@ -11,6 +11,7 @@ const {resolveSampleReplayVersion}=require(base+'wiki-sample-replay-version');
 const {prepareComparison,CODEX_CONFIG}=require('./direct-comparison.cjs');
 const {CODEX_PROFILE}=require('./direct-model.cjs');
 const {prepareProductionScoring}=require('./production-scoring-plan.cjs');
+const {prepareProductionRun}=require('./production-run-plan.cjs');
 const {reviseSnapshotHeadRules,reviseTopicNumberRules}=require('./public-reply-literal-rules.cjs');
 const {containsSecretSentinel}=require(base+'secrets');
 const textHash=text=>require('node:crypto').createHash('sha256').update(text).digest('hex');
@@ -18,7 +19,7 @@ const fail=code=>Object.assign(Error(code),{code});
 const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
  config=resolveWikiStorageOptions(config);
- const scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},state=createWikiStore(scope).read();
+ const scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},store=createWikiStore(scope),state=store.read();
  if(config.modelProfile!==CODEX_PROFILE || config.keySource!=='caff-codex-access' || config.repeats!==10
    || !config.evaluation || Object.keys(config.evaluation).sort().join(',')!=='kind,targetEntryId'
    || config.evaluation.kind!=='wikiskill-gate-v1')throw fail('evaluation_gate_config_invalid');
@@ -42,6 +43,10 @@ function prepareProductionBatch(config,options={}){
  const seenSeals=new Set();
  const prepared=suite.cases.map(record=>{
   const source=state.cases.find(c=>c.id===record.sourceCaseId),item=config.cases.find(c=>c.sourceCaseId===source.id);
+  // Scene-backed cases always keep the real trace executor, regardless of a
+  // historical dehydration recommendation. No-scene marked cases never fake a
+  // sealed replay or inherit repository/dependency restoration from a trace.
+  if(source.kind==='marked-badcase' && !source.sealedCheckpointId && !record.reportOnly)return prepareProductionRun({config,store,source,item,record,candidate,scoringPlan,toolset:options.runToolset});
   const replay=item.replayVersionId===undefined?state.replayCases.find(c=>c.sourceCaseId===source.id):resolveSampleReplayVersion(state,source.id,item.replayVersionId);
   if(item.replayVersionId!==undefined&&(record.category!=='control'||item.repository!==undefined||item.dependencies!==undefined))throw fail('evaluation_batch_cases_invalid');
   if(record.reportOnly)return {...record,supported:false,reason:'non_gpt_source_report_only'};

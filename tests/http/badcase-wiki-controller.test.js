@@ -26,6 +26,123 @@ function setup(t) {
 }
 const rejects = (promise, code, status = 422) => assert.rejects(promise, e => e.statusCode === status && e.issues?.[0]?.code === code);
 
+test('pipeline statuses are a read-only addition to Wiki GET and do not start any configured model runner', async t => {
+  const h = setup(t); h.seed(); const before = h.store.read();
+  let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = () => { calls++; throw Error('must not run'); };
+  const result = await h.invoke();
+  assert.equal(result.body.pipelineStates.length, before.cases.length);
+  for (const row of result.body.pipelineStates) { assert.equal(row.assertion.status, 'missing'); assert.equal(row.original.valid, 0); assert.equal(row.inLibrary, false); }
+  assert.equal(calls, 0); assert.deepEqual(h.store.read(), before);
+});
+
+test('GET never prepares/materializes sealed inputs, starts git, creates scratch directories or computes cache misses', async t => {
+  const h = setup(t); h.seed();
+  const state = h.store.read(), c = state.cases[0]; c.sealedCheckpointId = 'synthetic-v2-checkpoint';
+  state.replayCases = [{ id: 'replay-synthetic-v2', sourceCaseId: c.id, checkpointHash: 'a'.repeat(64), request: { association: { checkpointId: c.sealedCheckpointId } } }];
+  const file = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  const sealed = require('../../scripts/badcase-capture/sealed-direct-input.cjs'), child = require('node:child_process');
+  const materializer = require('../../build/server/domain/runtime/badcase-capture/git-snapshot-materialization');
+  const originalMaterialize = materializer.materializeGitSnapshot;
+  const originalPrepare = sealed.prepareSealedOriginalTurn, originalExec = child.execFileSync, originalTemp = fs.mkdtempSync;
+  let inspections = 0, preparations = 0, materializations = 0, execs = 0, temps = 0;
+  h.options.inspectReplay = ({ replay }) => {
+    inspections++;
+    return require('../../scripts/badcase-capture/wiki-page-runtime.cjs').inspectPageReplay({ replay, scope: h.config }, { resolve: () => ({ synthetic: true }) });
+  };
+  sealed.prepareSealedOriginalTurn = () => { preparations++; return { supported: true, provenance: { checkpointHash: 'a'.repeat(64) } }; };
+  child.execFileSync = () => { execs++; throw Error('GET must not start git'); };
+  fs.mkdtempSync = () => { temps++; throw Error('GET must not create scratch'); };
+  materializer.materializeGitSnapshot = () => { materializations++; throw Error('GET must not materialize'); };
+  let result;
+  try { result = await h.invoke(); await h.invoke(); }
+  finally { sealed.prepareSealedOriginalTurn = originalPrepare; materializer.materializeGitSnapshot = originalMaterialize; child.execFileSync = originalExec; fs.mkdtempSync = originalTemp; }
+  assert.deepEqual({ inspections, preparations, materializations, execs, temps }, { inspections: 0, preparations: 0, materializations: 0, execs: 0, temps: 0 });
+  assert.equal(result.body.pipelineStates[0].replay.status, 'pending');
+  assert.deepEqual(h.store.read(), state);
+  assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'pipeline-prechecks')), false, 'GET cannot create even a cache directory');
+});
+
+test('GET and confirmation refresh only read offline prechecks; cache failures are pending, not computed or silently supported', async t => {
+  const h = setup(t); h.seed();
+  const state = h.store.read(), c = state.cases[0]; c.sealedCheckpointId = 'cp-cached';
+  state.replayCases = [{ id: 'replay-cached', sourceCaseId: c.id, checkpointHash: 'b'.repeat(64), request: { association: { checkpointId: 'cp-cached' } } }];
+  const snapshot = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(snapshot, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  const { createWikiPipelinePrecheckStore, cacheWikiPipelineInputs } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks');
+  let checks = 0;
+  const cache = createWikiPipelinePrecheckStore(h.config), readers = { cache, inspectReplay: replay => { checks++; return { supported: true, checkpointHash: replay.checkpointHash }; } };
+  cacheWikiPipelineInputs(state, readers); cacheWikiPipelineInputs(state, readers); assert.equal(checks, 1);
+  h.options.inspectReplay = () => { throw Error('not an HTTP dependency'); };
+  const directory = path.join(h.config.globalRoot, 'pipeline-prechecks'), files = fs.readdirSync(directory), bytes = files.map(f => fs.readFileSync(path.join(directory, f)));
+  const first = await h.invoke(); assert.equal(first.body.pipelineStates[0].replay.status, 'supported');
+  const label = first.body.casePatterns[0];
+  const confirmed = await h.invoke({ confirmed: true, expectedRevision: state.revision, caseId: c.id, entryId: null, labelHash: label.labelHash }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  assert.equal(confirmed.body.pipelineStates[0].replay.status, 'supported');
+  assert.equal((await h.invoke()).body.pipelineStates[0].replay.status, 'supported');
+  assert.equal(checks, 1); assert.deepEqual(fs.readdirSync(directory), files);
+  for (let i = 0; i < files.length; i++) assert.deepEqual(fs.readFileSync(path.join(directory, files[i])), bytes[i]);
+  fs.writeFileSync(path.join(directory, files[0]), 'corrupt');
+  assert.equal((await h.invoke()).body.pipelineStates[0].replay.status, 'pending'); assert.equal(checks, 1);
+});
+
+test('pattern label and initial split confirmations are local-admin/CSRF guarded, closed and hash/revision bound without model calls', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = async () => { calls++; };
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  const before = h.store.read(), get = await h.invoke();
+  assert.equal(h.store.read().revision, before.revision, 'GET only projects a proposal');
+  const label = get.body.casePatterns.find(r => r.caseId === c.id);
+  const labelBody = { confirmed: true, caseId: c.id, entryId: v.entries[0].id, labelHash: label.labelHash, expectedRevision: before.revision }, labelRoute = { pathname: '/api/wikiskill/pattern-label-confirm' };
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(labelBody, { ...labelRoute, ...override }));
+  await rejects(h.invoke({ ...labelBody, confirmed: false }, labelRoute), 'wiki_confirmation_required');
+  await rejects(h.invoke({ ...labelBody, split: 'gate' }, labelRoute), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...labelBody, expectedRevision: 0 }, labelRoute), 'wiki_revision_conflict', 409);
+  await rejects(h.invoke({ ...labelBody, labelHash: 'f'.repeat(64) }, labelRoute), 'wiki_pattern_label_stale', 409);
+  const labelled = await h.invoke(labelBody, labelRoute);
+  assert.equal(labelled.body.cases.find(v => v.id === c.id).split, null);
+  assert.deepEqual(labelled.body.versions, before.versions);
+  const p = labelled.body.initialSplitProposal;
+  const body = { confirmed: true, proposalHash: p.hash, patternKey: v.entries[0].id, expectedRevision: labelled.body.revision }, route = { pathname: '/api/wikiskill/initial-split-confirm' };
+  for (const override of [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }]) await assert.rejects(h.invoke(body, { ...route, ...override }));
+  await rejects(h.invoke({ ...body, confirmed: false }, route), 'wiki_confirmation_required');
+  for (const extra of [{ assignments: [] }, { seed: 'caller-picked' }, { eligible: true }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
+  await rejects(h.invoke({ ...body, expectedRevision: 0 }, route), 'wiki_revision_conflict', 409);
+  await rejects(h.invoke({ ...body, proposalHash: 'f'.repeat(64) }, route), 'wiki_initial_split_stale', 409);
+  const done = await h.invoke(body, route), revision = done.body.revision;
+  assert.equal(done.body.cases.find(v => v.id === c.id).split, 'train');
+  assert.equal(done.body.initialSplitConfirmations.length, 1);
+  assert.equal((await h.invoke(body, route)).body.revision, revision, 'exact network retry is idempotent');
+  assert.equal(calls, 0); assert.deepEqual(h.store.read().versions, before.versions);
+});
+
+test('assigned GPT label gaps block the first-split HTTP endpoint with a distinct error until labels are confirmed', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  const gap = h.store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'assigned-unlabelled', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic assigned but unlabelled', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new-label-gap', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  let get = await h.invoke(); const own = get.body.casePatterns.find(r => r.caseId === c.id);
+  await h.invoke({ confirmed: true, caseId: c.id, entryId: 'entry-1', labelHash: own.labelHash, expectedRevision: get.body.revision }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  const before = h.store.read(); get = await h.invoke(); const p = get.body.initialSplitProposal;
+  await rejects(h.invoke({ confirmed: true, proposalHash: p.hash, patternKey: 'entry-1', expectedRevision: before.revision }, { pathname: '/api/wikiskill/initial-split-confirm' }), 'wiki_initial_split_labels_required', 409);
+  assert.deepEqual(h.store.read(), before); assert.equal(p.blockers[0].caseId, gap.id);
+  const label = get.body.casePatterns.find(r => r.caseId === gap.id);
+  const labelled = await h.invoke({ confirmed: true, caseId: gap.id, entryId: 'entry-1', labelHash: label.labelHash, expectedRevision: before.revision }, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  const done = await h.invoke({ confirmed: true, proposalHash: labelled.body.initialSplitProposal.hash, patternKey: 'entry-1', expectedRevision: labelled.body.revision }, { pathname: '/api/wikiskill/initial-split-confirm' });
+  assert.equal(done.body.cases.find(v => v.id === c.id).split, 'train');
+});
+
+test('legacy gate/test labels confirm independently of induction and never move their frozen groups', async t => {
+  const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
+  h.store.addTextCases(Array.from({ length: 5 }, (_, i) => ({ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'extra-' + i, agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic holdout', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false })));
+  h.store.setReplaySplit({ caseIds: h.store.read().cases.map(c => c.id) });
+  const before = h.store.read(), c = before.cases.find(c => c.split === 'test'), response = await h.invoke(), label = response.body.casePatterns.find(r => r.caseId === c.id);
+  assert.equal(label.confirmed, false);
+  const body = { confirmed: true, caseId: c.id, entryId: v.entries[0].id, labelHash: label.labelHash, expectedRevision: before.revision };
+  const done = await h.invoke(body, { pathname: '/api/wikiskill/pattern-label-confirm' });
+  for (const key of ['cases', 'caseStates', 'versions', 'replaySplit']) assert.deepEqual(h.store.read()[key], before[key]);
+  assert.equal(done.body.patternLabels.length, 1);
+});
+
 test('rubric APIs append versions and freeze exact eligible model/hash without touching older versions', async t => {
   const h = setup(t); h.seed(); const { configFile, frozen } = require('../helpers/wiki-judge-catalog.cjs')(h.root);
   h.options.judgeCatalogFile = configFile;
@@ -381,16 +498,19 @@ test('incremental induction and membership endpoints persist suggestions and pro
       results: [{ caseId: marked.case.id, kind: 'assign', entryId: 'entry-1', reason: '症状一致', confidence: '高' }] }, expectedRevision);
   };
   const induction = await h.invoke({ confirmed: true, expectedRevision: 4 }, { pathname: '/api/wikiskill/induct' });
-  assert.equal(calls, 1); assert.equal(induction.body.caseStates.find(s => s.caseId === marked.case.id).status, 'suggested');
+  assert.equal(calls, 1); assert.equal(induction.body.caseStates.find(s => s.caseId === marked.case.id).status, 'classification-pending');
+  assert.equal(induction.body.cases.find(c => c.id === marked.case.id).split, null);
   const suggestion = induction.body.suggestions[0];
   await rejects(h.invoke({ confirmed: true, expectedRevision: 5, model: 'other' }, { pathname: '/api/wikiskill/induct' }), 'wiki_invalid_input');
   assert.equal(calls, 1);
   const accepted = await h.invoke({ confirmed: true, suggestionId: suggestion.id, decision: 'accepted', expectedRevision: 5 }, { pathname: '/api/wikiskill/suggestion' });
-  assert.equal(accepted.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'model-confirmed');
+  assert.equal(accepted.body.classifications.find(s => s.caseId === marked.case.id).source, 'model-confirmed');
+  assert.equal(accepted.body.caseStates.find(s => s.caseId === marked.case.id).status, 'pending-allocation');
   await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: null, expectedRevision: 6 }, { pathname: '/api/wikiskill/membership' });
   const manual = await h.invoke({ confirmed: true, caseId: marked.case.id, entryId: 'entry-1', expectedRevision: 7 }, { pathname: '/api/wikiskill/membership' });
-  assert.equal(manual.body.caseStates.find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
-  assert.equal(createWikiStore(h.config).getCaseStates().find(s => s.caseId === marked.case.id).memberships[0].source, 'manual');
+  assert.equal(manual.body.classifications.find(s => s.caseId === marked.case.id).source, 'manual');
+  assert.equal(createWikiStore(h.config).read().classifications.find(s => s.caseId === marked.case.id).source, 'manual');
+  assert.equal(manual.body.cases.find(c => c.id === marked.case.id).split, null, 'non-GPT mark remains report-only');
   assert.equal(manual.body.events.some(e => e.type === 'preclassification-run'), true);
 });
 

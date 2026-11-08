@@ -45,4 +45,18 @@ async function runPageDehydration(input, { configFile } = {}, dependencies = {})
     return await recommendDehydration({ ...prepared, approvedRequestHash: built.requestHash }, { client, knownKeyValues, retryPolicy: 'manual' });
   } finally { await dispatcher.destroy(); }
 }
-module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig };
+// OFFLINE operator preflight only. Never wire into an HTTP request handler:
+// v2 restores an isolated TEMP git snapshot synchronously. Reuses the real input
+// check, not a complete flag/checkpoint existence. No replay/model/auth/network;
+// v2 uses the instance's read-only known-value inventory for redaction. No
+// captured-evidence rewrite. Only the small result is cached for the page.
+function inspectPageReplay({ replay, scope }, dependencies = {}) {
+  const resolve = dependencies.resolve || require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest;
+  const prepare = dependencies.prepare || require('./sealed-direct-input.cjs').prepareSealedOriginalTurn;
+  try {
+    const result = prepare(resolve(scope, replay.request));
+    if (result?.supported === true && result.provenance?.checkpointHash === replay.checkpointHash) return { supported: true, checkpointHash: replay.checkpointHash };
+    return { supported: false, reason: /^replay_[a-z_]+$/.test(result?.reason || '') ? result.reason : 'replay_check_failed' };
+  } catch { return { supported: false, reason: 'replay_check_failed' }; }
+}
+module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };
