@@ -12,7 +12,7 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-trace-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = createWikiStore({ globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') });
-  const item = store.addMarkedCase({ source: { ...source, conversationTitle: 'Trace test' }, role: 'GPT',
+  const item = store.addMarkedCase({ source: { ...source, conversationTitle: 'Trace test' }, role: source.agentId,
     actual: 'wrong action', expected: 'correct action', message: 'public answer', traceExcerpt: '', traceState: 'missing',
     messageTruncated: false, traceTruncated: false, sealedCheckpointId: null }).case;
   const entry = (id, parentId, message) => ({ type: 'message', id, parentId, message });

@@ -8,7 +8,7 @@ function setup(t, mode = 'valid') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-recommend-api-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') }, store = createWikiStore(scope);
   const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'Synthetic room', messageId: 'marked', agentId: mode === 'other' ? 'role-family-deepseek' : 'role-family-gpt' },
-    role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false, ...(mode === 'scene' ? { sealedCheckpointId: 'sealed-synthetic' } : {}) }).case;
+    role: mode === 'other' ? 'role-family-deepseek' : 'role-family-gpt', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false, ...(mode === 'scene' ? { sealedCheckpointId: 'sealed-synthetic' } : {}) }).case;
   const packet = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', origin: 'mark', source: c.source, frozenAt: '2026-11-06T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' },
     markedStep: 1, markedMessage: 'reply', actual: 'wrong', expected: 'right', context: { systemPrompt: 'system', priorSessionEntries: [], trigger: { message: { role: 'user', content: 'solve this' } } },
     steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] }, toolResults: [] }] };

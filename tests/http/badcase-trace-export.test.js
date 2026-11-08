@@ -7,7 +7,7 @@ function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-export-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const options = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source'), host: '127.0.0.1', port: 4313 };
   const store = createWikiStore(options), c = store.addMarkedCase({ source: { projectId: 'p', conversationId: 'room', conversationTitle: 'room', messageId: 'message', agentId: 'gpt' },
-    role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', sealedCheckpointId: null, traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+    role: 'gpt', actual: 'wrong', expected: 'right', message: 'reply', sealedCheckpointId: null, traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
   const packet = buildWikiTraceBundle({ source: c.source, origin: 'mark', frozenAt: '2026-11-05T00:00:00Z', message: { content: 'reply ``` injection <script>literal</script>' },
     checkpoint: { checkpointId: 'cp', files: { 'only-name.txt': { type: 'file', size: 42, content: 'NEVER INCLUDE FILE BYTES' } }, skipped: [{ path: 'skip' }] },
     snapshot: { archiveContext: { sections: [{ sectionKey: 'harness_prompt', content: 'saved system' }] } } });
