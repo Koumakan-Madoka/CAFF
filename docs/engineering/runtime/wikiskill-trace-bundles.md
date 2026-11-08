@@ -4,7 +4,7 @@
 
 轨迹包是 Wiki 拥有的证据，不是聊天 Inspector 的展示投影，也不是现场可回放、已复现或可判分的证明。现有 checkpoint 封存记录仍保留自己的完整性/可回放限制。
 
-本契约描述截至 2026-11-08 的代码行为，不代表已部署或已获最终接受。覆盖标记、不可覆盖轨迹、授权历史回填、脱水、三类模式标签与待归纳新模式的一次性关联、按模式首次分组、Badcase 页、离线预检，以及无现场 run 的单次执行；正式计划/判分见[评分契约](wikiskill-scoring.md)。历史重分组保留原确认和冻结 trace 组别，新题另走首次分组，不重新随机旧题。新标记的现场元数据来自 schemaVersion 2 检查点，旧缺失如实披露；不能把展示、导出、元数据齐全或合成测试当成可回放、已复现或已入库的证明。
+本契约描述截至 2026-11-08 的代码行为，不代表已部署或已获最终接受。覆盖标记、不可覆盖轨迹、授权历史回填、脱水、三类模式标签、模型类别提议与整组确认、训练成员限定归纳及审核后自动关联、按模式首次分组、Badcase 页、离线预检，以及无现场 run 的单次执行；正式计划/判分见[评分契约](wikiskill-scoring.md)。历史重分组保留原确认和冻结 trace 组别，新题另走首次分组，不重新随机旧题。新标记的现场元数据来自 schemaVersion 2 检查点，旧缺失如实披露；不能把展示、导出、元数据齐全或合成测试当成可回放、已复现或已入库的证明。
 
 ## 数据流与签名
 
@@ -57,8 +57,11 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 - 九步：标记、现场、脱水、归类、分组、断言、回放检查、原版复现、入库。约 1680px 最大内容区；左列表支持搜索及「等你、系统、已入库、到此为止」筛选，右侧选中详情在管理页内层滚动容器中固定并独立滚动；≤980px 上下排列。保留 #4、#10、#14 旧题来源身份，不把样例仓库当原现场；非 GPT 只报告。
 - 分组区先选模式，再显示训练/门槛/测试/不参与四栏；实线为已生效，虚线为新提议，两种确认入口并入看板。全部模式只给数量和候选可评测性，不混排各模式用例；模式选择同时过滤列表。待归纳新模式按名称列出并标「待归纳」；还有预分类建议新模式但标签未确认的用例时，提示「建议同类用例的标签都确认后再分组」，只提示、不额外阻止确认。旧对照表改为默认折叠的审计信息。
 - 「确认模式标签」面板说明：决定这条用例在哪个模式下分组，以及评测时算哪个模式的目标用例，确认后不能改。面板内显示预分类建议、把握和理由；建议新模式默认选待归纳，建议已有模式默认选该模式。标签、分组和关联均使用面板内具名的后果说明，再点「确认并锁定」，不弹浏览器对话框；不增加归纳成员、不改既有组别等边界放在默认折叠说明中。锁定后显示名称及当前评测角色。
-- Badcase 页对待预分类用例提供「预分类（只提议标签）」并列明本次一起处理的题号；沿用知识库 `/api/wikiskill/induct` 入口与整批待处理规则，不只处理选中题，不改模型提示词或输出格式，知识库入口仍保留。页面每次写入后重读完整状态，清除旧确认说明，不复用过期 labelHash。
-- 待归纳组的用例全部分组后显示关联下一步。无可关联的已通过模式时，提示去知识库用训练题归纳并审核；有模式时可显式选择已有模式。默认空选「选择已通过的模式…」，未选禁用「关联…」；与本组训练用例有 caseIds 交集的已通过模式排在前面并标注「用本组训练用例归纳出」，仅唯一一条时预选，仍须手动确认关联。推荐名称和标注另在下拉框下方完整换行显示。关联后列出门槛/测试目标复现题，并明确归属已确定不等于可评测，仍须冻结断言、通过回放检查等就绪条件；不新增就绪豁免。
+- 分组区上方按待处理提议显示类别卡：名字、范围可改，成员可勾选并显示理由；不可确认的成员禁用并显示原因。说明范围用于分组展示、判断新用例归属和类别提议，归纳与候选不读；类别名将成为正式模式标题，名字和范围不要写某条用例的具体答案或字数。建议加入已有类别时身份只读，不借提议改写已冻结名字/范围。可取消部分成员回到单条标签面板，或「不采纳，逐条单独处理」。单条加入显示已有类别范围和成员，手动新建必填名字与范围；加入已关联类别会具名说明直接在目标正式模式里分组和评测。
+- 待预分类用例的标签面板和知识库原入口均提供「预分类并提议类别」，沿用 `/api/wikiskill/induct` 整批规则，先预分类再单独调用模型提议类别。已预分类且没有待处理提议的合资格用例，在类别区和标签面板提供「提议新类别」，列明整批编号。**生产上已预分类的用例（例如 #21–#24），应在另获批准部署后走「提议新类别」**；本次交付不读取、确认或更改生产标签。
+- 类别成员全部分组且有训练成员时，分组区显示「归纳模式内容（只提议）」：明确给模型的训练编号、不给的门槛/测试编号，以及不含范围说明。四项草稿均可改，准则按 Unicode 码点显示 300 字上限；通过前在面板内展开具名确认，审核通过后自动转正并关联，知识库同步显示。「驳回并重新归纳」先驳回并完整重读，再发起新归纳；第一步失败或结果未知则停止，不自动补发。训练成员漂移或已手动关联的草稿不可通过，但仍可驳回。
+- #185 手动关联保留为次要入口，默认折叠到「其他操作：这一类其实是已有模式」。下拉框默认空选「选择已通过的模式…」，所有情况都须主动选择，未选禁用「关联…」；与本组训练用例有 caseIds 交集的已通过模式排前并标注来源，下方换行显示完整推荐。自动或手动关联后均列出门槛/测试目标复现题，并明确「目标题已确定 ≠ 可评测」，仍须冻结断言、通过回放检查等就绪条件；不新增就绪豁免。
+- 类别、标签、分组和审核都在面板内展开后果说明，不使用浏览器对话框；编辑内容或勾选变化使已展开确认失效。每次写入后重新 GET 完整状态并清除旧确认，不复用过期 labelHash；只读、忙碌或结果未知时禁用写入，须明确刷新核对。原型的演示进度和重新演示不实现。
 - 层级说明默认一行、可展开；trace/run 漏斗并排，断言、预检、复现及入库计数来自 `pipelineStates`，不把旧字面评测或 replay 登记当作通过。断言区显示冻结版本/模型/依据，run 非 reply 明确不兼容；无缓存待预检，无已判分结果待复现，有原始 run 回复但无匹配正式评分仅显示「待判分」。
 - 原版复现仅取最近一个匹配当前冻结断言和执行身份的评分 v2 批次，不拼接：有效数为 pass+fail，fail 严格超过一半才算已复现；平票、无效、错误、未知及原始未判分回复均不证明复现。入库还须有效分组、冻结兼容断言及预检 supported。独立操作方诊断不冒充正式门槛记录。
 - 每条的回填状态来自 `case.traceBundle` 引用和缺失原因，提供白话缺失说明（原机器码保留在 title 和包内）。没有批准按钮；读取页面不会重跑回填、模型或任何写接口。
@@ -148,7 +151,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 
 `projectWikiPatternLabels` 投影标签及确认状态，只有已确认标签参与首次分组。标签有三类：已通过模式、具名待归纳新模式（新建或加入）、不归入任何模式（旧文案「未归入现有模式」）。旧门槛/测试题也可补标签（#1/#4/#10/#14）；已有标签保持锁定，不因新文案改变内容。标签决定分组和评测模式身份，不增加归纳成员、不改既有组别。
 
-- `POST /api/wikiskill/pattern-label-confirm` 闭合字段为 `confirmed,caseId,entryId,pendingPattern,labelHash,expectedRevision`：必须二选一传 `entryId` 或 `pendingPattern`。`entryId` 为已通过模式 ID 或 null（不归入任何模式）；`pendingPattern` 只接受 `{id}` 加入或 `{name}` 新建。名称去首尾空白后为 1–40 个 Unicode 码点，不与已有待归纳名称或已通过模式的去首尾空白标题重名。新建待归纳记录和确认标签在 writer-lock 内同一快照发布，不留下只有名称没有标签的半成品。
+- `POST /api/wikiskill/pattern-label-confirm` 闭合字段为 `confirmed,caseId,entryId,pendingPattern,labelHash,expectedRevision`：必须二选一传 `entryId` 或 `pendingPattern`。`entryId` 为已通过模式 ID 或 null（不归入任何模式）；`pendingPattern` 只接受 `{id}` 加入或 `{name,scope}` 新建。名称去首尾空白后为 1–40 个 Unicode 码点、范围为 1–120 个码点；名称不与已有待归纳名称或已通过模式的去首尾空白标题重名。新建待归纳记录和确认标签在 writer-lock 内同一快照发布，不留下只有名称没有标签的半成品。#185 没有 scope 的旧类别仍可读取，缺失字段不补写、不改变旧 hash 输入。
 - 标签确认绑定当前 labelHash/revision，锁定后相同内容及原 labelHash 重试幂等，修改拒绝 `wiki_pattern_label_frozen`；新请求陈旧 hash/revision 分别拒绝 `wiki_pattern_label_stale/wiki_revision_conflict`。选项变化（含新建、关联）会使未确认题的 labelHash 失效，页面须重读状态。`POST /api/wikiskill/initial-split-confirm` 闭合字段仍为 `confirmed,proposalHash,patternKey,expectedRevision`。所有确认均要求明确 `confirmed=true`、local-admin 的 Host/loopback/Origin/CSRF；HTTP 不接受种子、组别或模型答案。
 - GET 只提议：仅活动 GPT、`split=null`、模式已确认者参与。有现场进入 trace；无现场必须已有冻结 single/run 决定且原版在同轨迹/决定下至少一次有效单次输出。参考、原版无有效输出、删除、旧题来源、非 GPT 和标签未确认者排除。已分组的活动 GPT 非旧题若仍缺标签，首次分组全局拒绝 `wiki_initial_split_labels_required`，列出题号，避免漏算配额；#4/#10/#14 和非 GPT 不构成此阻塞。
 - `planWikiInitialSplit` 按确认模式键分别计算固定种子、用例 ID SHA-256 排序及整数配额缺口：已通过模式用 entryId；未关联待归纳模式用自己的 id，各自独立配额；不归入任何模式共用 `unclassified`。关联后用目标 entryId，与同模式既有题合并计数，只给尚未分组的题补配额。trace 训练:门槛:测试=2:1:1，run 训练:门槛=2:1，同缺按训练优先；各模式门槛 run 不超过 trace，测试只收 trace。已有组别计入配额但一律不动。没有新记录的旧状态（含旧 null 标签）保持原 labelHash 输入及首次分组提议 hash。2026-11-05 的旧重分组是全局分层，不按模式；下节是历史协议，不回算或改写。
@@ -157,9 +160,30 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 ### 待归纳新模式的一次性关联与旧入口冻结
 
 - 新增可选 `pendingPatterns` 与 `pendingPatternLinks` 数组；新标签另带 `pendingPatternId`，不改变旧 entry/null 标签的字段或字节。`POST /api/wikiskill/pending-pattern-link` 闭合字段为 `confirmed,pendingPatternId,entryId,expectedRevision`，使用同一本地管理/CSRF 守卫。writer-lock 内核对 revision、待归纳记录和当前已通过模式；不存在或未通过的目标拒绝。一份关联原子发布且不可改，相同关联重复提交幂等，换目标拒绝 `wiki_pending_pattern_link_frozen`；允许多个待归纳模式关联到同一已通过模式。
-- `resolveWikiPatternLabel` 在投影层解析：关联前 entryId=null、patternKey=待归纳 id，不算任何模式的目标复现题，也不因尚未关联而报错；关联后 entryId/patternKey 均为目标模式 ID。首次分组计数和评测套件共用这一解析。不批量改标签、已有组别、首次分组提议/确认、版本成员或历史记录。审核通过本身不自动建立关联，归纳仍只使用符合原规则的训练题。
+- `resolveWikiPatternLabel` 在投影层解析：关联前 entryId=null、patternKey=待归纳 id，不算任何模式的目标复现题，也不因尚未关联而报错；关联后 entryId/patternKey 均为目标模式 ID。首次分组计数和评测套件共用这一解析。不批量改标签、已有组别、首次分组提议/确认、版本成员或历史记录。来源类别的限定归纳草稿经用户审核通过时自动建立同种关联（见下节）；普通无类别来源草稿的审核不猜测或自动建立类别关联。门槛和测试成员不因关联变成归纳材料。
 - 有页面标签的非训练题在 `caseStateView` 为 `classification-confirmed`，memberships 用解析后的 entryId；未关联时为空并说明待归纳名称。知识库「待你处理」不再列作归类待确认，用例页不显示旧手动归入/接受归类按钮。服务端 `assignCase`（membership 路由）和 `resolveSuggestion` 对这类题拒绝 `wiki_pattern_label_frozen`，不写记录，不让旧入口盖过页面锁定。
 - `wikiConfirmedClassification` 同时遇到页面标签与旧 classification 时，解析 entryId 不同则拒绝 `wiki_classification_confirmation_required`；相同才保留旧来源和时间。只有旧 classification 的题沿用原确认；不迁移旧数据。评测目标与计划门禁见[评分契约](wikiskill-scoring.md#模式身份与目标复现题)。
+
+## 类别身份提议与训练限定归纳
+
+类别身份（名字、范围、成员）与模式内容（失败模式、表现、原因推测、准则）分离。前者可参考尚未分组的全部合资格用例，由用户确认；后者只读已分组的训练成员，由用户审核。范围说明仅用于类别展示/分组、判断新用例归属和生成类别提议，**不进入限定归纳输入，也不进入候选生成**；候选仍只追加已审核模式准则（≤300 字）与已审核经验，不追加范围或四项完整内容。
+
+### 类别提议与整组确认
+
+- 资格由 `wikiCategoryEligibleCases` 权威计算：活动 `marked-badcase`、`role=GPT` 且 `source.agentId=role-family-gpt`、`split=null`、标签未确认、预分类 `kind=new`。每批最多20条，服务端选择整批，不允许 HTTP 自选子集或提交模型答案。独立调用可以替换有重叠成员的旧待处理提议，页面普通入口只列尚无待处理提议的题。
+- 两个触发：`POST /api/wikiskill/induct` 在预分类之后接独立类别模型调用；`POST /api/wikiskill/category-propose` 对已预分类题单独提议。两者 HTTP 字段均闭合为 `confirmed,expectedRevision`，要求 `confirmed=true`、当前 revision 和 local-admin Host/loopback/Origin/CSRF。联合流程先在副本校验预分类与类别输出，全部通过才在一个快照写入；类别输出无效时也不留下本次预分类半成品，不改已有预分类记录字节。沿用预分类运行时配置、模型与隔离执行方式，不额外发现凭据。
+- 模型只提议身份：一个或多个 `{name,scope,members:[{caseId,reason}]}`，可额外用 `pendingPatternId` 建议加入已有类别。名字1–40、范围1–120个 Unicode 码点；每条理由非空、≤2048 UTF-8字节。所有入选 caseId 恰出现一次，不遗漏、重复或编造，字段封闭；新名字不得重名，加入已有类别必须沿用其名字及已有范围（旧无范围类别可给建议范围但不改旧记录）。任何输出不合格整批拒绝，不确认标签、不生成模式内容。
+- 新可选 `categoryProposals` 保存模型、输入/调用证明、时间/revision、身份及独立 hash；`categoryProposalResolutions` 另存 `accepted|rejected|superseded` 的处理记录和 hash。新提议与旧 pending 提议有成员交集时，追加 superseded 处理，绑定替代提议 hash；不覆盖原提议，因此同一成员最多一个未处理提议。GET 的 `categoryProposalViews` 投影状态、各成员 `canConfirm/unavailableReason`，不修改历史；已单条确认的成员不能再整组确认。
+- `POST /api/wikiskill/category-confirm` 闭合字段为 `confirmed,proposalHash,expectedRevision,name,scope,members`，members 每项只含 `caseId,labelHash`；仍须上述管理/CSRF/明确确认门禁。writer-lock 内在同一写前投影核对提议未处理、revision、非空成员子集、各成员资格及 labelHash、名字/范围/重名，再一次发布类别、全部勾选标签和 accepted 处理；任一失败全部不写。新类别复用 `pendingPatterns`，增加 scope、`sourceProposalHash`；建议加入已有类别不改其冻结身份。未勾选成员仍未确认，可单条处理。
+- `POST /api/wikiskill/category-reject` 闭合为 `confirmed,proposalHash,expectedRevision`，只追加 rejected 处理，不改标签。整组确认/驳回均绑定原提议 hash，已处理提议拒绝重复处理；不是覆盖提议或解锁标签的入口。
+
+### 限定归纳与审核转正
+
+- `POST /api/wikiskill/category-induct` 闭合为 `confirmed,pendingPatternId,expectedRevision`，沿用上述管理/CSRF/明确确认门禁。规划和存储均检查：类别存在且未关联、活动 GPT 成员全部已分组、有1–20条训练成员、最新版本没有该类别的待审核草稿。不自动分组或补齐材料。
+- 模型输入白名单严格为 `{phase:'category-induction',name,cases}`；cases 正好是本类别训练成员，每条只有 `id,actual,expected,message,traceExcerpt`。不含范围、门槛/测试成员的任何内容、其他用例、已有模式或评测结果；类别名字只作标题而非额外事实。模型输出恰含一份四项内容：`failureMode,symptoms,rootCauseHypothesis,guideline`，均非空字符串，准则≤300个 Unicode 码点，原因仅为假设。超限或额外字段整批拒绝。
+- 新草稿追加到 `versions`（kind=`category-induction`），title 固定为类别名，caseIds 固定为训练成员，记录 `sourcePendingPatternId/categoryReviewRequired` 和独立 inductionRun；已通过条目的字节不改，归纳时不重写原版本。全局「用模型归纳新用例」在规划和 store 校验两处跳过未关联类别成员，它们的内容只能走限定归纳，避免重复提议模式；其他训练题沿用原流程。
+- Badcase 分组区与知识库都调用现有 `/api/wikiskill/review`；允许修改四项内容（准则仍≤300字）、驳回或通过，不能改类别草稿的标题或成员。仅能审核最新版本中的草稿。通过前重核类别未关联与当前训练集合等于草稿 caseIds；训练成员漂移、类别已手动关联或旧版本均拒绝通过。
+- 用户明确通过时在 **同一快照** 完成三件事：草稿置 approved、训练成员记为该模式的 model-confirmed 成员、追加同种不可改 `pendingPatternLinks` 关联；`categoryReviewRequired=false`。门槛和测试成员只经解析成为该模式的目标复现题，不加入训练 caseIds。驳回不关联，可重新归纳；已有手动关联或成员变化不妨碍驳回过时草稿。已通过模式保持原冻结/修订规则，不开放自动修改。
 
 ## 删除与分层重分组（历史协议，不用于新题首次分组）
 
@@ -177,10 +201,10 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 ## 不支持与交付边界
 
 - 不录制供应商原始请求字节；保留的是当时归档的语义上下文和 session 消息。旧系统提示词只有展示版时不还原路径或被遮盖值；历史输出、耗时或现场缺失不补猜。
-- 不做前缀一致性检验、未分类自动聚类、多轮自动迭代，也不修改生产全局提示词。新标记后不自动调用推荐模型、自动确认切点、自动分组或自动启动回放。
+- 不做前缀一致性检验、多轮自动迭代，也不修改生产全局提示词。类别聚合只在用户明确发起后由模型提议，不自动确认类别或标签、不自动审核模式内容；用户审核通过后的原子转正/关联不是绕过人工审核。新标记后不自动调用推荐模型、自动确认切点、自动分组或自动启动回放。
 - 无现场 run 每次尝试只请求一次模型，不执行工具；正式执行交替收集两版各10次有效输出并接评分 v2。有现场 run 执行器未实现，必须拒绝；有现场的题走 trace，Git 元数据完整或 checkpoint 存在均不等于可回放。
-- 不做训练组 run 初筛、不重新校准或新增裁判/JEV、不做轨迹嵌文件的统一证据面改造；不把旧字面判分当成新版证据。测试拒绝 run，门槛分 trace/run 报告但不改公式。
-- 不自动关联、自动命名或聚类待归纳模式；不因审核通过自动改模式身份。已确认的「不归入任何模式」（包括旧 null 标签）不能改成待归纳新模式，不提供解锁/重选入口。关联不提供撤销或改目标；不新增门槛组防误伤对照题的补充入口，留待后续 Goal。
+- 不做训练组初筛（含 run）、不重新校准或新增裁判/JEV、不做轨迹嵌文件的统一证据面改造；不把旧字面判分当成新版证据。测试拒绝 run，门槛分 trace/run 报告但不改公式。
+- 不凭预分类、类别提议或普通草稿审核猜测关联；只有来源类别限定草稿经用户通过，才原子转正并关联。手动关联是次要入口，不能撤销或换目标。已确认的「不归入任何模式」（包括旧 null 标签）不能改成待归纳类别，不提供解锁/重选入口；不新增门槛组防误伤对照题的补充入口，留待后续 Goal。
 - **N5 后续项**：断言冻结后先跑原版3–5次、由多数不通过决定能否正式评测，尚未实现，留待后续独立 Goal。冻结断言不会自动判分，离线预检不会启动回放；当前「已复现」只投影已有正式评分结果，不能承诺冻结后系统会自动判分。
 - 只验证隔离副本。生产轨迹包导入、删除／分组生效、推送、合并、部署、真实上线复测都须另获批准，见[发布审批](wikiskill-release.md)。用户最终接受与规划者代码评审是不同关卡，不能互相替代。
 
@@ -194,4 +218,6 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 
 秘密扫描只报告范围、方法和命中数，不保存原值；至少覆盖房间交付相对集成基线的文件及新增 Git 历史对象，另核对已脱敏轨迹／导出证据。已知值清单仅内存使用，不因扫描扩大生产读取授权。B6 的 DeepSeek 隔离配置副本在收尾删除并记录不存在，不触碰生产 `models.json`／GPT 登录。停止已核实 PID、启动命令与隔离路径归属的本房间预览进程，保留数据、截图、hash 和回放结果供评审；不按端口猜测杀进程。原始检查日志及清理回执只留忽略临时目录；Goal evidence 记录固定 SHA、检查摘要、独立审查及最终用户接受。
 
-待归纳模式回归另见 `badcase-wiki-pending-patterns.test.js`、`badcase-wiki-initial-split.test.js`、`badcase-wiki-pipeline.test.js`、controller 与两个页面测试：覆盖原子新建/加入/锁定、名称/hash/revision/权限拒绝、独立配额和旧 hash、关联前后目标题及计划门禁、冻结旧入口和冲突拒绝。验证只用合成数据与假预分类/归纳模型；关键标签、分组、关联及评测角色在隔离实例的 1440/1920 宽度截图。独立 `tests/ui/wikiskill-layout.test.js` 不在默认 fast 入口，Windows 另跑真实 Edge；WSL 无浏览器不运行它，不把该项算入 Linux 已验证范围。
+待归纳模式回归另见 `badcase-wiki-pending-patterns.test.js`、`badcase-wiki-initial-split.test.js`、`badcase-wiki-pipeline.test.js`、controller 与两个页面测试：覆盖原子新建/加入/锁定、名称/hash/revision/权限拒绝、独立配额和旧 hash、关联前后目标题及计划门禁、冻结旧入口和冲突拒绝。验证只用合成数据与假预分类/归纳模型；关键标签、分组、关联及评测角色在隔离实例的 1440/1920 宽度截图。类别回归见 `tests/runtime/badcase-wiki-category-{proposals,generation,induction,induction-generation}.test.js`、`tests/http/badcase-wiki-category-{proposals,induction}.test.js` 与两个页面测试：覆盖两触发、封闭输出/取代不可改、整组原子性、训练输入白名单、审核原子转正及目标题、全局排除和候选不读范围；均使用假模型，不外发真实请求。部署后的真实生产操作另行批准。
+
+独立 `tests/ui/wikiskill-layout.test.js` 不在默认 fast 入口，Windows 另跑真实 Edge；WSL 无浏览器不运行它，不把该项算入 Linux 已验证范围。
