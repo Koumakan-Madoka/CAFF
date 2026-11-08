@@ -84,7 +84,7 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
       const left = area.left + parseFloat(css.paddingLeft), right = area.left + main.clientWidth - parseFloat(css.paddingRight);
       return { outer: box('.management-shell'), inner, available: right - left, leftGap: inner.left - left, rightGap: right - inner.right, detail: box('.bc-detail'), overflow: main.scrollWidth > main.clientWidth + 1 };
     });
-    if (evidence) await page.screenshot({ path: path.join(evidence, `${width}-badcases.png`) });
+    if (evidence) await page.screenshot({ animations: 'disabled', path: path.join(evidence, `${width}-badcases.png`) });
     assert.equal(metrics.outer.width, width, 'WikiSkill outer shell must fill the viewport');
     assert.ok(Math.abs(metrics.inner.width - Math.min(1680, metrics.available)) <= 1, JSON.stringify(metrics));
     assert.ok(Math.abs(metrics.leftGap - metrics.rightGap) <= 1, 'content must be centered within the main area (not including the rail)');
@@ -103,7 +103,7 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
     assert.equal(sticky.position, 'sticky'); assert.equal(sticky.body, 0);
     assert.ok(sticky.to > sticky.from, 'inner container must scroll');
     assert.ok(Math.abs(sticky.after - sticky.before) <= 1, JSON.stringify(sticky));
-    if (evidence) await page.screenshot({ path: path.join(evidence, `${width}-badcases-detail.png`) });
+    if (evidence) await page.screenshot({ animations: 'disabled', path: path.join(evidence, `${width}-badcases-detail.png`) });
     await page.locator('[data-trace-case]').evaluate(el => { el.open = true; });
     await page.locator('[data-trace-section]').first().waitFor();
     const reach = await page.locator('[data-bc-detail]').evaluate(d => { d.scrollTop = d.scrollHeight; return { top: d.scrollTop, height: d.clientHeight, scrollHeight: d.scrollHeight }; });
@@ -120,7 +120,7 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
       });
       assert.equal(geometry.contained, true, tab); assert.equal(geometry.overflow, false, tab);
       assert.ok(geometry.panels.length > 0 && geometry.panels.every(p => p.width > 0 && p.inside), JSON.stringify({ tab, geometry }));
-      if (evidence) await page.screenshot({ path: path.join(evidence, `${width}-${tab}.png`) });
+      if (evidence) await page.screenshot({ animations: 'disabled', path: path.join(evidence, `${width}-${tab}.png`) });
       tabs.push({ tab, ...geometry });
     }
     // Other real management routes keep their existing shared cap.
