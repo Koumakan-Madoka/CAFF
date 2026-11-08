@@ -2,6 +2,7 @@
 // Classification approval is separate from learning: no held-out trace/prose is
 // added to a wiki version, and non-GPT sources cannot affect GPT conclusions.
 import { wikiRoundStage } from './wiki-suite';
+import { resolveWikiPatternLabel } from './wiki-pattern-label';
 const fail = (code: string) => Object.assign(Error(code), { code });
 export function wikiSourceFamily(source: any): string | null {
   const agent = source?.source?.agentId;
@@ -17,8 +18,10 @@ export function wikiConfirmedClassification(state: any, source: any): any {
   const label = confirmedPatternLabel(state, source.id);
   // A page label is manual confirmation, not membership in the learned entry.
   // Prefer existing classification provenance so old rows stay byte-compatible.
-  const saved = (state.classifications || []).find((c: any) => c.caseId === source.id)
-    || (label ? { caseId: source.id, entryId: label.entryId, source: 'manual', confirmedAt: label.confirmedAt } : null);
+  const manual = label ? { caseId: source.id, entryId: resolveWikiPatternLabel(state, label).entryId, source: 'manual', confirmedAt: label.confirmedAt } : null;
+  // A pending pattern is explicitly confirmed but not yet a target. Its link
+  // resolves only at projection time, without modifying old classifications.
+  const saved = label?.pendingPatternId ? manual : (state.classifications || []).find((c: any) => c.caseId === source.id) || manual;
   if (!saved || !['manual', 'model-confirmed'].includes(saved.source)
     || typeof saved.confirmedAt !== 'string' || !Number.isFinite(Date.parse(saved.confirmedAt))) throw fail('wiki_classification_confirmation_required');
   if (saved.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === saved.entryId && e.status === 'approved')) throw fail('wiki_classification_confirmation_required');

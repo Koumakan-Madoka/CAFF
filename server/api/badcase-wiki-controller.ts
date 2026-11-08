@@ -50,6 +50,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_migration_location_invalid: 409, wiki_data_dir_invalid: 503,
     wiki_no_pending_cases: 409, wiki_not_pending: 409,
     wiki_pattern_label_frozen: 409, wiki_pattern_label_stale: 409,
+    wiki_pending_pattern_name_invalid: 422, wiki_pending_pattern_name_conflict: 409,
+    wiki_pending_pattern_not_found: 404, wiki_pending_pattern_link_frozen: 409,
     wiki_initial_split_stale: 409, wiki_initial_split_empty: 409, wiki_initial_split_labels_required: 409, wiki_regroup_quota_invalid: 409,
     wiki_experience_invalid: 422, wiki_experience_not_found: 404, wiki_experience_reviewed: 409,
     wiki_experience_conflict: 409, wiki_experience_review_required: 409,
@@ -68,7 +70,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     const recommendMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/dehydration\/recommend$/);
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|initial-split-confirm))?$/)
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : recommendMatch ? [pathname, 'dehydration-recommend'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
@@ -90,7 +92,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'draft-rubric': ['confirmed', 'caseId', 'expectedRevision'],
         'confirm-rubric': ['confirmed', 'rubricId', 'hash', 'expectedRevision'],
         'dehydration-confirm': ['confirmed', 'caseId', 'traceHash', 'recommendationHash', 'kind', 'cutStep', 'expectedRevision'],
-        'pattern-label-confirm': ['confirmed', 'caseId', 'entryId', 'labelHash', 'expectedRevision'],
+        'pattern-label-confirm': ['confirmed', 'caseId', 'entryId', 'pendingPattern', 'labelHash', 'expectedRevision'],
+        'pending-pattern-link': ['confirmed', 'pendingPatternId', 'entryId', 'expectedRevision'],
         'initial-split-confirm': ['confirmed', 'proposalHash', 'patternKey', 'expectedRevision'],
         'dehydration-recommend': ['confirmed', 'expectedRevision', 'traceHash', 'retryOf'],
       };
@@ -169,6 +172,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       }
       if (match[1] === 'dehydration-confirm') store.confirmDehydration(input);
       if (match[1] === 'pattern-label-confirm') store.confirmPatternLabel(input);
+      if (match[1] === 'pending-pattern-link') store.linkPendingPattern(input);
       if (match[1] === 'initial-split-confirm') store.confirmInitialSplit(input);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'comparison-review') store.reviewComparison(input);

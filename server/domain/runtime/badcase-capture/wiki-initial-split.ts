@@ -6,6 +6,7 @@ import { WIKI_REGROUP_SEED } from './wiki-regroup';
 import { assignPatternQuotaSplit } from './wiki-split';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 import { wikiGoalCaseNumber, wikiDisplayCases } from './wiki-suite';
+import { resolveWikiPatternLabel, wikiPendingPatternOptions } from './wiki-pattern-label';
 const hash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const emptyCounts = () => ({ trace: { train: 0, gate: 0, test: 0 }, run: { train: 0, gate: 0, test: 0 } });
 export function projectWikiPatternLabels(state: any) {
@@ -20,11 +21,14 @@ export function projectWikiPatternLabels(state: any) {
       : entries.filter((e: any) => e.caseIds.includes(c.id)).map((e: any) => e.id)) : [];
     const ids = [...new Set(memberships)] as string[];
     const confirmed = Boolean(explicit || classification || ids.length === 1);
-    const entryId = explicit ? explicit.entryId : classification ? classification.entryId : ids.length === 1 ? ids[0] : null;
+    const resolved = resolveWikiPatternLabel(state, explicit || { entryId: classification ? classification.entryId : ids.length === 1 ? ids[0] : null });
     const options = entries.map((e: any) => ({ entryId: e.id, title: e.title })).sort((a: any, b: any) => a.entryId.localeCompare(b.entryId));
-    return { caseId: c.id, confirmed, entryId, patternKey: confirmed ? entryId ?? 'unclassified' : null,
+    const pendingOptions = wikiPendingPatternOptions(state);
+    // Keep old hash inputs byte-identical when there are no new records. New
+    // choices and one-time links must invalidate consent rendered before them.
+    return { caseId: c.id, confirmed, ...resolved, patternKey: confirmed ? resolved.patternKey : null,
       source: explicit ? 'badcase-page' : classification ? classification.source : ids.length === 1 ? 'approved-membership' : null,
-      labelHash: hash({ case: c, options }), options };
+      labelHash: hash({ case: c, options, ...(pendingOptions.length ? { pendingOptions } : {}) }), options, pendingOptions };
   }).sort((a: any, b: any) => a.caseId.localeCompare(b.caseId));
 }
 export function planWikiInitialSplit(state: any, accounting: any[]) {
