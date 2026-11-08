@@ -164,6 +164,9 @@ test('a unique approved pattern derived from group training cases is first, anno
   ]);
   assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived', 'unrelated', 'heldout-only']);
   assert.equal(h.select().options[1].textContent, '<b>Derived pattern</b>（用本组训练用例归纳出）'); assert.equal(h.select().querySelector('b'), null);
+  const note = h.root.querySelector('[data-pending-link-derived]');
+  assert.ok(note, 'training-derived recommendation must remain readable outside the narrow native select');
+  assert.equal(note.textContent, '「<b>Derived pattern</b>」（用本组训练用例归纳出）'); assert.equal(note.querySelector('b'), null);
   assert.equal(h.select().value, 'derived'); assert.equal(h.button().disabled, false);
   h.panel.setWritable(false); assert.equal(h.button().disabled, true); h.panel.setWritable(true); assert.equal(h.button().disabled, false);
   h.button().click(); assert.match(h.root.querySelector('[data-link-consent]').textContent, /Derived pattern/);
@@ -178,8 +181,10 @@ test('multiple training-derived approved patterns sort first without selecting a
   assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived-1', 'derived-2', 'heldout-only']);
   assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
   assert.equal([...h.select().options].filter(o => o.textContent.includes('（用本组训练用例归纳出）')).length, 2);
+  assert.match(h.root.querySelector('[data-pending-link-derived]').textContent, /Derived 1.*Derived 2/s);
   h.data.versions[0].entries = h.data.versions[0].entries.slice(0, 1); h.panel.render(h.data);
   assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true); assert.doesNotMatch(h.select().textContent, /用本组训练用例归纳出/);
+  assert.equal(h.root.querySelector('[data-pending-link-derived]'), null);
 });
 
 test('Badcase preclassification button names the whole pending batch and is read-only locked', t => {
