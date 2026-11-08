@@ -3,7 +3,7 @@
   const shared = window.CaffShared || (window.CaffShared = {});
   // Loading is read-only. Only explicit guarded actions request a recommendation
   // or freeze a decision; no automatic calls, retries, replay, grading or regrouping.
-  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, confirm: confirmAction = message => window.confirm(message) }) {
+  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory, confirm: confirmAction = message => window.confirm(message) }) {
     const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const words = q => String(q || '').slice(0, 512).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 30);
     const matches = (v, ts) => ts.every(t => String(v).toLowerCase().includes(t));
@@ -43,7 +43,8 @@
     const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
     let detailSignature = null, splitConsent = null, linkConsent = null, panelSerial = 0;
     const labelForms = new Map(), labelConsents = new Map(), labelErrors = new Map();
-    let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify].some(fn => typeof fn === 'function');
+    const categoryForms = new Map(), categoryConsents = new Map(), categoryErrors = new Map(), draftForms = new Map(), draftConsents = new Map(), draftErrors = new Map();
+    let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory].some(fn => typeof fn === 'function');
     const dehydration = c => (D.dehydrations || []).findLast(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
     const caseRuns = c => (D.runReplays || []).filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
@@ -55,11 +56,12 @@
       const initial = (D.initialSplitConfirmations || []).flatMap(r => r.proposal.rows.filter(row => row.patternKey === r.patternKey && row.proposedSplit)).find(r => r.caseId === c.id);
       return initial ? { ...initial, confirmedSplit: initial.proposedSplit } : activeGrouping()?.rows?.find(r => r.caseId === c.id && !r.reason && r.confirmedSplit);
     };
-    const patternLabel = c => (D.casePatterns || []).find(r => r.caseId === c.id);
+    const patternLabel = c => (D.casePatterns || []).find(r => r.caseId === c?.id);
     const splitProposal = c => D.initialSplitProposal?.rows.find(r => r.caseId === c.id && r.proposedSplit);
     root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec bc-panel"><h2>从 badcase 到测试用例</h2>
       <div class="howline" aria-label="trace 级还是 run 级怎么定"><span class="how-step">系统自动：这一轮有现场吗</span><span>→ 有：<b>trace 级</b></span><span>｜没有：DeepSeek 推荐 → <b>你决定</b></span><span>→ 单步型：<b>run 级</b></span><span>贯穿型 / 说不清：只作参考</span></div>
       <details><summary class="hint">展开说明</summary><p class="hint">现场在这一轮开始前自动封存。有现场一律走 trace，从这一轮开头执行到自然结束；有现场的 run 执行器尚未实现。无现场经 DeepSeek 推荐、你确认后冻结判断和切点，run 在切点上只调一次模型，不执行工具。原版始终无有效回复的是无效测试用例，不算通过也不算不通过。测试只收 trace；门槛 run 不超过 trace。训练组初筛暂未启用。分组确认不启动回放或评测。</p></details><div class="lanes" data-funnels></div></section>
+      <section class="sec bc-panel" data-categories hidden></section>
       <section class="sec bc-panel" data-grouping></section>
       <div class="bc-master-detail"><section class="bc-panel bc-index" aria-label="Badcase 列表"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
       <div class="seg" role="radiogroup" aria-label="按下一步筛选">${[['all', '全部'], ['you', '等你'], ['system', '系统'], ['library', '已入库'], ['stop', '到此为止']].map(([key, name]) => `<button type="button" data-bc-filter="${key}" aria-checked="${key === 'all'}" role="radio">${name}</button>`).join('')}</div>
@@ -117,19 +119,21 @@
       const labelPending = patternLabel(c) && !patternLabel(c).confirmed;
       const baselinePending = !has && d?.level === 'run' && !status.original.outputs && !status.original.valid && !status.original.unscored && !invalidCase;
       const needsAssertion = status.assertion.status !== 'frozen' && (has || d?.level === 'run' && !baselinePending);
-      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) ? 'you' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
+      const categoryReview = patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId && splitName[c.split];
+      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) ? 'you' : categoryReview ? c.split === 'train' ? 'you' : 'system' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
       const next = other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题'
         : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑'
         : r && !d ? '请确认能否脱水与切点；确认后不可修改'
         : labelPending ? '请确认模式标签：决定分组所属模式和评测目标用例，确认后不能改'
         : splitProposal(c) ? '请核对并确认此模式的新用例分组'
+        : categoryReview ? c.split === 'train' ? '在分组区归纳本类别的模式内容并审核，只给模型训练成员。' : '等待本类别训练成员归纳并审核通过；门槛和测试不参与归纳。'
         : baselinePending ? '等待受信操作方取得原版有效输出；每批调用前须经规划者向用户确认，本页不启动回放'
         : needsAssertion ? (has ? sceneNote(c) + '；有现场，走 trace 级；' : '') + assertionText(c)
         : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
         : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c))
         : !d ? '等待 DeepSeek 推荐，再请你确认'
         : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c);
-      return { steps, actor, next, action: labelPending || splitProposal(c) ? 'group' : actor === 'you' && needsAssertion && !(r && !d) ? 'assertion' : null };
+      return { steps, actor, next, action: labelPending || splitProposal(c) || categoryReview && c.split === 'train' ? 'group' : !categoryReview && actor === 'you' && needsAssertion && !(r && !d) ? 'assertion' : null };
     }
     function funnel() {
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(c => hasScene(c) && !sourceOnly(c)), refs = gpt.filter(c => !hasScene(c) && dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && dehydration(c)?.decision?.level === 'run');
@@ -154,7 +158,7 @@
         group: out ? 'out' : splitName[c.split] ? c.split : row?.proposedSplit || 'out', prop: !out && !c.split && !!row?.proposedSplit };
     }
     function readiness(cases) {
-      if (cases.some(c => patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId)) return '待归纳新模式尚未关联；暂不算任何模式的目标用例。';
+      if (cases.some(c => patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId)) return '待归纳新模式内容尚未审核通过或关联已有模式；暂不算任何模式的目标用例。';
       if (cases.some(c => patternKey(c) === 'pending')) return '尚不能评测候选：先确认模式标签；旧的分组和结果不等于归类已确认';
       const ready = cases.filter(c => pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c));
       const gate = ready.filter(c => c.split === 'gate'), test = ready.filter(c => c.split === 'test' && hasScene(c));
@@ -177,12 +181,13 @@
         const counts = pattern?.existingCounts || ['trace', 'run'].reduce((acc, level) => ({ ...acc, [level]: Object.fromEntries(['train', 'gate', 'test'].map(g => [g, rows.filter(r => r.level === level && r.group === g && !r.prop && !r.reason).length])) }), {});
         const reasons = { non_gpt_report_only: '非 GPT 来源：只报告，不占配额', reference_only: '只作参考', baseline_no_valid_output: '无效测试用例：原版无有效输出', baseline_pending: '暂不参与：原版还没有有效回复', dehydration_not_confirmed: '脱水尚未确认', pattern_label_unconfirmed: '模式标签待确认，不占模式配额' };
         const chip = r => `<button type="button" class="cc ${r.level}${r.prop ? ' prop' : ''}${patternKey(r.c) === 'pending' ? ' unl' : ''}" data-bc-pick="${esc(r.c.id)}" title="${esc(r.c.actual)}"><b>#${r.c.n}</b><span>${esc(r.c.actual)}</span>${r.prop ? '<small>提议</small>' : ''}</button>`;
-        body = `<h3>${esc(x.title)}</h3><p class="hint" data-board-quotas>配额按已确认模式计算：trace 训练:门槛:测试 2:1:1；run 训练:门槛 2:1；本模式门槛 run 不超过 trace。${['trace', 'run'].map(level => `${level}：${['train', 'gate', 'test'].map(g => `${splitName[g]} ${counts[level][g]}${pattern?.counts && pattern.counts[level][g] !== counts[level][g] ? ' → ' + pattern.counts[level][g] : ''}`).join(' / ')}`).join('；')}。旧题来源不占配额，已有组别不变。</p>
+        const category = pendingOptions().find(v => v.id === currentPattern && !v.entryId);
+        body = `<h3>${esc(x.title)}</h3>${category ? `<p class="hint" data-category-range>${esc(category.scope || '旧类别尚无范围说明')} · 只用于分组和判断新用例归属，不用于模式内容归纳或候选生成。</p>` : ''}<p class="hint" data-board-quotas>配额按已确认模式计算：trace 训练:门槛:测试 2:1:1；run 训练:门槛 2:1；本模式门槛 run 不超过 trace。${['trace', 'run'].map(level => `${level}：${['train', 'gate', 'test'].map(g => `${splitName[g]} ${counts[level][g]}${pattern?.counts && pattern.counts[level][g] !== counts[level][g] ? ' → ' + pattern.counts[level][g] : ''}`).join(' / ')}`).join('；')}。旧题来源不占配额，已有组别不变。</p>
           <div class="bc-board">${['train', 'gate', 'test', 'out'].map(g => `<section class="bc-column ${g === 'out' ? 'out' : ''}" data-board-column="${g}"><h4>${splitName[g] || '不参与 / 待分配'}</h4>${g === 'out' ? rows.filter(r => r.group === g).map(r => `<div class="bc-out-row">${chip(r)}<span class="hint">${esc(reasons[r.reason] || '待分配：尚无满足条件的提议')}</span></div>`).join('') || '<span class="hint">—</span>' : ['trace', 'run', 'old', 'pending'].map(level => { const members = rows.filter(r => r.group === g && r.level === level); return members.length ? `<div class="bc-level-row"><span class="hint">${{ old: '旧题来源（不改）', pending: '层级待确认' }[level] || level}</span><div class="chips">${members.map(chip).join('')}</div></div>` : ''; }).join('') || '<span class="hint">—</span>'}</section>`).join('')}</div>
           <p class="hint" data-board-readiness>${esc(readiness(x.cases))}</p>
           ${pendingOptions().some(v => v.id === currentPattern && !v.entryId) && pendingPreclassificationLabels().length ? `<p class="bc-notice" data-pending-label-hint>还有 ${pendingPreclassificationLabels().map(c => '#' + c.n).join('、')} 预分类建议新模式、标签没确认。建议同类用例的标签都确认后再分组；只提示，不阻止确认。</p>` : ''}
           <div data-initial-split>${!p?.blockers?.length && pattern?.rows.some(r => r.proposedSplit) ? `<p>虚线是新用例的提议，尚未生效；你确认后才冻结。</p>${splitConsent?.key === currentPattern && splitConsent.hash === p.hash ? `<div class="bc-confirm-strip" data-split-consent><b>确认「${esc(x.title)}」的首次分组后，组别立即锁定：</b><span>${pattern.rows.filter(r => r.proposedSplit).map(r => '#' + D.cases.find(c => c.id === r.caseId)?.n + ' → ' + splitName[r.proposedSplit] + '组').join('；')}。已有组别不变，不启动回放或评测。</span><div class="row-actions"><button type="button" class="btn primary" data-initial-split-lock="${esc(currentPattern)}">确认并锁定</button><button type="button" class="btn" data-split-cancel>取消</button></div></div>` : `<button type="button" class="btn primary" data-initial-split-confirm="${esc(currentPattern)}" ${writable && typeof onConfirmInitialSplit === 'function' ? '' : 'disabled'}>确认此模式的新用例分组…</button>`}` : '<p class="hint">目前没有满足条件的待确认分组提议；系统不自动改组。</p>'}</div>
-          ${pendingLinkPanel(x)}${targetPanel(x)}
+          ${categoryInductionPanel(x)}${pendingLinkPanel(x) ? `<details data-manual-link><summary>其他操作：这一类其实是已有模式</summary>${pendingLinkPanel(x)}</details>` : ''}${targetPanel(x)}
           ${x.cases.some(c => patternLabel(c) && !patternLabel(c).confirmed) ? `<p class="hint">点击用例，在右侧详情确认模式标签：</p><div class="chips">${x.cases.filter(c => patternLabel(c) && !patternLabel(c).confirmed).map(c => `<button type="button" class="btn small" data-bc-pick="${esc(c.id)}">#${c.n} 确认标签</button>`).join('')}</div>` : ''}`;
       }
       host.innerHTML = `<h2>分组</h2><p class="hint">先选模式，再看本模式的分组。实线是已生效的组别；紫色虚线是首次分组提议。测试只收 trace；训练组初筛暂未启用。</p><div class="seg pat-seg" role="radiogroup" aria-label="模式">${all.map(x => tab(x.key, x.title, x.cases.length)).join('')}${tab('all', '全部模式（总览）')}</div>
@@ -199,9 +204,8 @@
       const p = pendingOptions().find(p => p.id === x.key && !p.entryId);
       if (!p || !x.cases.length || !x.cases.every(c => splitName[c.split])) return '';
       const trainCases = x.cases.filter(c => c.split === 'train'), fromTrain = e => e.caseIds?.some(id => trainCases.some(c => c.id === id));
-      const derived = approvedOptions().filter(fromTrain), approved = [...derived, ...approvedOptions().filter(e => !fromTrain(e))], defaultId = derived.length === 1 ? derived[0].id : '';
-      const train = trainCases.map(c => '#' + c.n).join('、') || '本组训练用例';
-      const next = `<p class="hint" data-pending-next>${derived.length ? '用本组训练用例归纳出的模式已通过审核，请核对后关联。' : `下一步在「知识库」页用训练组的 ${esc(train)} 归纳新模式，审核通过后回到这里关联；门槛和测试不参与归纳。<a href="#wiki">去知识库</a>`}</p>`;
+      const derived = approvedOptions().filter(fromTrain), approved = [...derived, ...approvedOptions().filter(e => !fromTrain(e))], defaultId = '';
+      const next = `<p class="hint" data-pending-next>通常在上方用本类别训练组归纳模式内容，审核通过后自动成为正式模式；知识库同步显示。这里只用于关联已有模式，门槛和测试不参与归纳。</p>`;
       if (!approved.length) return `<div class="bc-notice">${next}<p>还没有可关联的已通过模式。</p></div>`;
       const target = linkConsent?.id === p.id ? approved.find(e => e.id === linkConsent.entryId) : null;
       return `<section class="bc-notice" data-pending-link-panel="${esc(p.id)}">${next}<b>关联到已通过的模式</b><p>只能关联一次。关联前，这一组不算任何模式的目标用例。</p>${target ? `<div class="bc-confirm-strip" data-link-consent><b>关联后不能改：</b><span>「${esc(p.name)}」的 ${x.cases.length} 条用例都算「${esc(target.title)}」的用例；门槛和测试组成为它候选的目标复现题，已分好的组别不变。</span><div class="row-actions"><button type="button" class="btn primary" data-pending-link-lock="${esc(p.id)}">确认并锁定</button><button type="button" class="btn" data-link-cancel>取消</button></div></div>` : `<label class="field">关联到的模式<select data-pending-link-entry><option value="">选择已通过的模式…</option>${approved.map(e => `<option value="${esc(e.id)}" ${e.id === defaultId ? 'selected' : ''}>${esc(e.title)}${fromTrain(e) ? '（用本组训练用例归纳出）' : ''}</option>`).join('')}</select></label>${derived.length ? `<p class="hint" data-pending-link-derived>${derived.map(e => `「${esc(e.title)}」（用本组训练用例归纳出）`).join('；')}</p>` : ''}<div class="row-actions"><button type="button" class="btn primary" data-pending-link="${esc(p.id)}" ${writable && typeof onLinkPendingPattern === 'function' && defaultId ? '' : 'disabled'}>关联…</button></div>`}</section>`;
@@ -209,13 +213,13 @@
     function targetPanel(x) {
       if (!(D.pendingPatternLinks || []).some(l => l.entryId === x.key)) return '';
       const ids = split => x.cases.filter(c => c.kind === 'marked-badcase' && c.split === split && isGpt(c) && patternLabel(c)?.confirmed && patternLabel(c)?.entryId === x.key).map(c => '#' + c.n).join('、') || '无';
-      return `<section class="bc-notice" data-pattern-targets><b>「${esc(x.title)}」的模式目标</b><p>门槛目标复现题：${ids('gate')}；测试目标复现题：${ids('test')}</p><p class="hint">目标复现题已经确定；要用于评测，还需要冻结断言、通过回放检查并满足原版复现等条件，具体看上面列出的缺项。这里只确认模式归属，不代表已经可以评测；已分组别不变。</p></section>`;
+      return `<section class="bc-notice" data-pattern-targets><b>「${esc(x.title)}」的模式目标</b><p>门槛目标复现题：${ids('gate')}；测试目标复现题：${ids('test')}</p><p class="hint">目标题已确定 ≠ 可评测。目标复现题已经确定；要用于评测，还需要冻结断言、通过回放检查并满足原版复现等条件，具体看上面列出的缺项。这里只确认模式归属，不代表已经可以评测；已分组别不变。</p></section>`;
     }
     function formFor(c) {
       if (labelForms.has(c.id)) return labelForms.get(c.id);
       const label = patternLabel(c), pending = label?.pendingOptions || pendingOptions(), entryId = c.preclassification?.entryId || label?.options?.[0]?.entryId || '';
       return { kind: c.preclassification?.kind === 'new' ? 'pending' : c.preclassification?.kind === 'assign' ? 'entry' : c.preclassification?.kind === 'none' ? 'none' : '', entryId,
-        mode: pending.length ? 'join' : 'create', pendingId: pending[0]?.id || '', name: '' };
+        mode: pending.length ? 'join' : 'create', pendingId: pending[0]?.id || '', name: '', scope: '' };
     }
     function readLabelForm(host, c) {
       const f = { ...formFor(c) };
@@ -224,12 +228,13 @@
       f.mode = host.querySelector('[data-pattern-pending-mode]:checked')?.value || f.mode;
       f.pendingId = host.querySelector('[data-pattern-pending-id]')?.value || f.pendingId;
       f.name = host.querySelector('[data-pattern-name]')?.value ?? f.name;
+      f.scope = host.querySelector('[data-pattern-scope]')?.value ?? f.scope;
       return f;
     }
     function labelSelection(c, f) {
       if (f.kind === 'entry') return { entryId: f.entryId };
       if (f.kind === 'none') return { entryId: null };
-      if (f.kind === 'pending') return { pendingPattern: f.mode === 'join' ? { id: f.pendingId } : { name: f.name.trim() } };
+      if (f.kind === 'pending') return { pendingPattern: f.mode === 'join' ? { id: f.pendingId } : { name: f.name.trim(), scope: f.scope.trim() } };
       return null;
     }
     function refreshLabelPanels(c) {
@@ -238,7 +243,7 @@
     function patternPanel(c) {
       const label = patternLabel(c); if (!label) return '';
       const pre = c.preclassification, batch = preclassificationBatch();
-      const preBox = pre ? `<div class="bc-preclassification" data-preclassification><b>预分类建议：${esc(pre.kind === 'assign' ? entryTitle(pre.entryId) : pre.kind === 'new' ? '新模式' : '不归入任何模式')}（把握：${esc(pre.confidence || '未记录')}）</b><p>理由：${esc(pre.reason || '未记录')}</p><p class="hint">只提议标签；未经你确认不生效。</p></div>` : !label.confirmed && batch.some(v => v.id === c.id) ? `<div class="bc-preclassification"><b>还没有预分类</b><p>会一起处理全部 ${batch.length} 条待预分类用例（${batch.map(c => '#' + c.n).join('、')}），只提议标签；也可以直接选择。</p><button type="button" class="btn small" data-preclassify ${writable && typeof onPreclassify === 'function' ? '' : 'disabled'}>预分类（只提议标签）</button></div>` : '';
+      const preBox = pre ? `<div class="bc-preclassification" data-preclassification><b>预分类建议：${esc(pre.kind === 'assign' ? entryTitle(pre.entryId) : pre.kind === 'new' ? '新模式' : '不归入任何模式')}（把握：${esc(pre.confidence || '未记录')}）</b><p>理由：${esc(pre.reason || '未记录')}</p><p class="hint">只提议标签；未经你确认不生效。</p></div>` : !label.confirmed && batch.some(v => v.id === c.id) ? `<div class="bc-preclassification"><b>还没有预分类</b><p>会一起处理全部 ${batch.length} 条待预分类用例（${batch.map(c => '#' + c.n).join('、')}），只提议，不改标签。建议新模式的用例会和已有新模式建议的 ${esc(numbers(categoryProposalBatch()))} 一起提议新类别；也可以直接选择。</p><button type="button" class="btn small" data-preclassify ${writable && typeof onPreclassify === 'function' ? '' : 'disabled'}>预分类并提议类别</button></div>` : '';
       const what = '<p class="bc-label-what">这一步决定这条用例在哪个模式下分组，以及评测时算哪个模式的目标用例。确认后不能改。</p>';
       const shell = body => `<section class="dehydration-panel bc-label-panel" data-pattern-label="${esc(c.id)}"><h4>${label.confirmed ? '模式标签' : '确认模式标签'}</h4>${what}${body}</section>`;
       if (label.confirmed) {
@@ -247,19 +252,72 @@
         const status = label.source && label.source !== 'badcase-page' ? '沿用已有确认归类：' : '已锁定：';
         return shell(`<p class="pill ok">${status}${esc(labelTitle(label))}</p><p data-pattern-role>${esc(role)}</p>${preBox}`);
       }
+      const proposal = pendingCategoryProposals().find(p => categoryForm(p).members.includes(c.id));
+      if (proposal) return shell(`${preBox}<div class="bc-notice"><b>已在上方的新类别提议「${esc(categoryForm(proposal).name)}」里</b><p>${esc(proposal.members.find(m => m.caseId === c.id)?.reason)}</p><p class="hint">在上方核对后整组确认；如果不属于这一类，取消勾选后回这里单独选标签。</p><div class="row-actions"><button type="button" class="btn small" data-go-categories>去看类别提议</button></div></div>`);
       const f = formFor(c), entries = label.options || [], pending = label.pendingOptions || pendingOptions(), serial = ++panelSerial, disabled = writable && typeof onConfirmPatternLabel === 'function' ? '' : 'disabled';
       const radio = (kind, title) => `<label><input type="radio" data-pattern-kind name="label-${esc(c.id)}-${serial}" value="${kind}" ${f.kind === kind ? 'checked' : ''} ${disabled}>${title}</label>`;
       const selection = labelSelection(c, f), consent = labelConsents.get(c.id), shown = consent && consent.hash === label.labelHash && consent.selection === json(selection);
       const joined = f.kind === 'pending' && f.mode === 'join' ? pending.find(p => p.id === f.pendingId) : null;
       const chosen = f.kind === 'entry' ? `已有模式「${entryTitle(f.entryId)}」` : f.kind === 'none' ? '不归入任何模式' : f.mode === 'join' ? `待归纳新模式「${joined?.name || ''}」${joined?.entryId ? `（已关联到「${entryTitle(joined.entryId)}」）` : ''}` : `新建待归纳新模式「${f.name.trim()}」`;
-      const consequence = f.kind === 'entry' ? `它会在「${entryTitle(f.entryId)}」里按配额分组；门槛和测试用例评测这个模式的候选时算目标复现题。` : f.kind === 'none' ? '这类用例共用一组，评测时不算任何模式的目标用例。' : joined?.entryId ? `它会直接在「${entryTitle(joined.entryId)}」里按配额分组；门槛和测试用例评测「${entryTitle(joined.entryId)}」的候选时算目标复现题。` : '它会在这个新模式自己的组里分组；新模式归纳并审核通过、你关联之后，才算那个模式的用例。';
-      return shell(`${preBox}<div class="bc-label-options" role="radiogroup" aria-label="模式标签">
+      const consequence = f.kind === 'entry' ? `它会在「${entryTitle(f.entryId)}」里按配额分组；门槛和测试用例评测这个模式的候选时算目标复现题。` : f.kind === 'none' ? '这类用例共用一组，评测时不算任何模式的目标用例。' : joined?.entryId ? `它会直接在「${entryTitle(joined.entryId)}」里按配额分组；门槛和测试用例评测「${entryTitle(joined.entryId)}」的候选时算目标复现题。` : '它会在这个新模式自己的组里分组；之后只用训练组归纳模式内容，你审核通过后自动成为正式模式，门槛和测试成为它的目标复现题。';
+      return shell(`${preBox}${c.preclassification?.kind === 'new' && categoryProposalBatch().some(v => v.id === c.id) && hasUncoveredCategoryCases() ? proposeCategoriesEntry() : ''}<div class="bc-label-options" role="radiogroup" aria-label="模式标签">
         <div class="bc-label-option ${f.kind === 'entry' ? 'on' : ''}">${radio('entry', '已有模式')}${f.kind === 'entry' ? `<label class="field">已通过的模式<select data-pattern-entry ${disabled}>${entries.map(e => `<option value="${esc(e.entryId)}" ${f.entryId === e.entryId ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select></label>` : ''}</div>
-        <div class="bc-label-option ${f.kind === 'pending' ? 'on' : ''}">${radio('pending', '待归纳新模式')}${f.kind === 'pending' ? `<div class="bc-label-sub"><label><input type="radio" data-pattern-pending-mode name="pending-${esc(c.id)}-${serial}" value="join" ${f.mode === 'join' ? 'checked' : ''} ${!pending.length ? 'disabled' : disabled}>加入${!pending.length ? '（还没有待归纳新模式）' : ''}</label>${pending.length ? `<select data-pattern-pending-id aria-label="已有的待归纳新模式" ${disabled}>${pending.map(p => `<option value="${esc(p.id)}" ${p.id === f.pendingId ? 'selected' : ''}>${esc(p.name)}${p.entryId ? '（已关联）' : ''}</option>`).join('')}</select>` : ''}<label><input type="radio" data-pattern-pending-mode name="pending-${esc(c.id)}-${serial}" value="create" ${f.mode === 'create' ? 'checked' : ''} ${disabled}>新建</label><input type="text" data-pattern-name aria-label="新模式名称" placeholder="起个名字（1–40字）" value="${esc(f.name)}" ${disabled}></div>` : ''}</div>
+        <div class="bc-label-option ${f.kind === 'pending' ? 'on' : ''}">${radio('pending', '待归纳新模式')}${f.kind === 'pending' ? `<div class="bc-label-sub"><label><input type="radio" data-pattern-pending-mode name="pending-${esc(c.id)}-${serial}" value="join" ${f.mode === 'join' ? 'checked' : ''} ${!pending.length ? 'disabled' : disabled}>加入${!pending.length ? '（还没有待归纳新模式）' : ''}</label>${pending.length ? `<select data-pattern-pending-id aria-label="已有的待归纳新模式" ${disabled}>${pending.map(p => `<option value="${esc(p.id)}" ${p.id === f.pendingId ? 'selected' : ''}>${esc(p.name)}${p.entryId ? '（已关联）' : ''}</option>`).join('')}</select>` : ''}${joined ? `<p class="hint" data-pending-description>范围：${esc(joined.scope || '旧类别尚无范围说明')}<br>成员：${esc(pendingMembers(joined.id).map(v => '#' + v.n).join('、') || '暂无')}。</p>` : ''}<label><input type="radio" data-pattern-pending-mode name="pending-${esc(c.id)}-${serial}" value="create" ${f.mode === 'create' ? 'checked' : ''} ${disabled}>新建</label>${f.mode === 'create' ? `<input type="text" data-pattern-name aria-label="新模式名称" placeholder="名字（1–40字）" value="${esc(f.name)}" ${disabled}><textarea data-pattern-scope aria-label="新类别范围" placeholder="一句话范围（1–120字）" ${disabled}>${esc(f.scope)}</textarea><p class="hint">名字和范围不要写某条用例的具体细节（例如具体字数）；名字将成为正式模式标题，范围不进入归纳和候选生成。</p>` : ''}</div>` : ''}</div>
         <div class="bc-label-option ${f.kind === 'none' ? 'on' : ''}">${radio('none', '不归入任何模式')}<p class="hint">共用一组，评测时不算任何模式的目标用例。</p></div></div>
         ${labelErrors.has(c.id) ? `<p class="bc-label-error" data-label-error role="alert">${esc(labelErrors.get(c.id))}</p>` : ''}
         ${shown ? `<div class="bc-confirm-strip" data-label-consent><b>确认后不能改：#${c.n} → ${esc(chosen)}</b><span>${esc(consequence)}</span><div class="row-actions"><button type="button" class="btn primary" data-pattern-lock="${esc(c.id)}" ${disabled}>确认并锁定</button><button type="button" class="btn" data-label-cancel="${esc(c.id)}">取消</button></div></div>` : `<button type="button" class="btn primary" data-pattern-confirm="${esc(c.id)}" ${!f.kind ? 'disabled' : disabled}>确认模式标签…</button>`}
         <details><summary class="hint">这一步不做什么</summary><p class="hint">不分组（在上方另外确认）；不调用模型；不改知识库内容和归纳成员。</p></details>`);
+    }
+    // Category identity can use all proposed cases; content induction is a separate,
+    // explicit training-only action. GET projection remains the authority for locks.
+    const pendingCategoryProposals = () => (D.categoryProposalViews || []).filter(p => p.status === 'pending');
+    const categoryProposalBatch = () => pendingPreclassificationLabels().filter(c => c.kind === 'marked-badcase' && c.split === null && c.source?.agentId === 'role-family-gpt');
+    const hasUncoveredCategoryCases = () => categoryProposalBatch().some(c => !pendingCategoryProposals().some(p => p.members.some(m => m.caseId === c.id)));
+    const pendingMembers = id => D.cases.filter(c => patternLabel(c)?.pendingPatternId === id);
+    const numbers = cases => cases.map(c => '#' + c.n).join('、') || '无';
+    function categoryForm(p) {
+      if (!categoryForms.has(p.hash)) categoryForms.set(p.hash, { name: p.name, scope: p.scope, members: p.members.filter(m => m.canConfirm === true).map(m => m.caseId) });
+      return categoryForms.get(p.hash);
+    }
+    function categorySelection(p) {
+      const f = categoryForm(p);
+      return { proposalHash: p.hash, name: f.name.trim(), scope: f.scope.trim(), members: p.members.filter(m => f.members.includes(m.caseId) && m.canConfirm === true).map(m => ({ caseId: m.caseId, labelHash: patternLabel(D.cases.find(c => c.id === m.caseId))?.labelHash })) };
+    }
+    function proposeCategoriesEntry() {
+      return `<div class="bc-notice"><b>已预分类，尚未提议类别</b><p>会一起处理 ${numbers(categoryProposalBatch())}，只提议类别，不改任何标签。若已有未处理提议，新提议会取代它。</p><div class="row-actions"><button type="button" class="btn" data-propose-categories ${writable && typeof onProposeCategories === 'function' ? '' : 'disabled'}>提议新类别</button></div></div>`;
+    }
+    function categoryActions(p) {
+      const f = categoryForm(p), selection = categorySelection(p), enabled = writable && typeof onConfirmCategory === 'function', disabled = enabled ? '' : 'disabled';
+      const linked = pendingOptions().find(v => v.id === p.pendingPatternId)?.entryId;
+      const consequence = linked ? `它们会直接在「${entryTitle(linked)}」里按配额分组；门槛和测试用例评测这个正式模式的候选时算目标复现题，已有组别不变。` : '它们会在这个类别自己的组里分组。之后只用训练组的用例归纳模式内容；你审核通过后，这个类别自动成为正式模式，门槛和测试成为它的目标复现题。';
+      return `${categoryErrors.has(p.hash) ? `<p class="bc-label-error" data-category-error role="alert">${esc(categoryErrors.get(p.hash))}</p>` : ''}${categoryConsents.get(p.hash) === json(selection) ? `<div class="bc-confirm-strip" data-category-consent><b>确认后不能改：${esc(numbers(D.cases.filter(c => f.members.includes(c.id))))} 归入${p.pendingPatternId ? '已有类别' : '新类别'}「${esc(f.name.trim())}」</b><span>${esc(consequence)}</span><div class="row-actions"><button type="button" class="btn primary" data-category-lock ${disabled}>确认并锁定</button><button type="button" class="btn" data-category-cancel>取消</button></div></div>` : `<div class="row-actions"><button type="button" class="btn primary" data-category-ask ${enabled && selection.members.length ? '' : 'disabled'}>确认这个类别（${selection.members.length} 条）…</button><button type="button" class="btn" data-category-reject ${writable && typeof onRejectCategory === 'function' ? '' : 'disabled'}>不采纳，逐条单独处理</button></div>`}`;
+    }
+    function categoryPanels() {
+      const host = $('[data-categories]'), proposals = pendingCategoryProposals();
+      const locked = (D.pendingPatterns || []).filter(p => p.sourceProposalHash);
+      host.hidden = !proposals.length && !locked.length && !hasUncoveredCategoryCases();
+      host.innerHTML = `${locked.map(p => { const linked = pendingOptions().find(v => v.id === p.id)?.entryId; return `<article class="bc-category-card" data-category-locked="${esc(p.id)}"><h2>新类别 · 已确认，不能修改${linked ? ' · 已成为正式模式' : ' · 模式内容待归纳'}</h2><b>${esc(p.name)}</b><p>${esc(p.scope || '')}</p><p class="hint">成员：${numbers(pendingMembers(p.id))}。范围只用于分组、判断新用例归属和生成类别提议；归纳和候选生成不读这段说明。</p>${linked ? `<p>正式模式：「${esc(entryTitle(linked))}」</p>` : ''}</article>`; }).join('')}${proposals.map(p => { const f = categoryForm(p); return `<article class="bc-category-card" data-category-card="${esc(p.hash)}"><h2>新类别提议${p.pendingPatternId ? ' · 建议加入已有类别' : ''}</h2><p class="bc-label-what">这一步只定“这是哪一类问题”：名字、范围、包含哪些用例。确认后标签锁定，不分组、不修改模式内容。</p><div class="bc-category-grid"><div class="bc-category-fields"><label>名字（1–40字）<input data-category-name value="${esc(f.name)}" ${p.pendingPatternId ? 'readonly' : ''}></label><label>范围：一句话说明这类问题（1–120字）<textarea data-category-scope ${p.pendingPatternId ? 'readonly' : ''}>${esc(f.scope)}</textarea></label>${p.pendingPatternId ? '<p class="hint">已有类别身份已冻结，这里不改名或范围；如不采纳，可逐条处理。</p>' : ''}<p class="hint">名字将成为正式模式标题；名字和范围不要写某条用例的具体细节（例如具体字数）。</p><div class="bc-notice"><b>这段说明会被谁用到</b><span>用于分组、判断新用例归属和生成类别提议，可以参考全部用例。</span><span>生成候选时不读；模式内容归纳也不读范围，只读类别名字和训练成员。</span></div></div><div class="bc-category-members"><b>包含的用例</b>${p.members.map(m => { const c = D.cases.find(c => c.id === m.caseId); return `<label class="bc-category-member"><input type="checkbox" data-category-member="${esc(m.caseId)}" ${f.members.includes(m.caseId) && m.canConfirm === true ? 'checked' : ''} ${m.canConfirm === true ? '' : 'disabled'}><b>#${c?.n || '?'}</b><span>${esc(c?.actual || '用例已不可用')}</span><span class="hint">${esc(m.reason)}${m.canConfirm === true ? '' : '；当前不能确认：' + (m.unavailableReason || '不可用')}</span></label>`; }).join('')}<p class="hint">取消勾选的用例回到下方逐条单独选标签。</p></div></div><div data-category-actions>${categoryActions(p)}</div></article>`; }).join('')}${hasUncoveredCategoryCases() ? proposeCategoriesEntry() : ''}`;
+      syncWritable();
+    }
+    const contentFields = ['failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline'];
+    function draftForm(entry) {
+      if (!draftForms.has(entry.id)) draftForms.set(entry.id, Object.fromEntries(contentFields.map(k => [k, entry[k]])));
+      return draftForms.get(entry.id);
+    }
+    const sameCategoryTraining = (entry, x) => entry.caseIds.length === x.cases.filter(c => c.split === 'train').length && entry.caseIds.every(id => x.cases.some(c => c.id === id && c.split === 'train'));
+    function categoryReviewActions(p, entry, x) {
+      const disabled = writable && typeof onReviewCategory === 'function' ? '' : 'disabled';
+      return `${!sameCategoryTraining(entry, x) ? '<p class="bc-label-error">训练成员已经改变，这份草稿不能通过；请驳回并重新归纳。</p>' : ''}${draftErrors.has(entry.id) ? `<p class="bc-label-error" data-draft-error role="alert">${esc(draftErrors.get(entry.id))}</p>` : ''}${draftConsents.get(entry.id) === json(draftForm(entry)) ? `<div class="bc-confirm-strip" data-category-review-consent><b>通过后模式内容冻结，「${esc(p.name)}」自动成为正式模式</b><span>门槛 ${numbers(x.cases.filter(c => c.split === 'gate'))}、测试 ${numbers(x.cases.filter(c => c.split === 'test'))} 成为它的目标复现题；已分好的组别不变，不启动评测。以后修改需另出修订版本再审核。</span><div class="row-actions"><button type="button" class="btn primary" data-category-review-lock ${disabled}>确认通过</button><button type="button" class="btn" data-category-review-cancel>取消</button></div></div>` : `<div class="row-actions"><button type="button" class="btn primary" data-category-approve ${sameCategoryTraining(entry, x) ? disabled : 'data-category-stale disabled'}>通过审核…</button><button type="button" class="btn" data-category-reinduct ${disabled}>驳回并重新归纳</button><span class="hint">修改的四项随审核一起保存。</span></div>`}`;
+    }
+    function categoryInductionPanel(x) {
+      const p = pendingOptions().find(p => p.id === x.key && !p.entryId);
+      if (!p || !x.cases.length || !x.cases.every(c => splitName[c.split]) || !x.cases.some(c => c.split === 'train')) return '';
+      const entry = D.versions?.at(-1)?.entries.find(e => e.sourcePendingPatternId === p.id && e.categoryReviewRequired === true && e.status === 'draft');
+      const train = entry ? D.cases.filter(c => entry.caseIds.includes(c.id)) : x.cases.filter(c => c.split === 'train');
+      const source = `<p class="bc-category-sources">给模型：训练组 ${numbers(train)} 的问题、期望、消息和轨迹；不给：门槛 ${numbers(x.cases.filter(c => c.split === 'gate'))}、测试 ${numbers(x.cases.filter(c => c.split === 'test'))}；不含范围说明。</p>`;
+      if (!entry) return `<section class="bc-notice" data-category-induction="${esc(p.id)}"><b>下一步：归纳这个类别的模式内容</b><p>模型只读训练成员；输出失败模式、表现、原因推测和准则，等你审核。审核通过后自动成为正式模式，知识库同步显示。</p>${source}<div class="row-actions"><button type="button" class="btn primary" data-category-induct="${esc(p.id)}" ${writable && typeof onInductCategory === 'function' ? '' : 'disabled'}>归纳模式内容（只提议）</button></div></section>`;
+      const f = draftForm(entry), titles = ['失败模式', '表现', '原因推测', '准则（不超过300字）'];
+      return `<section class="bc-category-draft" data-category-draft="${esc(entry.id)}" data-category-id="${esc(p.id)}"><b>模式内容草稿 · 待你审核</b>${source}<div class="bc-draft-grid">${contentFields.map((k, i) => `<label>${titles[i]}<textarea data-category-field="${k}">${esc(f[k])}</textarea>${k === 'guideline' ? `<span class="hint" data-guideline-count>${[...f[k]].length} / 300字</span>` : ''}</label>`).join('')}</div><div data-category-review-actions>${categoryReviewActions(p, entry, x)}</div></section>`;
     }
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
@@ -399,7 +457,7 @@
     }, true);
     root.addEventListener('click', e => {
       const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend],[data-pattern-confirm],[data-pattern-lock],[data-label-cancel],[data-initial-split-confirm],[data-initial-split-lock],[data-split-cancel],[data-pending-link],[data-pending-link-lock],[data-link-cancel],[data-preclassify]'); if (!el || el.disabled) return;
-      if (el.dataset.bcPattern) { const focused = el === document.activeElement; currentPattern = el.dataset.bcPattern; groupingPanel(); renderCards(); if (focused) [...root.querySelectorAll('.pat-seg [data-bc-pattern]')].find(b => b.dataset.bcPattern === currentPattern)?.focus({ preventScroll: true }); return; }
+      if (el.dataset.bcPattern) { const focused = el === document.activeElement; currentPattern = el.dataset.bcPattern; splitConsent = linkConsent = null; draftConsents.clear(); groupingPanel(); renderCards(); if (focused) [...root.querySelectorAll('.pat-seg [data-bc-pattern]')].find(b => b.dataset.bcPattern === currentPattern)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcRow) { const focused = el === document.activeElement; selected = el.dataset.bcRow; renderCards(); if (focused) [...root.querySelectorAll('[data-bc-row]')].find(b => b.dataset.bcRow === selected)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcPick) { pickCase(el.dataset.bcPick); return; }
       if (el.dataset.bcFilter) { stage = el.dataset.bcFilter; renderCards(); return; }
@@ -413,7 +471,7 @@
         const pending = label.pendingOptions || pendingOptions();
         const error = !selection ? '请选择一类模式标签。' : f.kind === 'entry' && !label.options?.some(e => e.entryId === f.entryId) ? '请选择已通过的模式。'
           : f.kind === 'pending' && f.mode === 'join' && !pending.some(p => p.id === f.pendingId) ? '请选择待归纳新模式。'
-          : f.kind === 'pending' && f.mode === 'create' ? !f.name.trim() || [...f.name.trim()].length > 40 ? '给新模式起个名字（1–40 字）。' : [...(label.options || []).map(e => e.title), ...pending.map(p => p.name)].includes(f.name.trim()) ? '已经有同名模式，请改名或选择加入。' : '' : '';
+          : f.kind === 'pending' && f.mode === 'create' ? !f.name.trim() || [...f.name.trim()].length > 40 ? '给新模式起个名字（1–40 字）。' : [...(label.options || []).map(e => e.title), ...pending.map(p => p.name)].includes(f.name.trim()) ? '已经有同名模式，请改名或选择加入。' : !f.scope.trim() || [...f.scope.trim()].length > 120 ? '请填一句话范围（1–120字）。' : '' : '';
         if (error) { labelErrors.set(c.id, error); labelConsents.delete(c.id); refreshLabelPanels(c); return; }
         if (el.dataset.patternConfirm) { labelConsents.set(c.id, { hash: label.labelHash, selection: json(selection) }); refreshLabelPanels(c); return; }
         const consent = labelConsents.get(c.id);
@@ -453,6 +511,43 @@
       }
       if (el.dataset.traceRetry) { const c = D.cases.find(c => c.id === el.dataset.traceRetry); if (c) void loadTrace(c, true); }
     });
+    root.addEventListener('click', e => {
+      const el = e.target.closest('[data-category-ask],[data-category-lock],[data-category-reject],[data-category-cancel],[data-propose-categories],[data-go-categories],[data-category-induct],[data-category-approve],[data-category-review-lock],[data-category-review-cancel],[data-category-reinduct]');
+      if (!el || el.disabled) return;
+      if (el.hasAttribute('data-go-categories')) { $('[data-categories]').scrollIntoView({ block: 'start' }); return; }
+      if (!writable) return;
+      if (el.hasAttribute('data-propose-categories')) { if (hasUncoveredCategoryCases() && typeof onProposeCategories === 'function') onProposeCategories(); return; }
+      if (el.dataset.categoryInduct) { if (typeof onInductCategory === 'function' && patterns().some(x => x.key === el.dataset.categoryInduct && x.cases.length && x.cases.every(c => splitName[c.split]) && x.cases.some(c => c.split === 'train'))) onInductCategory({ pendingPatternId: el.dataset.categoryInduct }); return; }
+      const card = el.closest('[data-category-card]');
+      if (card) {
+        const p = pendingCategoryProposals().find(p => p.hash === card.dataset.categoryCard); if (!p) return;
+        if (el.hasAttribute('data-category-reject')) { if (typeof onRejectCategory === 'function') onRejectCategory({ proposalHash: p.hash }); return; }
+        if (el.hasAttribute('data-category-cancel')) { categoryConsents.delete(p.hash); card.querySelector('[data-category-actions]').innerHTML = categoryActions(p); return; }
+        if (typeof onConfirmCategory !== 'function') return;
+        const f = categoryForm(p); f.name = card.querySelector('[data-category-name]').value; f.scope = card.querySelector('[data-category-scope]').value;
+        f.members = [...card.querySelectorAll('[data-category-member]:checked')].filter(el => p.members.some(m => m.caseId === el.dataset.categoryMember && m.canConfirm === true)).map(el => el.dataset.categoryMember);
+        const selection = categorySelection(p), conflict = !p.pendingPatternId && [...approvedOptions().map(e => e.title), ...pendingOptions().map(v => v.name)].includes(selection.name);
+        const error = !selection.name || [...selection.name].length > 40 ? '名字须为1–40字。' : !selection.scope || [...selection.scope].length > 120 ? '范围须为1–120字。' : conflict ? '已经有同名模式或类别，请改名或逐条加入。' : !selection.members.length ? '至少勾选一条仍可确认的用例。' : '';
+        categoryErrors.delete(p.hash);
+        if (error) { categoryErrors.set(p.hash, error); categoryConsents.delete(p.hash); }
+        else if (el.hasAttribute('data-category-ask')) categoryConsents.set(p.hash, json(selection));
+        else if (categoryConsents.get(p.hash) === json(selection)) { onConfirmCategory(selection); return; }
+        else categoryConsents.delete(p.hash);
+        card.querySelector('[data-category-actions]').innerHTML = categoryActions(p); return;
+      }
+      const host = el.closest('[data-category-draft]'), p = pendingOptions().find(p => p.id === host?.dataset.categoryId && !p.entryId), x = p && patterns().find(x => x.key === p.id);
+      const version = D.versions?.at(-1), entry = version?.entries.find(e => e.id === host?.dataset.categoryDraft && e.status === 'draft');
+      if (!p || !x || !entry || typeof onReviewCategory !== 'function') return;
+      const f = Object.fromEntries(contentFields.map(k => [k, host.querySelector(`[data-category-field="${k}"]`).value])); draftForms.set(entry.id, f); draftErrors.delete(entry.id);
+      if (el.hasAttribute('data-category-review-cancel')) draftConsents.delete(entry.id);
+      else if (el.hasAttribute('data-category-reinduct')) { onReviewCategory({ pendingPatternId: p.id, versionId: version.id, entryId: entry.id, decision: 'rejected' }); return; }
+      else if (!sameCategoryTraining(entry, x)) { draftErrors.set(entry.id, '训练成员已改变，请驳回并重新归纳。'); draftConsents.delete(entry.id); }
+      else if (contentFields.some(k => !f[k].trim()) || [...f.guideline].length > 300) { draftErrors.set(entry.id, '四项须非空，准则不超过300字。'); draftConsents.delete(entry.id); }
+      else if (el.hasAttribute('data-category-approve')) draftConsents.set(entry.id, json(f));
+      else if (draftConsents.get(entry.id) === json(f)) { onReviewCategory({ pendingPatternId: p.id, versionId: version.id, entryId: entry.id, decision: 'approved', patch: f }); return; }
+      else draftConsents.delete(entry.id);
+      host.querySelector('[data-category-review-actions]').innerHTML = categoryReviewActions(p, entry, x);
+    });
     root.addEventListener('keydown', e => {
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key) || !e.target.matches('button[role="radio"]')) return;
       const group = e.target.closest('[role="radiogroup"]'); if (!group) return;
@@ -463,7 +558,20 @@
     });
     root.addEventListener('input', e => {
       const el = e.target;
-      if (el.hasAttribute('data-pattern-name')) { const c = D.cases.find(c => c.id === el.closest('[data-pattern-label]').dataset.patternLabel); labelForms.set(c.id, readLabelForm(el.closest('[data-pattern-label]'), c)); labelErrors.delete(c.id); const hadConsent = labelConsents.delete(c.id); if (hadConsent) refreshLabelPanels(c); }
+      if (el.matches('[data-category-name],[data-category-scope]')) {
+        const card = el.closest('[data-category-card]'), p = pendingCategoryProposals().find(p => p.hash === card.dataset.categoryCard); if (!p || !writable) return;
+        const f = categoryForm(p); f.name = card.querySelector('[data-category-name]').value; f.scope = card.querySelector('[data-category-scope]').value;
+        categoryConsents.delete(p.hash); categoryErrors.delete(p.hash); card.querySelector('[data-category-actions]').innerHTML = categoryActions(p);
+        const c = D.cases.find(c => c.id === selected); if (c) refreshLabelPanels(c);
+      }
+      if (el.hasAttribute('data-category-field')) {
+        const host = el.closest('[data-category-draft]'), entry = D.versions?.at(-1)?.entries.find(e => e.id === host.dataset.categoryDraft); if (!entry || !writable) return;
+        draftForm(entry)[el.dataset.categoryField] = el.value; draftConsents.delete(entry.id); draftErrors.delete(entry.id);
+        host.querySelector('[data-guideline-count]').textContent = [...draftForm(entry).guideline].length + ' / 300字';
+        const p = pendingOptions().find(p => p.id === host.dataset.categoryId), x = patterns().find(x => x.key === p.id);
+        host.querySelector('[data-category-review-actions]').innerHTML = categoryReviewActions(p, entry, x);
+      }
+      if (el.matches('[data-pattern-name],[data-pattern-scope]')) { const c = D.cases.find(c => c.id === el.closest('[data-pattern-label]').dataset.patternLabel); labelForms.set(c.id, readLabelForm(el.closest('[data-pattern-label]'), c)); labelErrors.delete(c.id); const hadConsent = labelConsents.delete(c.id); if (hadConsent) refreshLabelPanels(c); }
       if (el.hasAttribute('data-bc-search')) { q = el.value; renderCards(); }
       if (el.hasAttribute('data-trace-search')) { const c = D.cases.find(c => c.id === el.dataset.traceSearch); if (c) { queries.set(c.id, el.value); renderTraceContent(c, el.closest('[data-trace-host]')); } }
     });
@@ -473,18 +581,29 @@
         const host = el.closest('[data-pattern-label]'), c = D.cases.find(c => c.id === host.dataset.patternLabel);
         labelForms.set(c.id, readLabelForm(host, c)); labelConsents.delete(c.id); labelErrors.delete(c.id); refreshLabelPanels(c);
       }
-      if (el.hasAttribute('data-pending-link-entry')) syncWritable();
+      if (el.hasAttribute('data-category-member')) {
+        const card = el.closest('[data-category-card]'), p = pendingCategoryProposals().find(p => p.hash === card.dataset.categoryCard); if (!p || !writable || !p.members.some(m => m.caseId === el.dataset.categoryMember && m.canConfirm === true)) return;
+        const f = categoryForm(p); f.members = [...card.querySelectorAll('[data-category-member]:checked')].map(v => v.dataset.categoryMember);
+        categoryConsents.delete(p.hash); categoryErrors.delete(p.hash); categoryPanels();
+        const c = D.cases.find(c => c.id === selected); if (c) refreshLabelPanels(c);
+      }
+      if (el.hasAttribute('data-pending-link-entry')) { linkConsent = null; syncWritable(); }
       if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); }
     });
     function syncWritable() {
-      for (const [selector, fn] of [['[data-dehydration-confirm]', onConfirmDecision], ['[data-dehydration-recommend]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
-      root.querySelectorAll('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id],[data-pattern-name]').forEach(el => { el.disabled = !writable || typeof onConfirmPatternLabel !== 'function' || el.matches('[data-pattern-pending-mode][value="join"]') && !pendingOptions().length; });
+      for (const [selector, fn] of [['[data-dehydration-confirm]', onConfirmDecision], ['[data-dehydration-recommend]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify], ['[data-propose-categories]', onProposeCategories], ['[data-category-induct]', onInductCategory], ['[data-category-ask],[data-category-lock]', onConfirmCategory], ['[data-category-reject]', onRejectCategory], ['[data-category-approve],[data-category-review-lock],[data-category-reinduct]', onReviewCategory]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-category-stale') || b.hasAttribute('data-category-ask') && !categorySelection(pendingCategoryProposals().find(p => p.hash === b.closest('[data-category-card]').dataset.categoryCard)).members.length || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
+      root.querySelectorAll('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id],[data-pattern-name],[data-pattern-scope]').forEach(el => { el.disabled = !writable || typeof onConfirmPatternLabel !== 'function' || el.matches('[data-pattern-pending-mode][value="join"]') && !pendingOptions().length; });
       root.querySelectorAll('[data-pending-link-entry]').forEach(el => { el.disabled = !writable || typeof onLinkPendingPattern !== 'function'; });
+      root.querySelectorAll('[data-category-name],[data-category-scope],[data-category-member]').forEach(el => { const p = pendingCategoryProposals().find(p => p.hash === el.closest('[data-category-card]').dataset.categoryCard); el.disabled = !writable || typeof onConfirmCategory !== 'function' || el.hasAttribute('data-category-member') && !p?.members.some(m => m.caseId === el.dataset.categoryMember && m.canConfirm === true); });
+      root.querySelectorAll('[data-category-field]').forEach(el => { el.disabled = !writable || typeof onReviewCategory !== 'function'; });
+      root.querySelectorAll('[data-category-cancel],[data-category-review-cancel]').forEach(el => { el.disabled = !writable; });
     }
     return { setWritable(value) { writable = !!value; syncWritable(); }, render(data) {
-      D = data; splitConsent = linkConsent = null; labelForms.clear(); labelConsents.clear(); labelErrors.clear(); detailSignature = null;
+      D = data; splitConsent = linkConsent = null; labelForms.clear(); labelConsents.clear(); labelErrors.clear(); categoryForms.clear(); categoryConsents.clear(); categoryErrors.clear(); draftForms.clear(); draftConsents.clear(); draftErrors.clear(); detailSignature = null;
+      const selectedCase = D.cases.find(c => c.id === selected);
+      if (currentPattern === 'pending' && !D.cases.some(c => patternKey(c) === 'pending') && selectedCase && patternLabel(selectedCase)?.confirmed) currentPattern = patternKey(selectedCase);
       const linked = D.pendingPatternLinks?.find(l => l.pendingPatternId === currentPattern); if (linked) currentPattern = linked.entryId;
-      for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); groupingPanel(); renderCards(); syncWritable(); },
+      for (const [id, row] of cache) if (!D.cases.some(c => c.id === id && c.traceBundle?.hash === row.hash)) cache.delete(id); funnel(); categoryPanels(); groupingPanel(); renderCards(); syncWritable(); },
       focus(n) { const c = D.cases.find(c => c.n === Number(n)); if (c) pickCase(c.id); } };
   };
 })();

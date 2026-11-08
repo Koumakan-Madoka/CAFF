@@ -1350,6 +1350,14 @@ export function createServerApp(options: any = {}) {
         require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageDehydration(input, {
           configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
         })),
+      runCategoryProposals: options.badcaseWikiCategoryProposalRunner || ((input: any) =>
+        require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageCategoryProposals(input, {
+          configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
+        })),
+      runCategoryInduction: options.badcaseWikiCategoryInductionRunner || ((input: any) =>
+        require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageCategoryInduction(input, {
+          configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
+        })),
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         if (configFile !== undefined || options.badcaseWikiInductionImage === undefined) {
@@ -1357,7 +1365,7 @@ export function createServerApp(options: any = {}) {
         }
         return require('../../../scripts/badcase-capture/wiki-induction.cjs').inductWikiCases({
           ...input, image: options.badcaseWikiInductionImage, confirmed: true,
-        });
+        }, { proposeCategories: true });
       }),
       projectManager, host, port, csrfToken: providerConfigCsrfToken,
       getAuthority() {

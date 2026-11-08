@@ -20,7 +20,9 @@ import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehyd
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
-import { resolveWikiPatternLabel } from './wiki-pattern-label';
+import { resolveWikiPatternLabel, wikiPendingPatternText, appendWikiPendingPatternLink } from './wiki-pattern-label';
+import { wikiUnlinkedCategoryCaseIds, wikiCategoryTrainingCases, assertWikiCategoryDraftAvailable } from './wiki-category-induction';
+import { appendWikiCategoryProposals, confirmWikiCategoryProposal, rejectWikiCategoryProposal, projectWikiCategoryProposals } from './wiki-category-proposals';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -249,7 +251,7 @@ export function createWikiStore(options: any) {
           seen.add(key);
         }
       }
-      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations', 'patternLabels', 'initialSplitConfirmations', 'pendingPatterns', 'pendingPatternLinks']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
+      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations', 'patternLabels', 'initialSplitConfirmations', 'pendingPatterns', 'pendingPatternLinks', 'categoryProposals', 'categoryProposalResolutions']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -538,16 +540,16 @@ export function createWikiStore(options: any) {
       shape(input, ['caseId', 'entryId', 'pendingPattern', 'labelHash', 'expectedRevision']);
       id(input.caseId);
       const pending = Object.hasOwn(input, 'pendingPattern');
-      let pendingId: string | undefined, name: string | undefined;
+      let pendingId: string | undefined, name: string | undefined, scope: string | undefined;
       if (pending) {
         if (Object.hasOwn(input, 'entryId')) throw fail('wiki_invalid_input');
-        shape(input.pendingPattern, ['id', 'name']);
-        if (Object.keys(input.pendingPattern).length !== 1) throw fail('wiki_invalid_input');
-        if (Object.hasOwn(input.pendingPattern, 'id')) pendingId = id(input.pendingPattern.id);
-        else {
-          if (typeof input.pendingPattern.name !== 'string') throw fail('wiki_pending_pattern_name_invalid');
-          name = text(input.pendingPattern.name, 1024, true).trim();
-          if (![...name].length || [...name].length > 40) throw fail('wiki_pending_pattern_name_invalid');
+        shape(input.pendingPattern, ['id', 'name', 'scope']);
+        if (Object.hasOwn(input.pendingPattern, 'id')) {
+          if (Object.keys(input.pendingPattern).length !== 1) throw fail('wiki_invalid_input');
+          pendingId = id(input.pendingPattern.id);
+        } else {
+          name = wikiPendingPatternText(input.pendingPattern.name, 'name');
+          scope = wikiPendingPatternText(input.pendingPattern.scope, 'scope');
         }
       } else if (input.entryId !== null) id(input.entryId);
       if (!/^[a-f0-9]{64}$/.test(input.labelHash || '') || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
@@ -555,7 +557,7 @@ export function createWikiStore(options: any) {
         const previous = state.patternLabels?.find((r: any) => r.caseId === input.caseId);
         if (previous) {
           const same = pending ? Boolean(previous.pendingPatternId) && (pendingId ? previous.pendingPatternId === pendingId
-            : state.pendingPatterns?.some((p: any) => p.id === previous.pendingPatternId && p.name === name))
+            : state.pendingPatterns?.some((p: any) => p.id === previous.pendingPatternId && p.name === name && p.scope === scope))
             : !previous.pendingPatternId && previous.entryId === input.entryId;
           if (!same || previous.labelHash !== input.labelHash) throw fail('wiki_pattern_label_frozen');
           return { changed: false, value: previous };
@@ -573,7 +575,7 @@ export function createWikiStore(options: any) {
             if (state.pendingPatterns?.some((p: any) => p.name === name)
               || label.options.some((e: any) => e.title.trim() === name)) throw fail('wiki_pending_pattern_name_conflict');
             pendingId = 'pending-' + crypto.randomUUID();
-            const content = { id: pendingId, name, createdRevision: state.revision, createdAt: now, source: 'badcase-page' };
+            const content = { id: pendingId, name, scope, createdRevision: state.revision, createdAt: now, source: 'badcase-page' };
             (state.pendingPatterns || (state.pendingPatterns = [])).push({ ...content, hash: hash(JSON.stringify(content)) });
           }
         } else if (input.entryId !== null && !label.options.some((e: any) => e.entryId === input.entryId)) throw fail('wiki_entry_not_found');
@@ -589,8 +591,8 @@ export function createWikiStore(options: any) {
         return { changed: true, value: saved };
       }).value;
     },
-    // Linking is explicit immutable consent, separate from review and learning.
-    // Existing label, split and version bytes are never rewritten.
+    // Manual linking and initial category approval share immutable link records.
+    // Existing label and split bytes are never rewritten.
     linkPendingPattern(input: any) {
       if (!global) throw fail('wiki_global_required');
       shape(input, ['pendingPatternId', 'entryId', 'expectedRevision']);
@@ -605,10 +607,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         if (!state.pendingPatterns?.some((p: any) => p.id === input.pendingPatternId)) throw fail('wiki_pending_pattern_not_found');
         if (!state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
-        const content = { pendingPatternId: input.pendingPatternId, entryId: input.entryId, source: 'badcase-page',
-          confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
-        const saved = { ...content, hash: hash(JSON.stringify(content)) };
-        (state.pendingPatternLinks || (state.pendingPatternLinks = [])).push(saved);
+        const saved = appendWikiPendingPatternLink(state, input.pendingPatternId, input.entryId);
         appendEvent(state, { type: 'pending-pattern-linked', pendingPatternId: input.pendingPatternId, entryId: input.entryId, linkHash: saved.hash });
         return { changed: true, value: saved };
       }).value;
@@ -825,23 +824,81 @@ export function createWikiStore(options: any) {
         return { changed: true, value: saved };
       }).value;
     },
-    recordPreclassification(input: any, expectedRevision?: number) {
-      return this.recordInduction(input, expectedRevision, 'preclassification');
+    getCategoryProposals() { return projectWikiCategoryProposals(read()); },
+    recordCategoryProposals(input: any, expectedRevision: number) {
+      if (!global) throw fail('wiki_global_required');
+      return change(state => {
+        if (!Number.isSafeInteger(expectedRevision)) throw fail('wiki_invalid_input');
+        if (state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        return { changed: true, value: appendWikiCategoryProposals(state, input) };
+      }).value;
     },
-    recordInduction(input: any, expectedRevision?: number, phase = 'induction') {
+    confirmCategoryProposal(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      return change(state => ({ changed: true, value: confirmWikiCategoryProposal(state, input) })).value;
+    },
+    rejectCategoryProposal(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      return change(state => ({ changed: true, value: rejectWikiCategoryProposal(state, input) })).value;
+    },
+    recordCategoryInduction(input: any, expectedRevision: number) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['pendingPatternId', 'caseIds', 'model', 'proof', 'results']);
+      id(input.pendingPatternId);
+      const caseIds = ids(input.caseIds);
+      if (!Number.isSafeInteger(expectedRevision) || input.model !== MODEL) throw fail('wiki_invalid_input');
+      shape(input.proof, ['inputHash', 'calls', 'cleaned', 'isolation', 'containerId']);
+      if (typeof input.proof.inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.proof.inputHash) || !Array.isArray(input.proof.calls) || input.proof.cleaned !== true) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const { pending, cases } = wikiCategoryTrainingCases(state, input.pendingPatternId);
+        assertWikiCategoryDraftAvailable(state, pending.id);
+        const trainingIds = cases.map((c: any) => c.id);
+        if (caseIds.length !== trainingIds.length || caseIds.some(c => !trainingIds.includes(c))) throw fail('wiki_invalid_case_ids');
+        if (!Array.isArray(input.results) || input.results.length !== 1) modelInvalid('results', 'exactly_one_pattern_required');
+        const result = input.results[0];
+        let prose: any;
+        try {
+          atField('results[0]', () => shape(result, ['failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline']));
+          prose = entry({ ...result, title: pending.name, caseIds: trainingIds }, new Set<string>(trainingIds));
+        } catch (e: any) { modelInvalid(e.validationIssue?.field || 'results[0]', e.validationIssue?.rule || e.code); }
+        const now = new Date().toISOString(), base = state.versions.at(-1);
+        const nextEntry = 1 + state.versions.flatMap((v: any) => v.entries).reduce((max: number, e: any) => Math.max(max, Number(/^entry-(\d+)$/.exec(e.id)?.[1] || 0)), 0);
+        const current = { id: `entry-${nextEntry}`, ...prose, sourcePendingPatternId: pending.id, categoryReviewRequired: true, status: 'draft', createdAt: now };
+        const allCaseIds = [...new Set([...(base?.caseIds || []), ...trainingIds])];
+        const run = { id: `induction-${state.revision + 1}-${hash(JSON.stringify(input)).slice(0, 16)}`, phase: 'category-induction', sourcePendingPatternId: pending.id,
+          createdAt: now, model: MODEL, caseIds: trainingIds, inputHash: input.proof.inputHash, calls: structuredClone(input.proof.calls), cleaned: true,
+          ...(input.proof.containerId === undefined ? {} : { containerId: text(input.proof.containerId, 128) }),
+          ...(input.proof.isolation === undefined ? {} : { isolation: structuredClone(input.proof.isolation) }) };
+        const version = { id: `wiki-${state.revision + 1}`, kind: 'category-induction', sourcePendingPatternId: pending.id, createdAt: now,
+          model: MODEL, role: base?.role || 'global', caseIds: allCaseIds, trainingHash: hash(JSON.stringify(allCaseIds)),
+          entries: [...structuredClone(base?.entries || []), current], unclassified: structuredClone(base?.unclassified || []).filter((u: any) => !trainingIds.includes(u.caseId)), inductionRunId: run.id };
+        state.versions.push(version); state.inductionRuns.push(run);
+        appendEvent(state, { type: 'category-induction-run', pendingPatternId: pending.id, versionId: version.id, runId: run.id, caseIds: trainingIds });
+        return { changed: true, value: { run, version } };
+      }).value;
+    },
+    previewPreclassification(input: any, expectedRevision: number) {
+      return this.recordInduction(input, expectedRevision, 'preclassification', undefined, true);
+    },
+    recordPreclassification(input: any, expectedRevision?: number, categoryBatch?: any) {
+      return this.recordInduction(input, expectedRevision, 'preclassification', categoryBatch);
+    },
+    recordInduction(input: any, expectedRevision?: number, phase = 'induction', categoryBatch?: any, preview = false) {
       shape(input, ['caseIds', 'model', 'proof', 'results']);
       const caseIds = ids(input.caseIds), selected = new Set(caseIds);
       if (caseIds.length > 20 || input.model !== MODEL || !Array.isArray(input.results) || input.results.length !== caseIds.length) throw fail('wiki_invalid_input');
       shape(input.proof, ['inputHash', 'calls', 'cleaned', 'isolation', 'containerId']);
       if (typeof input.proof.inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.proof.inputHash)
         || !Array.isArray(input.proof.calls) || input.proof.cleaned !== true) throw fail('wiki_invalid_input');
-      return change(state => {
+      const apply = (state: any) => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
         const preclassify = phase === 'preclassification';
+        const categoryCases = wikiUnlinkedCategoryCaseIds(state);
         for (const caseId of caseIds) {
           const c = state.cases.find((item: any) => item.id === caseId);
           if (!c || (preclassify ? c.split !== null || caseStateView(state, caseId).status !== 'pending-preclassification' || c.kind !== 'marked-badcase'
-            : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending')) throw fail('wiki_not_pending');
+            : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending' || categoryCases.has(caseId))) throw fail('wiki_not_pending');
         }
         // A preclassification run owns the complete pending batch, never a
         // caller-chosen subset that could change quota allocation order.
@@ -928,10 +985,19 @@ export function createWikiStore(options: any) {
           saveCaseState(state, { caseId: r.caseId, status: preclassify && r.kind === 'new' ? 'pending' : r.kind === 'none' ? 'unfit' : 'suggested',
             memberships: current.memberships, reason: r.reason, updatedAt: now });
         }
+        // Combined page generation publishes preclassification and categories
+        // together only after BOTH model outputs pass validation.
+        const categories = categoryBatch === undefined ? undefined : appendWikiCategoryProposals(state, categoryBatch);
         state.suggestions.push(...suggestions); state.inductionRuns.push(run);
         appendEvent(state, { type: preclassify ? 'preclassification-run' : 'induction-run', runId: run.id, caseIds: [...caseIds], ...(version ? { versionId: version.id } : {}) });
-        return { changed: true, value: { run, suggestions, version } };
-      }).value;
+        return { changed: true, value: { run, suggestions, version, ...(categories === undefined ? {} : categories) } };
+      };
+      if (preview) {
+        if (phase !== 'preclassification') throw fail('wiki_invalid_input');
+        const state = read(), result = apply(state);
+        return { state, saved: result.value };
+      }
+      return change(apply).value;
     },
     resolveSuggestion(input: any) {
       shape(input, ['suggestionId', 'decision', 'expectedRevision']);
@@ -1239,6 +1305,21 @@ export function createWikiStore(options: any) {
         const version = state.versions.find((v: any) => v.id === versionId), current = version?.entries.find((e: any) => e.id === entryId);
         if (!current) throw fail('wiki_entry_not_found');
         if (current.status !== 'draft') throw fail('wiki_entry_reviewed');
+        const categoryDraft = current.categoryReviewRequired === true && current.sourcePendingPatternId;
+        if (categoryDraft) {
+          // An older version can contain a cloned draft. Never approve an old
+          // copy while the latest knowledge base would still expose a draft.
+          if (version !== state.versions.at(-1)) throw fail('wiki_revision_conflict');
+          if (input.decision === 'approved') {
+            const { cases } = wikiCategoryTrainingCases(state, categoryDraft);
+            if (cases.length !== current.caseIds.length || cases.some((c: any) => !current.caseIds.includes(c.id))) throw fail('wiki_category_not_ready');
+          }
+          // Rejection remains available after new members or a manual link so
+          // an obsolete draft cannot permanently block a fresh induction.
+          // The existing knowledge editor round-trips all prose fields. An
+          // unchanged title is compatible; only category content is editable.
+          if (input.patch?.title !== undefined && input.patch.title !== current.title) throw fail('wiki_invalid_input');
+        }
         const fields = Object.fromEntries(ENTRY_FIELDS.map(k => [k, current[k]]));
         // Changing membership would invalidate whole-version coverage. This
         // minimal review editor supports prose edits only; regenerate to regroup.
@@ -1247,6 +1328,19 @@ export function createWikiStore(options: any) {
         Object.assign(current, revised);
         if (input.decision) {
           current.status = input.decision; current.reviewedAt = new Date().toISOString();
+          if (categoryDraft && input.decision === 'approved') {
+            for (const caseId of current.caseIds) {
+              const view = caseStateView(state, caseId);
+              if (!view.memberships.some((m: any) => m.entryId === current.id)) view.memberships.push({ entryId: current.id, source: 'model-confirmed', at: current.reviewedAt });
+              // Approval may already project membership from the version; make
+              // the explicit confirmation provenance deterministic nonetheless.
+              view.memberships = view.memberships.map((m: any) => m.entryId === current.id ? { entryId: current.id, source: 'model-confirmed', at: current.reviewedAt } : m);
+              saveCaseState(state, { ...view, status: 'assigned', reason: '', updatedAt: current.reviewedAt });
+            }
+            const link = appendWikiPendingPatternLink(state, categoryDraft, current.id);
+            current.categoryReviewRequired = false;
+            appendEvent(state, { type: 'pending-pattern-linked', pendingPatternId: categoryDraft, entryId: current.id, linkHash: link.hash });
+          }
           // A model-proposed pattern still uses the normal draft review API.
           // Only its approval confirms the associated membership suggestions.
           for (const suggestionId of current.suggestionIds || []) {

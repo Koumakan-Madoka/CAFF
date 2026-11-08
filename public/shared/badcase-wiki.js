@@ -43,7 +43,15 @@
       onConfirmPatternLabel: body => { void mutate('/api/wikiskill/pattern-label-confirm', body, '模式标签已确认；未改变组别或归纳成员。'); },
       onConfirmInitialSplit: body => { void mutate('/api/wikiskill/initial-split-confirm', body, '此模式的新用例分组已冻结；已有组别不变，未启动评测。'); },
       onLinkPendingPattern: body => { void mutate('/api/wikiskill/pending-pattern-link', body, '关联已锁定；门槛和测试用例按关联模式解析，已有组别不变。'); },
-      onPreclassify: () => { if (preclassificationPending().length) void mutate('/api/wikiskill/induct', {}, '预分类建议已保存；在各用例面板核对后确认标签。'); } });
+      onPreclassify: () => { if (preclassificationPending().length) void mutate('/api/wikiskill/induct', {}, '预分类及类别提议已保存；请在 Badcase 页核对后确认。'); },
+      onProposeCategories: () => { void mutate('/api/wikiskill/category-propose', {}, '类别提议已保存；未经确认不改任何标签。'); },
+      onConfirmCategory: body => { void mutate('/api/wikiskill/category-confirm', body, '类别和所选成员标签已一起锁定；请核对首次分组。'); },
+      onRejectCategory: body => { void mutate('/api/wikiskill/category-reject', body, '已不采纳提议；成员可逐条单独处理。'); },
+      onInductCategory: body => { void mutate('/api/wikiskill/category-induct', body, '模式内容草稿已保存；只用了本类别训练成员，请审核。'); },
+      onReviewCategory: async ({ pendingPatternId, ...body }) => {
+        const ok = await mutate('/api/wikiskill/review', body, body.decision === 'approved' ? '审核通过，已自动成为正式模式并确定目标题；未启动评测。' : '草稿已驳回。');
+        if (ok && body.decision === 'rejected') await mutate('/api/wikiskill/category-induct', { pendingPatternId }, '已重新归纳为新草稿，请审核。');
+      } });
     const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, char => ESC[char]);
     const terms = value => String(value || '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -75,6 +83,7 @@
     const VIEWS = ['badcases', 'wiki', 'cases', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
     const rubricEdits = new Map();
+    let wikiCategoryConsent = null;
     const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
     const latestVersion = () => D?.versions.at(-1) || null;
     const entries = () => currentVersion()?.entries || [];
@@ -95,7 +104,8 @@
     const activeCands = () => (D?.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.status !== 'deprecated');
     const pagePattern = c => (D?.casePatterns || []).find(l => l.caseId === c.id && l.confirmed && (l.source === 'badcase-page' || D?.patternLabels?.some(r => r.caseId === c.id && r.source === 'badcase-page')));
     const pendingSuggestions = () => (D?.suggestions || []).filter(s => s.status === 'pending' && !(caseById.get(s.caseId)?.split !== 'train' && caseById.has(s.caseId) && pagePattern(caseById.get(s.caseId))));
-    const rawPending = () => (D?.cases || []).filter(c => ['pending', 'pending-preclassification'].includes(caseState(c).status));
+    const categoryMember = c => pagePattern(c)?.pendingPatternId && !(D?.pendingPatternLinks || []).some(l => l.pendingPatternId === pagePattern(c).pendingPatternId);
+    const rawPending = () => (D?.cases || []).filter(c => !categoryMember(c) && ['pending', 'pending-preclassification'].includes(caseState(c).status));
     const preclassificationPending = () => (D?.cases || []).filter(c => c.split === null && !c.preclassification && caseState(c).status === 'pending-preclassification');
     const suggestionFor = c => pendingSuggestions().filter(s => s.caseId === c.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
     function derive() {
@@ -116,7 +126,11 @@
     const stateText = c => { const s = caseState(c); if (s.status === 'classification-confirmed' && pagePattern(c)?.pendingPatternId && !pagePattern(c).entryId) return `归类已确认 · 待归纳新模式「${esc(pagePattern(c).pendingPatternName)}」`; if (s.status === 'assigned') return `归入 ${s.memberships.map(m => entryChip(m.entryId)).join('、')}`; return { holdout: `${SPLIT[c.split]}，不参与归纳`, 'pending-preclassification': '待预分类', 'classification-pending': '归类待确认', 'classification-confirmed': '归类已确认', 'pending-allocation': '标签已确认 · 待分配', pending: '待归纳', suggested: '待归纳，有建议', unfit: '未能归类' }[s.status] || s.status; };
     function nextStep() {
       if (!D) return { text: '正在读取真实数据…', hash: 'wiki' };
-      const draft = entries().find(e => e.status === 'draft'); if (draft) return { text: `审核知识库里的草稿模式「${draft.title}」`, hash: draft.id };
+      const draft = entries().find(e => e.status === 'draft'); if (draft) return { text: `审核${draft.categoryReviewRequired ? '本类别训练成员归纳的' : '知识库里的'}草稿模式「${draft.title}」`, hash: draft.id };
+      if ((D.categoryProposalViews || []).some(p => p.status === 'pending')) return { text: '核对 Badcase 页的新类别提议，修改名字、范围和成员后整组确认', hash: 'badcases' };
+      const unlinked = (D.pendingPatterns || []).find(p => !(D.pendingPatternLinks || []).some(l => l.pendingPatternId === p.id));
+      if (unlinked) return { text: `在 Badcase 页核对类别「${unlinked.name}」的分组，再只用训练成员归纳模式内容并审核`, hash: 'badcases' };
+      if ((D.cases || []).some(c => c.split === null && c.preclassification?.kind === 'new' && !(D.casePatterns || []).some(l => l.caseId === c.id && l.confirmed))) return { text: '在 Badcase 页提议新类别，只提议，不改标签', hash: 'badcases' };
       const experience = experienceTips().find(e => e.status === 'draft'); if (experience) return { text: '审核评测后生成的经验草稿，审核前不用于候选', hash: experience.entryId };
       const global = globalTarget(), globalDraft = (D.candidates || []).find(c => c.targetId === global?.id && c.status === 'draft');
       if (globalDraft) return { text: '确认全局提示词候选，然后开始对照评测', hash: 'targets', target: global.id };
@@ -174,7 +188,7 @@
     const candsUsing = entryId => (D.candidates || []).filter(c => c.kind === 'global-wiki-candidate-v1' && c.entryIds.includes(entryId));
     const suggestionsFor = entryId => pendingSuggestions().filter(s => s.kind === 'assign' && s.entryId === entryId && caseById.get(s.caseId)?.split === 'train');
     function inboxBox() {
-      const proposals = entries().filter(e => e.status === 'draft' && (e.suggestionIds || []).some(id => pendingSuggestions().some(s => s.id === id && s.kind === 'new')));
+      const proposals = entries().filter(e => e.status === 'draft' && (e.categoryReviewRequired || (e.suggestionIds || []).some(id => pendingSuggestions().some(s => s.id === id && s.kind === 'new'))));
       const assign = pendingSuggestions().filter(s => s.kind === 'assign' && caseById.get(s.caseId)?.split === 'train'), raw = rawPending(), unfit = D.cases.filter(c => caseState(c).status === 'unfit');
       const items = [
         ...experienceTips().filter(e => e.status === 'draft').map(e => `<li><a href="#${esc(e.entryId)}" data-entry="${esc(e.entryId)}">评测经验 v${esc(e.version)} 待审核</a><span>不自动写入模式</span></li>`),
@@ -185,9 +199,10 @@
         unfit.length ? `<li><a href="#cases" data-group="unfit">${unfit.length} 条未能归类</a><span>可手动归入</span></li>` : '',
       ].join('');
       if (!items) return '';
-      return `<div class="inbox-head"><h4>待你处理</h4></div><ul>${items}</ul><button type="button" class="btn small" data-induct ${!raw.length || pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类（只提议标签）' : '用模型归纳新用例'}</button><p class="inbox-note">预分类只提议标签；在 Badcase 页确认模式标签，再核对并确认首次分组。门槛/测试只确认归类，不参与归纳。归纳只提建议：归入已有模式、提议新模式，或标为未能归类。你确认后才生效，已审核的模式不会被改写。</p>`;
+      return `<div class="inbox-head"><h4>待你处理</h4></div><ul>${items}</ul>${raw.length ? `<button type="button" class="btn small" data-induct ${pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类并提议类别' : '用模型归纳新用例'}</button>` : ''}<p class="inbox-note">预分类会接着提议新类别，不改标签；在 Badcase 页核对类别、确认标签和分组。模式内容只用训练成员归纳，门槛和测试不参与。待归纳类别的训练成员在 Badcase 页单独归纳，此处的全局归纳跳过它们；已审核模式不会被改写。</p>`;
     }
     function renderWiki() {
+      wikiCategoryConsent = null;
       const ts = terms(state.wikiQ), counts = { all: entries().length, approved: 0, draft: 0, rejected: 0 };
       entries().forEach(e => { counts[e.status] = (counts[e.status] || 0) + 1; });
       $('#wiki-seg').innerHTML = [['all', '全部'], ['approved', '已通过'], ['draft', '草稿'], ['rejected', '已驳回']].map(([key, label]) => `<button type="button" role="radio" data-wiki-status="${key}" aria-checked="${state.wikiStatus === key}">${label} ${counts[key] || 0}</button>`).join('');
@@ -215,17 +230,18 @@
     }
     function entryPage(entry, ts) {
       const reps = replaysFor(entry), cands = candsUsing(entry.id), suggestions = suggestionsFor(entry.id), proposal = entry.status === 'draft' && (entry.suggestionIds || []).length;
-      const ids = evidenceIds(entry), editor = entry.status === 'draft';
+      const ids = evidenceIds(entry), editor = entry.status === 'draft', category = entry.categoryReviewRequired === true;
+      const categoryNote = category ? '<p class="muted-note">此草稿只用本类别训练成员归纳；类别名字固定，四项内容可改。通过时一起确认训练成员和关联，自动成为正式模式；门槛、测试成为目标题，不启动评测。</p>' : '';
       return `<nav class="crumb"><a href="#wiki" data-go="wiki">知识库</a><span aria-hidden="true">›</span><span>${proposal ? '新模式提议' : `模式 ${entry.n} / ${entries().length}`}</span></nav>
         <header class="page-head"><h2>${hl(entry.title, ts)}</h2><div class="page-meta">${pill(ENTRY_STATUS, entry.status)}<span>${esc(currentVersion().id)} ${currentVersion().origin==='manual-guideline-revision-v1'?'人工准则修订':'归纳'}</span>${entry.reviewedAt ? `<span>${fmt(entry.reviewedAt)} 通过审核</span>` : ''}</div>${proposal ? '<p class="muted-note">现有模式解释不了关联用例，所以模型提议新建这一条。通过审核后才能用于候选；确认前不会改变用例归属。</p>' : ''}${editor ? `<div class="page-actions"><button type="button" class="btn primary" data-review="approved">通过</button><button type="button" class="btn" data-review="save">保存草稿</button><button type="button" class="btn ghost" data-review="rejected">驳回</button></div>` : '<p class="muted-note">已审核条目已冻结；增量归纳和手动归属不会改写这条内容。</p>'}</header>
-        ${editor ? editForm(entry) : `<dl class="facts"><div><dt>失败模式</dt><dd>${hl(entry.failureMode, ts)}</dd></div><div><dt>典型症状</dt><dd>${hl(entry.symptoms, ts)}</dd></div><div><dt>根因假设</dt><dd>${hl(entry.rootCauseHypothesis, ts)}</dd></div></dl><section class="guideline" aria-label="准则"><h3>准则</h3><p class="hint">${entry.status === 'approved' ? '这句话可以用于生成候选提示词' : '通过审核后，这句话才可以写进候选提示词'}</p><p class="gl-text">${hl(entry.guideline, ts)}</p></section>`}
+        ${categoryNote}${editor ? editForm(entry) : `<dl class="facts"><div><dt>失败模式</dt><dd>${hl(entry.failureMode, ts)}</dd></div><div><dt>典型症状</dt><dd>${hl(entry.symptoms, ts)}</dd></div><div><dt>根因假设</dt><dd>${hl(entry.rootCauseHypothesis, ts)}</dd></div></dl><section class="guideline" aria-label="准则"><h3>准则</h3><p class="hint">${entry.status === 'approved' ? '这句话可以用于生成候选提示词' : '通过审核后，这句话才可以写进候选提示词'}</p><p class="gl-text">${hl(entry.guideline, ts)}</p></section>`}
         ${experiencePanel(entry)}<section class="block"><div class="block-head"><h3>证据用例 <span class="count">${ids.length}</span></h3><a class="hint" href="#cases" data-group="${esc(entry.id)}">在用例页按此模式查看</a></div>${ids.length ? `<ul class="evidence">${ids.map(id => caseById.get(id)).filter(Boolean).map(c => evidenceRow(c, ts)).join('')}</ul>` : '<p class="muted-note">暂无活动用例；准则文字保留，已删除的历史引用不计入。</p>'}</section>
         ${suggestions.length ? `<section class="block"><div class="block-head"><h3>建议加入的用例 <span class="count">${suggestions.length}</span></h3><span class="hint">你确认后才算证据</span></div><ul class="evidence">${suggestions.map(suggestRow).join('')}</ul></section>` : ''}
         <section class="block"><div class="block-head"><h3>回放题 <span class="count">${reps.length}</span></h3><span class="hint">评测时用这些题检验这条准则</span></div>${reps.length ? `<ul class="replays">${reps.map(r => { const c = caseById.get(r.sourceCaseId), totals = comparisonCase(r); return `<li>${catChip(r)}<span class="task">“${esc(r.task)}”<span class="res"> · 用例 #${c?.n} · 本轮${SPLIT[replayStage(r)]}</span></span><span class="res">原版 ${score(totals, 'original')} · 候选 ${score(totals, 'candidate')}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">这个模式还没有回放题，评测暂时验证不了这条准则。</p>'}</section>
         <section class="block"><div class="block-head"><h3>用在哪些候选 <span class="count">${cands.length}</span></h3></div>${cands.length ? `<ul class="uses">${cands.map(c => { const target = targetById.get(c.targetId); return `<li><a href="#targets" data-target="${esc(c.targetId)}">${esc(targetFull(target))}</a>${pill(CAND_STATUS, c.status)}<span class="res">${fmt(c.createdAt)}</span></li>`; }).join('')}</ul>` : '<p class="muted-note">还没有候选用到这条准则。</p>'}</section>`;
     }
     function editForm(entry) {
-      const area = (name, label, rows) => `<label class="field">${label}<textarea name="${name}" rows="${rows}" ${pending || !writable ? 'disabled' : ''}>${esc(entry[name])}</textarea></label>`;
+      const area = (name, label, rows) => `<label class="field">${label}<textarea name="${name}" rows="${rows}" ${name === 'title' && entry.categoryReviewRequired ? 'readonly' : ''} ${pending || !writable ? 'disabled' : ''}>${esc(entry[name])}</textarea></label>`;
       return `<div class="edit-form">${area('title', '标题', 1)}${area('failureMode', '失败模式', 3)}${area('symptoms', '典型症状', 3)}${area('rootCauseHypothesis', '根因假设', 3)}${area('guideline', '准则（不超过 300 字）', 3)}</div>`;
     }
     /* Cases */
@@ -246,6 +262,7 @@
     }
     function membershipSource(c) {
       const s = caseState(c);
+      if (categoryMember(c) && c.split === 'train') return `类别「${pagePattern(c).pendingPatternName}」的训练成员；在 Badcase 页限定归纳，审核通过后自动成为正式模式，不参与全局归纳。`;
       if (s.status === 'pending-preclassification') return '待模型预分类，尚无组别';
       if (s.status === 'pending-allocation') return '模式标签已确认；在 Badcase 页核对并确认分组提议，不加入归纳成员';
       if (s.status === 'classification-pending') return '预分类只是建议，归类待确认；不参与归纳';
@@ -256,7 +273,7 @@
       return s.memberships.map(m => m.source === 'manual' ? `手动调整 · ${fmt(m.at)}` : m.source === 'model-confirmed' ? `模型建议经确认 · ${fmt(m.at)}` : `${latestVersion()?.id || ''} 模型归纳，随模式审核通过`).join('；');
     }
     function manualControls(c) {
-      const s = caseState(c); if (c.split !== 'train' && pagePattern(c) || ['holdout', 'pending-preclassification', 'pending-allocation'].includes(s.status)) return '';
+      const s = caseState(c); if (pagePattern(c) || ['holdout', 'pending-preclassification', 'pending-allocation'].includes(s.status)) return '';
       const selected = s.memberships?.[0]?.entryId || '';
       return `<div class="manual-controls"><select data-manual-entry aria-label="选择归属模式"><option value="">选择已通过模式</option>${approvedEntries().map(e => `<option value="${esc(e.id)}" ${selected === e.id ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select><button type="button" class="btn small" data-manual-assign>${selected ? '改归属' : '手动归入'}</button>${s.memberships?.length || c.split !== 'train' ? '<button type="button" class="btn small ghost" data-manual-remove>清为未归类</button>' : ''}</div>`;
     }
@@ -302,7 +319,7 @@
         groups.push({ key: 'holdout', title: '门槛/测试 · 不参与归纳', note: '新门槛和测试用例只确认或调整归类，不参与归纳、也不改模式内容。原16条保留既有13训练/3测试；本轮门槛中原有训练题另作标注，不假称未见数据。', items: visible.filter(c => inGroup(c, 'holdout')) });
         groups.push({ key: 'unfit', title: '未能归类', keep: true, note: '归纳过、但不属于任何现有模式的用例。你可以随时手动归入。', items: visible.filter(c => inGroup(c, 'unfit')) });
         const visibleGroups = groups.filter(group => (state.casesGroup === 'all' || state.casesGroup === group.key) && (group.items.length || (group.keep && !filtered)));
-        html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类（只提议标签）' : '用模型归纳新用例'}</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
+        html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类并提议类别' : '用模型归纳新用例'}</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
       }
       $('#cases-body').innerHTML = html;
       controls(); // Layout/filter/search renders replace controls; preserve eligibility and write locks.
@@ -480,7 +497,7 @@
       badcases.setWritable(!pending && writable);
       root.setAttribute('aria-busy', String(pending));
       $$('[data-induct]').forEach(button => { button.disabled = pending || !writable || !rawPending().length; });
-      $$('[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-review-experience],[data-revise-experience],[data-generate-candidate]').forEach(button => { button.disabled = pending || !writable || (button.hasAttribute('data-generate-candidate') && $$('[data-candidate-entry]:checked').length !== 1); });
+      $$('[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-wiki-category-lock],[data-wiki-category-cancel],[data-review-experience],[data-revise-experience],[data-generate-candidate]').forEach(button => { button.disabled = pending || !writable || (button.hasAttribute('data-generate-candidate') && $$('[data-candidate-entry]:checked').length !== 1); });
       $$('[data-confirm-candidate]').forEach(button => { const candidate = D?.candidates.find(c => c.id === button.dataset.confirmCandidate); button.disabled = pending || !writable || candidate?.status !== 'draft'; });
       $$('.edit-form textarea').forEach(input => { input.disabled = pending || !writable; });
       $$('[data-rubric-panel]').forEach(panel => {
@@ -523,17 +540,23 @@
         await fetchJson(url, { method: 'POST', body: { confirmed: true, expectedRevision, ...body } }); if (seq !== generation) return;
         // Re-read the full state after every write: pending create/link can also
         // invalidate label hashes and choices on other, unconfirmed cases.
-        const data = await fetchJson('/api/wikiskill'); if (seq !== generation) return; accept(data); toast(success);
+        const data = await fetchJson('/api/wikiskill'); if (seq !== generation) return false; accept(data); toast(success); return true;
       }
-      catch { if (seq === generation) { writable = false; toast('操作被拒绝、失败或结果未知；未自动重试，请刷新核对。'); } }
+      catch { if (seq === generation) { writable = false; toast('操作被拒绝、失败或结果未知；未自动重试，请刷新核对。'); } return false; }
       finally { if (seq === generation) { pending = false; controls(); } }
     }
-    async function review(entry, decision) {
+    async function review(entry, decision, lock = false) {
       if (entry.status !== 'draft' || pending || !writable) return;
-      const patch = {};
-      for (const field of ['title', 'failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline']) patch[field] = root.querySelector(`[name="${field}"]`)?.value ?? entry[field];
+      const patch = {}, category = entry.categoryReviewRequired === true;
+      for (const field of [...(category ? [] : ['title']), 'failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline']) patch[field] = root.querySelector(`[name="${field}"]`)?.value ?? entry[field];
       if (!patch.guideline.trim() || [...patch.guideline].length > 300) { toast('准则须为 1–300 字。'); return; }
-      if (decision !== 'save' && !confirmAction(`确认${decision === 'approved' ? '通过' : '驳回'}「${patch.title}」？审核后内容冻结。`)) return;
+      if (category && decision !== 'save') {
+        const selection = JSON.stringify({ entryId: entry.id, versionId: currentVersion().id, decision, patch });
+        if (!lock || wikiCategoryConsent?.selection !== selection) {
+          wikiCategoryConsent = { selection, decision }; $('#wiki-page [data-wiki-category-consent]')?.remove();
+          $('#wiki-page .page-head').insertAdjacentHTML('beforeend', `<div class="muted-note" data-wiki-category-consent><b>${decision === 'approved' ? '通过后内容冻结，自动成为正式模式，门槛和测试成为目标复现题；不启动评测。' : '驳回后可在 Badcase 页重新归纳。'}</b><div class="page-actions"><button type="button" class="btn primary" data-wiki-category-lock>确认${decision === 'approved' ? '通过' : '驳回'}</button><button type="button" class="btn" data-wiki-category-cancel>取消</button></div></div>`); return;
+        }
+      } else if (decision !== 'save' && !confirmAction(`确认${decision === 'approved' ? '通过' : '驳回'}「${patch.title}」？审核后内容冻结。`)) return;
       await mutate('/api/wikiskill/review', { versionId: currentVersion().id, entryId: entry.id, patch, ...(decision === 'save' ? {} : { decision }) }, decision === 'save' ? '草稿已保存。' : '审核结果已保存；未修改生产提示词或启动评测。');
     }
     async function copyPromptText(value) {
@@ -542,7 +565,7 @@
       catch { toast('复制失败；请展开完整文本手动复制。'); }
     }
     root.addEventListener('click', event => {
-      const el = event.target.closest('[data-discard-rubric-edit],[data-edit-rubric],[data-save-rubric],[data-freeze-rubric],[data-draft-rubric],[data-add-assertion],[data-remove-assertion],[data-copy-candidate],[data-copy-baseline],[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-confirm-candidate],[data-generate-candidate],[data-review-experience],[data-revise-experience]');
+      const el = event.target.closest('[data-discard-rubric-edit],[data-edit-rubric],[data-save-rubric],[data-freeze-rubric],[data-draft-rubric],[data-add-assertion],[data-remove-assertion],[data-copy-candidate],[data-copy-baseline],[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-wiki-category-lock],[data-wiki-category-cancel],[data-confirm-candidate],[data-generate-candidate],[data-review-experience],[data-revise-experience]');
       if (!el || el.disabled || !D) return;
       const rubricPanelElement = el.closest('[data-rubric-panel]');
       if (rubricPanelElement) {
@@ -591,6 +614,8 @@
         void mutate('/api/wikiskill/experience', { experienceId: el.dataset.reviewExperience, decision, patch }, '经验审核/版本结果已保存；未改生产提示词。'); return;
       }
       if (el.dataset.reviseExperience) { void mutate('/api/wikiskill/experience', { experienceId: el.dataset.reviseExperience, decision: 'revise' }, '修订草稿已生成；已审核原文保留不变。'); return; }
+      if (el.hasAttribute('data-wiki-category-cancel')) { wikiCategoryConsent = null; $('#wiki-page [data-wiki-category-consent]')?.remove(); return; }
+      if (el.hasAttribute('data-wiki-category-lock')) { if (wikiCategoryConsent) void review(entryById.get(state.entryId), wikiCategoryConsent.decision, true); return; }
       if (el.dataset.review) { void review(entryById.get(state.entryId), el.dataset.review); return; }
       if (el.dataset.confirmCandidate) { const candidate = D.candidates.find(c => c.id === el.dataset.confirmCandidate), target = targetById.get(candidate.targetId); if (!confirmAction(`确认${targetFull(target)}的这份候选？此操作不会直接启动评测或修改生产配置。`)) return; void mutate('/api/wikiskill/confirm-global-candidate', { candidateId: candidate.id, candidateHash: candidate.candidateHash }, '候选已确认；未启动评测或修改生产配置。'); return; }
       if (el.hasAttribute('data-generate-candidate')) { const entryIds = $$('[data-candidate-entry]:checked').map(input => input.dataset.candidateEntry); if (entryIds.length !== 1 || !confirmAction('用所选已通过模式生成候选草稿？不会修改生产提示词或启动评测。')) return; void mutate('/api/wikiskill/candidate', { versionId: currentVersion().id, entryIds, targetId: state.targetId }, '候选草稿已生成；请查看新增内容后确认。'); }
@@ -603,7 +628,10 @@
       if (el.hasAttribute('data-rubric-model')) { const j = eligibleJudges().find(j => j.backend === el.value); edit.scoringModel = j ? { backend: j.backend, model: j.model } : null; }
       controls();
     }
-    root.addEventListener('input', event => { if (event.target.hasAttribute('data-rubric-question')) updateRubricField(event.target); });
+    root.addEventListener('input', event => {
+      if (event.target.closest('#wiki-page .edit-form')) { wikiCategoryConsent = null; $('#wiki-page [data-wiki-category-consent]')?.remove(); }
+      if (event.target.hasAttribute('data-rubric-question')) updateRubricField(event.target);
+    });
     root.addEventListener('change', event => {
       const el = event.target;
       if (el.hasAttribute('data-rubric-evidence') || el.hasAttribute('data-rubric-model')) updateRubricField(el);

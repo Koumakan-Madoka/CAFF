@@ -111,6 +111,22 @@ body.management-app[data-page="wikiskill"] .badcase-pipeline .bc-label-option in
 .badcase-pipeline .bc-confirm-strip { display: grid; gap: 8px; padding: 10px 12px; border: 1.5px solid var(--warn); border-radius: 10px; background: var(--warn-soft); font-size: 13px; overflow-wrap: anywhere; }
 .badcase-pipeline .bc-label-error { color: var(--bad); font-size: 13px; }
 .badcase-pipeline .bc-label-panel .pill { white-space: normal; justify-self: start; }
+/* Identity cards follow the approved category-flow prototype above grouping. */
+.badcase-pipeline .bc-category-card, .badcase-pipeline .bc-category-draft { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1.5px solid var(--border-strong); border-radius: 10px; background: var(--raised); }
+.badcase-pipeline .bc-category-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; align-items: start; }
+.badcase-pipeline .bc-category-fields, .badcase-pipeline .bc-category-members { display: grid; gap: 8px; min-width: 0; }
+.badcase-pipeline .bc-category-fields label, .badcase-pipeline .bc-draft-grid label { display: grid; gap: 4px; min-width: 0; font-size: 12.5px; color: var(--soft); }
+.badcase-pipeline :is(.bc-category-fields, .bc-draft-grid) :is(input, textarea), .badcase-pipeline [data-pattern-scope] { font: inherit; font-size: 14px; color: var(--text); background: var(--surface); padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 6px; width: 100%; min-width: 0; box-sizing: border-box; }
+.badcase-pipeline :is(.bc-category-fields, .bc-draft-grid) textarea { min-height: 4.6em; resize: vertical; }
+.badcase-pipeline .bc-category-member { display: grid; grid-template-columns: auto 3em minmax(0, 1fr); gap: 2px 8px; align-items: start; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; overflow-wrap: anywhere; }
+body.management-app[data-page="wikiskill"] .badcase-pipeline .bc-category-member input[type="checkbox"] { width: auto; height: auto; min-height: 0; margin: 3px 0 0; padding: 0; box-shadow: none; }
+.badcase-pipeline .bc-category-member .hint { grid-column: 3; }
+.badcase-pipeline .bc-category-sources { font-size: 13px; color: var(--soft); overflow-wrap: anywhere; }
+.badcase-pipeline .bc-draft-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.badcase-pipeline .bc-draft-grid label:last-child { grid-column: 1 / -1; }
+.badcase-pipeline [data-manual-link] > summary { font-size: 13px; color: var(--soft); cursor: pointer; }
+.badcase-pipeline [data-manual-link] .bc-notice { margin-top: 8px; }
+@media (max-width: 980px) { .badcase-pipeline .bc-category-grid, .badcase-pipeline .bc-draft-grid { grid-template-columns: 1fr; } }
 @media (max-width: 1280px) { .badcase-pipeline .bc-board { grid-template-columns: repeat(3, minmax(0, 1fr)); } .badcase-pipeline .bc-column.out { grid-column: 1 / -1; } .badcase-pipeline .bc-detail-grid { grid-template-columns: 1fr; } }
 @media (max-width: 980px) { .badcase-pipeline .bc-master-detail, .badcase-pipeline .lanes, .badcase-pipeline .bc-detail-grid { grid-template-columns: 1fr; } .badcase-pipeline .bc-detail { position: static; max-height: none; overflow: visible; } .badcase-pipeline .bc-rows { max-height: 420px; } }
 @media (max-width: 640px) { .badcase-pipeline .bc-board { grid-template-columns: 1fr; } }
