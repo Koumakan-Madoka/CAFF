@@ -8,8 +8,17 @@ export function resolveWikiPatternLabel(state: any, label: any) {
   return { entryId: link?.entryId ?? null, patternKey: link?.entryId ?? pending.id,
     pendingPatternId: pending.id, pendingPatternName: pending.name };
 }
+export function wikiPendingPatternText(value: any, field: 'name' | 'scope'): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || [...text].length > (field === 'name' ? 40 : 120) || text.includes('\0')) {
+    throw Object.assign(Error('wiki_pending_pattern_' + field + '_invalid'), { code: 'wiki_pending_pattern_' + field + '_invalid' });
+  }
+  return text;
+}
 export function wikiPendingPatternOptions(state: any) {
   return (state.pendingPatterns || []).map((p: any) => ({ id: p.id, name: p.name,
+    // Omit on legacy records so their old hash inputs remain byte-identical.
+    ...(p.scope === undefined ? {} : { scope: p.scope, caseIds: (state.patternLabels || []).filter((l: any) => l.pendingPatternId === p.id).map((l: any) => l.caseId).sort() }),
     entryId: state.pendingPatternLinks?.find((r: any) => r.pendingPatternId === p.id)?.entryId ?? null }))
     .sort((a: any, b: any) => a.id.localeCompare(b.id));
 }

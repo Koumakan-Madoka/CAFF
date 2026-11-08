@@ -29,10 +29,24 @@ function prepareWikiInduction(store) {
     { path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'wiki-induction-container.cjs')) },
   ] };
 }
-async function inductWikiCases({ store, image, confirmed, expectedRevision, dockerBackend }, options = {}) {
-  if (confirmed !== true) throw fail('wiki_confirmation_required');
-  if (!Number.isSafeInteger(expectedRevision) || store.read().revision !== expectedRevision) throw fail('wiki_revision_conflict');
-  const plan = prepareWikiInduction(store);
+function prepareWikiCategoryProposals(store) {
+  const state = store.read();
+  const cases = require('../../build/server/domain/runtime/badcase-capture/wiki-category-proposals').wikiCategoryEligibleCases(state);
+  if (!cases.length) throw fail('wiki_no_pending_cases');
+  if (cases.length > 20) throw fail('wiki_collection_too_large');
+  const input = { phase: 'category-proposals', cases: cases.map(c => ({ id: c.id, actual: c.actual, expected: c.expected, message: c.message,
+    traceExcerpt: c.traceExcerpt, messageTruncated: c.messageTruncated, traceTruncated: c.traceTruncated, traceState: c.traceState,
+    preclassification: { kind: c.preclassification.kind, reason: c.preclassification.reason, confidence: c.preclassification.confidence } })),
+    pendingPatterns: require('../../build/server/domain/runtime/badcase-capture/wiki-pattern-label').wikiPendingPatternOptions(state),
+    approvedPatternNames: (state.versions.at(-1)?.entries || []).filter(e => e.status === 'approved').map(e => e.title) };
+  const bytes = Buffer.from(JSON.stringify(input));
+  if (bytes.length > 1024 * 1024) throw fail('wiki_training_input_too_large');
+  if (containsSecretSentinel(bytes.toString())) throw fail('wiki_contains_secret');
+  return { phase: input.phase, caseIds: cases.map(c => c.id), inputHash: crypto.createHash('sha256').update(bytes).digest('hex'), files: [
+    { path: 'wiki-induction-input.json', bytes }, { path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'wiki-induction-container.cjs')) },
+  ] };
+}
+async function generateWikiOutput(plan, { image, dockerBackend }, options) {
   // Explicit backend/host errors precede auth access and any Docker action.
   if (dockerBackend !== undefined) {
     require('./wsl-docker.cjs').validateWslDockerBackend(dockerBackend);
@@ -46,6 +60,8 @@ async function inductWikiCases({ store, image, confirmed, expectedRevision, dock
   // saved proof, returned data or the controller's generic HTTP errors.
   if (result.receipt) delete result.receipt.modelOutput;
   const diagnose = error => {
+    if (error.wikiDiagnosed) return;
+    error.wikiDiagnosed = true;
     try {
       const diagnostic = require('./wiki-diagnostics.cjs');
       (options.writeDiagnostic || (details => diagnostic.writeWikiDiagnostic(details, {
@@ -60,23 +76,50 @@ async function inductWikiCases({ store, image, confirmed, expectedRevision, dock
   };
   const serialized = JSON.stringify(result);
   if (serialized.includes(key) || serialized.includes(JSON.stringify(key).slice(1, -1)) || containsSecretSentinel(serialized)) throw fail('wiki_contains_secret');
-  const proof = { type: plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
+  const proof = { type: plan.phase === 'category-proposals' ? 'wiki-category-proposals' : plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
     ...(dockerBackend === undefined ? {} : { dockerBackend }),
     containerId: result.containerId, cleaned: result.cleaned, isolation: result.isolation, calls: result.receipt?.calls ?? null };
   options.onEvent?.(proof);
-  let saved;
+  const field = plan.phase === 'category-proposals' ? 'proposals' : 'results';
+  if (result.failed || result.cleaned !== true || result.receipt?.ok !== true || !Array.isArray(result.receipt?.[field])) {
+    const error = Object.assign(fail('wiki_generation_failed'), { validationIssue: result.receipt?.validationIssue });
+    diagnose(error); throw error;
+  }
+  return { diagnose, payload: { caseIds: plan.caseIds, model: DEEPSEEK_PROFILE, [field]: result.receipt[field],
+    proof: { inputHash: plan.inputHash, calls: result.receipt.calls ?? [], cleaned: result.cleaned,
+      ...(result.containerId === undefined ? {} : { containerId: result.containerId }), ...(result.isolation === undefined ? {} : { isolation: result.isolation }) } } };
+}
+function assertGenerationConsent({ store, confirmed, expectedRevision }) {
+  if (confirmed !== true) throw fail('wiki_confirmation_required');
+  if (!Number.isSafeInteger(expectedRevision) || store.read().revision !== expectedRevision) throw fail('wiki_revision_conflict');
+}
+async function proposeWikiCategories(args, options = {}) {
+  assertGenerationConsent(args);
+  const plan = prepareWikiCategoryProposals(args.store), generated = await generateWikiOutput(plan, args, options);
+  try { return args.store.recordCategoryProposals(generated.payload, args.expectedRevision); }
+  catch (error) { if (error.code === 'wiki_model_output_invalid') generated.diagnose(error); throw error; }
+}
+async function inductWikiCases(args, options = {}) {
+  assertGenerationConsent(args);
+  const { store, expectedRevision } = args, plan = prepareWikiInduction(store);
+  const generated = await generateWikiOutput(plan, args, options); let diagnose = generated.diagnose, saved;
   try {
-    if (result.failed || result.cleaned !== true || result.receipt?.ok !== true || !Array.isArray(result.receipt?.results)) {
-      throw Object.assign(fail('wiki_generation_failed'), { validationIssue: result.receipt?.validationIssue });
-    }
-    options.onModelOutput?.(result.receipt.results);
-    if (result.receipt.results.length !== plan.caseIds.length) throw Object.assign(fail('wiki_model_output_invalid'), {
+    options.onModelOutput?.(generated.payload.results);
+    if (generated.payload.results.length !== plan.caseIds.length) throw Object.assign(fail('wiki_model_output_invalid'), {
       validationIssue: { field: 'results', rule: 'must_cover_each_input_once' },
     });
-    const save = plan.phase === 'preclassification' ? store.recordPreclassification.bind(store) : store.recordInduction.bind(store);
-    saved = save({ caseIds: plan.caseIds, model: DEEPSEEK_PROFILE, results: result.receipt.results,
-      proof: { inputHash: plan.inputHash, calls: result.receipt.calls ?? [], cleaned: result.cleaned,
-        ...(result.containerId === undefined ? {} : { containerId: result.containerId }), ...(result.isolation === undefined ? {} : { isolation: result.isolation }) } }, expectedRevision);
+    let categoryBatch;
+    if (plan.phase === 'preclassification' && options.proposeCategories === true) {
+      // Pure validation/staging. Never publish the first result before the
+      // category model/validation succeeds. Final save rechecks the revision.
+      const staged = store.previewPreclassification(generated.payload, expectedRevision).state;
+      if (require('../../build/server/domain/runtime/badcase-capture/wiki-category-proposals').wikiCategoryEligibleCases(staged).length) {
+        const categories = await generateWikiOutput(prepareWikiCategoryProposals({ read: () => staged }), args, options);
+        diagnose = categories.diagnose; categoryBatch = categories.payload;
+      }
+    }
+    saved = plan.phase === 'preclassification' ? store.recordPreclassification(generated.payload, expectedRevision, categoryBatch)
+      : store.recordInduction(generated.payload, expectedRevision);
   } catch (error) {
     if (error.validationIssue || ['wiki_model_output_invalid', 'wiki_generation_failed'].includes(error.code)) diagnose(error);
     throw error;
@@ -108,4 +151,4 @@ if (require.main === module) main().catch(e => {
   const code = /^wiki_[a-z_]+$/.test(e.code || '') || e.code === 'capture_writer_busy' ? e.code : 'wiki_generation_failed';
   process.stderr.write(JSON.stringify({ error: code }) + '\n'); process.exitCode = 1;
 });
-module.exports = { prepareWikiInduction, inductWikiCases, main };
+module.exports = { prepareWikiInduction, prepareWikiCategoryProposals, inductWikiCases, proposeWikiCategories, main };

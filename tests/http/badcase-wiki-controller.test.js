@@ -124,7 +124,7 @@ test('pending label and link endpoints enforce local-admin/CSRF, closed consent 
   const c = add('pending-create'), other = add('pending-join');
   const before = h.store.read(), get = await h.invoke(), label = get.body.casePatterns.find(r => r.caseId === c.id);
   const route = { pathname: '/api/wikiskill/pattern-label-confirm' };
-  const body = { confirmed: true, caseId: c.id, pendingPattern: { name: 'Check constraints' }, labelHash: label.labelHash, expectedRevision: get.body.revision };
+  const body = { confirmed: true, caseId: c.id, pendingPattern: { name: 'Check constraints', scope: 'Synthetic tool constraint scope' }, labelHash: label.labelHash, expectedRevision: get.body.revision };
   const guards = [{ remoteAddress: '10.1.1.1' }, { headers: { origin: 'http://evil.test' } }, { headers: { 'x-caff-csrf-token': '' } }];
   for (const override of guards) await assert.rejects(h.invoke(body, { ...route, ...override }));
   for (const patch of [{ confirmed: false }, { pendingPattern: { name: 'A', extra: true } }, { entryId: null }, { split: 'gate' }]) await assert.rejects(h.invoke({ ...body, ...patch }, route));
@@ -139,7 +139,7 @@ test('pending label and link endpoints enforce local-admin/CSRF, closed consent 
   assert.equal((await h.invoke(body, route)).body.revision, created.body.revision);
   const otherLabel = created.body.casePatterns.find(r => r.caseId === other.id);
   const join = { confirmed: true, caseId: other.id, pendingPattern: { id: pending.id }, labelHash: otherLabel.labelHash, expectedRevision: created.body.revision };
-  await rejects(h.invoke({ ...join, pendingPattern: { name: pending.name } }, route), 'wiki_pending_pattern_name_conflict', 409);
+  await rejects(h.invoke({ ...join, pendingPattern: { name: pending.name, scope: pending.scope } }, route), 'wiki_pending_pattern_name_conflict', 409);
   const joined = await h.invoke(join, route); assert.equal(joined.body.pendingPatterns.length, 1);
   const linkRoute = { pathname: '/api/wikiskill/pending-pattern-link' };
   const link = { confirmed: true, pendingPatternId: pending.id, entryId: v.entries[0].id, expectedRevision: joined.body.revision };
@@ -169,7 +169,7 @@ test('page-labelled holdouts project confirmed status and both legacy HTTP write
     let pendingPatternId;
     for (const c of state.cases.filter(c => c.id.startsWith('new-'))) {
       const current = h.store.read(), label = projectWikiPatternLabels(current).find(r => r.caseId === c.id);
-      const choice = kind === 'approved' ? { entryId: 'entry-1' } : { pendingPattern: pendingPatternId ? { id: pendingPatternId } : { name: '先核验工具约束' } };
+      const choice = kind === 'approved' ? { entryId: 'entry-1' } : { pendingPattern: pendingPatternId ? { id: pendingPatternId } : { name: '先核验工具约束', scope: 'Synthetic tool constraint scope' } };
       const saved = h.store.confirmPatternLabel({ caseId: c.id, labelHash: label.labelHash, expectedRevision: current.revision, ...choice });
       pendingPatternId = saved.pendingPatternId;
     }

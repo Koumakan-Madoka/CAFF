@@ -24,6 +24,16 @@ async function runPageInduction(input, { configFile } = {}, dependencies = {}) {
   return (dependencies.induct || require('./wiki-induction.cjs').inductWikiCases)({
     store: input.store, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
     ...(config.dockerBackend === undefined ? {} : { dockerBackend: config.dockerBackend }),
+  }, { proposeCategories: true, readKey: () => readKey({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+    readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+  });
+}
+async function runPageCategoryProposals(input, { configFile } = {}, dependencies = {}) {
+  const config = readPageRuntimeConfig(configFile);
+  const readKey = dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey;
+  return (dependencies.proposeCategories || require('./wiki-induction.cjs').proposeWikiCategories)({
+    store: input.store, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
+    ...(config.dockerBackend === undefined ? {} : { dockerBackend: config.dockerBackend }),
   }, { readKey: () => readKey({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
     readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
   });
@@ -59,4 +69,4 @@ function inspectPageReplay({ replay, scope }, dependencies = {}) {
     return { supported: false, reason: /^replay_[a-z_]+$/.test(result?.reason || '') ? result.reason : 'replay_check_failed' };
   } catch { return { supported: false, reason: 'replay_check_failed' }; }
 }
-module.exports = { runPageInduction, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };
+module.exports = { runPageInduction, runPageCategoryProposals, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };

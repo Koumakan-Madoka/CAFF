@@ -7,7 +7,7 @@ const { planWikiEvaluationSuite: suite, wikiConfirmedClassification } = require(
 const immutable = state => Object.fromEntries(['cases', 'versions', 'classifications', 'caseStates', 'replayCases', 'replaySplit',
   'regroupProposals', 'regroupConfirmations', 'dehydrations', 'rubrics'].map(k => [k, JSON.stringify(state[k])]));
 function labelGroup(h, caseIds, name) {
-  const first = h.confirm(caseIds[0], { pendingPattern: { name } });
+  const first = h.confirm(caseIds[0], { pendingPattern: { name, scope: 'Synthetic category scope' } });
   for (const caseId of caseIds.slice(1)) h.confirm(caseId, { pendingPattern: { id: first.pendingPatternId } });
   return first.pendingPatternId;
 }
@@ -32,7 +32,7 @@ test('legacy revision-shaped state including #14 null label keeps its golden pro
 
 test('create/join/none/approved label consent is atomic, immutable and exact replay is idempotent after other writes', t => {
   const h = setup(t), before = h.store.read(), bytes = h.bytes();
-  const input = h.input('new-1', { pendingPattern: { name: '检查工具约束' } });
+  const input = h.input('new-1', { pendingPattern: { name: '检查工具约束', scope: 'Synthetic category scope' } });
   const created = h.store.confirmPatternLabel(input), after = h.store.read();
   assert.equal(after.revision, before.revision + 1); assert.equal(after.pendingPatterns.length, 1);
   const pending = after.pendingPatterns[0]; assert.equal(pending.id, created.pendingPatternId); assert.equal(pending.name, '检查工具约束');
@@ -49,7 +49,7 @@ test('create/join/none/approved label consent is atomic, immutable and exact rep
   assert.equal(labels(final).find(r => r.caseId === 'new-2').pendingPatternId, pending.id);
   assert.equal(labels(final).find(r => r.caseId === 'new-3').patternKey, 'unclassified');
   assert.equal(labels(final).find(r => r.caseId === 'new-4').entryId, 'entry-2');
-  for (const selection of [{ entryId: null }, { entryId: 'entry-1' }, { pendingPattern: { name: 'Changed' } }, { pendingPattern: { id: 'missing' } }]) {
+  for (const selection of [{ entryId: null }, { entryId: 'entry-1' }, { pendingPattern: { name: 'Changed', scope: 'Synthetic category scope' } }, { pendingPattern: { id: 'missing' } }]) {
     assert.throws(() => h.confirm('new-1', selection), /wiki_pattern_label_frozen/);
   }
   assert.throws(() => h.confirm('new-3', { pendingPattern: { id: pending.id } }), /wiki_pattern_label_frozen/);
@@ -156,8 +156,8 @@ test('pending names, selection schemas, revision and label hash fail closed with
     [{ pendingPattern: { name: '' } }, /wiki_pending_pattern_name_invalid/],
     [{ pendingPattern: { name: '  ' } }, /wiki_pending_pattern_name_invalid/],
     [{ pendingPattern: { name: '字'.repeat(41) } }, /wiki_pending_pattern_name_invalid/],
-    [{ pendingPattern: { name: 'Existing pending' } }, /wiki_pending_pattern_name_conflict/],
-    [{ pendingPattern: { name: '  Approved pattern 1  ' } }, /wiki_pending_pattern_name_conflict/],
+    [{ pendingPattern: { name: 'Existing pending', scope: 'Synthetic category scope' } }, /wiki_pending_pattern_name_conflict/],
+    [{ pendingPattern: { name: '  Approved pattern 1  ', scope: 'Synthetic category scope' } }, /wiki_pending_pattern_name_conflict/],
     [{ pendingPattern: { id: 'missing' } }, /wiki_pending_pattern_not_found/],
     [{ pendingPattern: { name: 'new', id: 'mixed' } }, /wiki_invalid_input/],
     [{ pendingPattern: { name: 'new', entryId: 'entry-1' } }, /wiki_invalid_input/],
@@ -169,7 +169,7 @@ test('pending names, selection schemas, revision and label hash fail closed with
     assert.throws(() => h.confirm('new-2', selection), error);
     assert.deepEqual(h.store.read(), before); assert.deepEqual(h.bytes(), bytes);
   }
-  const input = h.input('new-2', { pendingPattern: { name: 'Another' } });
+  const input = h.input('new-2', { pendingPattern: { name: 'Another', scope: 'Synthetic category scope' } });
   for (const [patch, error] of [[{ labelHash: hash('stale') }, /wiki_pattern_label_stale/],
     [{ expectedRevision: input.expectedRevision - 1 }, /wiki_revision_conflict/], [{ caseId: 'missing' }, /wiki_unknown_case/],
     [{ split: 'gate' }, /wiki_invalid_input/]]) {
@@ -180,7 +180,7 @@ test('pending names, selection schemas, revision and label hash fail closed with
     assert.throws(() => h.store.confirmPatternLabel(input), /wiki_write_failed/);
   } finally { fs.linkSync = original; }
   assert.deepEqual(h.bytes(), before); assert.equal(h.store.read().pendingPatterns.length, 1);
-  const saved = h.confirm('new-2', { pendingPattern: { name: '😀'.repeat(40) } });
+  const saved = h.confirm('new-2', { pendingPattern: { name: '😀'.repeat(40), scope: 'Synthetic category scope' } });
   assert.equal([...h.store.read().pendingPatterns.find(p => p.id === saved.pendingPatternId).name].length, 40);
 });
 
@@ -188,9 +188,9 @@ test('pending choices bind the label hash and cannot replace any previously conf
   const h = setup(t), stale = h.input('new-2', { entryId: null });
   labelGroup(h, ['new-1'], 'First');
   assert.throws(() => h.store.confirmPatternLabel({ ...stale, expectedRevision: h.store.read().revision }), /wiki_pattern_label_stale/);
-  assert.throws(() => h.confirm(legacyId, { pendingPattern: { name: 'Cannot relabel old null' } }), /wiki_pattern_label_frozen/);
-  assert.throws(() => h.confirm('old-control', { pendingPattern: { name: 'Cannot relabel classification' } }), /wiki_pattern_label_frozen/);
-  assert.throws(() => h.confirm('old-train', { pendingPattern: { name: 'Cannot relabel membership' } }), /wiki_pattern_label_frozen/);
+  assert.throws(() => h.confirm(legacyId, { pendingPattern: { name: 'Cannot relabel old null', scope: 'Synthetic category scope' } }), /wiki_pattern_label_frozen/);
+  assert.throws(() => h.confirm('old-control', { pendingPattern: { name: 'Cannot relabel classification', scope: 'Synthetic category scope' } }), /wiki_pattern_label_frozen/);
+  assert.throws(() => h.confirm('old-train', { pendingPattern: { name: 'Cannot relabel membership', scope: 'Synthetic category scope' } }), /wiki_pattern_label_frozen/);
   assert.equal(h.store.read().pendingPatterns.length, 1);
 });
 
