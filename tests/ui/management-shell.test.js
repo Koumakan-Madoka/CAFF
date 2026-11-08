@@ -153,6 +153,20 @@ test('management CSS owns viewport, bounded panes, mobile rail, and touch target
   assert.match(STYLES, /@media\s*\(max-width:\s*767px\)[\s\S]*body\.management-app\s+\.management-content[\s\S]*grid-template-columns:\s*1fr/s);
 });
 
+test('WikiSkill stylesheet does not widen any other management page', () => {
+  assert.match(STYLES, /(?:^|\n)\.management-shell\s*\{\s*width:\s*min\(1520px,\s*100%\);\s*\}/);
+  const wikiCss = readPublic('wikiskill.css');
+  const outerRules = [...wikiCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match => /\.management-shell\b/.test(match[1]));
+  for (const [, selector] of outerRules) {
+    assert.equal(selector.trim(), 'body.management-app[data-page="wikiskill"] .management-shell', 'no unscoped or shared outer-shell override');
+  }
+  for (const page of PAGES) {
+    const dom = pageDom(page);
+    try { assert.equal(dom.window.document.querySelector('.management-shell').matches('body.management-app[data-page="wikiskill"] .management-shell'), false, page.key); }
+    finally { dom.window.close(); }
+  }
+});
+
 test('management renderer migration uses the shared primitive instead of div click targets', () => {
   for (const file of ['personas/role-management.js', 'personas/provider-management.js', 'skills.js', 'projects.js', 'metrics.js']) {
     const source = readPublic(file);

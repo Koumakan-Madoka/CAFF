@@ -16,6 +16,9 @@ body.management-app[data-page="wikiskill"] {
   --ok: #69b6a8; --ok-soft: #203632; --warn: #d5a65b; --warn-soft: #3a3020; --bad: #e17a73; --bad-soft: #3d2625;
   --info: #83a9c8; --info-soft: #243440; --focus: rgba(223, 121, 82, .34); --mark: #5c4b1d; --shadow: 0 2px 8px rgba(0,0,0,.3);
 }
+body.management-app[data-page="wikiskill"] .management-shell {
+  width: 100%;
+}
 body.management-app[data-page="wikiskill"] .wikiskill-content {
   flex: 1; min-height: 0; overflow: auto; padding: 20px max(16px, env(safe-area-inset-right, 0px)) 56px max(16px, env(safe-area-inset-left, 0px));
   background: var(--canvas); color: var(--text); font: 14.5px/1.6 var(--font-body); -webkit-font-smoothing: antialiased;
