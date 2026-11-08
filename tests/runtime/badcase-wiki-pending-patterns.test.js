@@ -279,25 +279,29 @@ test('link refuses absent/unapproved targets, unknown pending IDs, revision drif
   assert.throws(() => h.store.confirmPatternLabel({ ...stale, expectedRevision: h.store.read().revision }), /wiki_pattern_label_stale/);
 });
 
-test('existing induction/review learns only training members; approval never auto-links pending holdouts', t => {
+test('global induction rejects unlinked category members; scoped content review auto-links without learning holdouts', t => {
   const h = setup(t), a = labelGroup(h, ['new-1', 'new-2', 'new-3', 'new-4'], 'Checks first'); allocate(h, a);
   const before = h.store.read(), trained = before.cases.filter(c => c.id.startsWith('new-') && c.split === 'train').map(c => c.id);
   assert.equal(trained.length, 2);
   const selections = suiteSelections(before, a), proposal = { title: 'Check tool constraints', failureMode: 'Calls without checking constraints',
     symptoms: 'Tool rejects parameters', rootCauseHypothesis: 'Skipped constraint validation', guideline: 'Check constraints before calling.', caseIds: trained };
-  const result = h.store.recordInduction({ caseIds: trained, model: 'deepseek/deepseek-v4-flash', proof: { inputHash: hash('synthetic induction'), calls: [], cleaned: true },
-    results: trained.map(caseId => ({ caseId, kind: 'new', reason: 'New pattern', confidence: 'high', proposal })) }, before.revision);
-  const created = result.version.entries.at(-1); assert.equal(created.status, 'draft'); assert.deepEqual(created.caseIds, trained);
+  const global = { caseIds: trained, model: 'deepseek/deepseek-v4-flash', proof: { inputHash: hash('synthetic induction'), calls: [], cleaned: true },
+    results: trained.map(caseId => ({ caseId, kind: 'new', reason: 'New pattern', confidence: 'high', proposal })) };
+  assert.throws(() => h.store.recordInduction(global, before.revision), /wiki_not_pending/);
+  const { title, caseIds, ...content } = proposal;
+  const result = h.store.recordCategoryInduction({ ...global, pendingPatternId: a, results: [content] }, before.revision);
+  const created = result.version.entries.at(-1); assert.equal(created.status, 'draft'); assert.deepEqual([...created.caseIds].sort(), [...trained].sort());
   assert.throws(() => h.store.linkPendingPattern({ pendingPatternId: a, entryId: created.id, expectedRevision: h.store.read().revision }), /wiki_entry_not_found/);
   h.store.review({ versionId: result.version.id, entryId: created.id, decision: 'approved', expectedRevision: h.store.read().revision });
-  const reviewed = h.store.read(); assert.equal(reviewed.pendingPatternLinks, undefined);
-  assert.ok(labels(reviewed).filter(r => r.pendingPatternId === a).every(r => r.entryId === null));
-  assert.deepEqual(suite(reviewed, selections, created.id).targetReproductionCaseIds, []);
+  const reviewed = h.store.read(); assert.equal(reviewed.pendingPatternLinks.length, 1);
+  assert.ok(labels(reviewed).filter(r => r.pendingPatternId === a).every(r => r.entryId === created.id));
+  assert.equal(suite(reviewed, selections, created.id).targetReproductionCaseIds.length, 1);
+  // Repeating the equivalent manual consent is idempotent, not another link.
   h.store.linkPendingPattern({ pendingPatternId: a, entryId: created.id, expectedRevision: reviewed.revision });
   const linked = h.store.read(), projected = suite(linked, selections, created.id);
   assert.equal(projected.targetReproductionCaseIds.length, 1); assert.equal(projected.targetTestReproductionCaseIds.length, 1);
   assert.equal(JSON.stringify(linked.versions), JSON.stringify(reviewed.versions));
-  assert.deepEqual(linked.versions.at(-1).entries.at(-1).caseIds, trained, 'holdouts never become learned members');
+  assert.deepEqual([...linked.versions.at(-1).entries.at(-1).caseIds].sort(), [...trained].sort(), 'holdouts never become learned members');
   assert.equal(JSON.stringify(linked.cases), JSON.stringify(before.cases));
   assert.equal(JSON.stringify(linked.initialSplitConfirmations), JSON.stringify(before.initialSplitConfirmations));
 });

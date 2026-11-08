@@ -10,7 +10,8 @@ const fail = code => Object.assign(Error(code), { code });
 function prepareWikiInduction(store) {
   const state = store.read(), states = store.getCaseStates();
   const phase = states.some(s => s.status === 'pending-preclassification') ? 'preclassification' : 'induction';
-  const pending = states.filter(s => s.status === (phase === 'preclassification' ? 'pending-preclassification' : 'pending')).map(s => s.caseId);
+  const categoryCases = require('../../build/server/domain/runtime/badcase-capture/wiki-category-induction').wikiUnlinkedCategoryCaseIds(state);
+  const pending = states.filter(s => s.status === (phase === 'preclassification' ? 'pending-preclassification' : 'pending') && (phase === 'preclassification' || !categoryCases.has(s.caseId))).map(s => s.caseId);
   if (!pending.length) throw fail('wiki_no_pending_cases');
   if (pending.length > 20) throw fail('wiki_collection_too_large');
   const cases = pending.map(id => state.cases.find(c => c.id === id && (phase === 'preclassification' ? c.split === null : c.split === 'train')));
@@ -39,6 +40,21 @@ function prepareWikiCategoryProposals(store) {
     preclassification: { kind: c.preclassification.kind, reason: c.preclassification.reason, confidence: c.preclassification.confidence } })),
     pendingPatterns: require('../../build/server/domain/runtime/badcase-capture/wiki-pattern-label').wikiPendingPatternOptions(state),
     approvedPatternNames: (state.versions.at(-1)?.entries || []).filter(e => e.status === 'approved').map(e => e.title) };
+  const bytes = Buffer.from(JSON.stringify(input));
+  if (bytes.length > 1024 * 1024) throw fail('wiki_training_input_too_large');
+  if (containsSecretSentinel(bytes.toString())) throw fail('wiki_contains_secret');
+  return { phase: input.phase, caseIds: cases.map(c => c.id), inputHash: crypto.createHash('sha256').update(bytes).digest('hex'), files: [
+    { path: 'wiki-induction-input.json', bytes }, { path: 'probe.cjs', bytes: fs.readFileSync(path.join(__dirname, 'wiki-induction-container.cjs')) },
+  ] };
+}
+function prepareWikiCategoryInduction(store, pendingPatternId) {
+  const state = store.read(), selectors = require('../../build/server/domain/runtime/badcase-capture/wiki-category-induction');
+  const { pending, cases } = selectors.wikiCategoryTrainingCases(state, pendingPatternId);
+  selectors.assertWikiCategoryDraftAvailable(state, pendingPatternId);
+  // Deliberate allowlist: no scope, approved modes, preclassification, holdout
+  // records or other collection metadata can reach the content model.
+  const input = { phase: 'category-induction', name: pending.name, cases: cases.map(c => ({ id: c.id,
+    actual: c.actual, expected: c.expected, message: c.message || '', traceExcerpt: c.traceExcerpt || '' })) };
   const bytes = Buffer.from(JSON.stringify(input));
   if (bytes.length > 1024 * 1024) throw fail('wiki_training_input_too_large');
   if (containsSecretSentinel(bytes.toString())) throw fail('wiki_contains_secret');
@@ -76,7 +92,7 @@ async function generateWikiOutput(plan, { image, dockerBackend }, options) {
   };
   const serialized = JSON.stringify(result);
   if (serialized.includes(key) || serialized.includes(JSON.stringify(key).slice(1, -1)) || containsSecretSentinel(serialized)) throw fail('wiki_contains_secret');
-  const proof = { type: plan.phase === 'category-proposals' ? 'wiki-category-proposals' : plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
+  const proof = { type: plan.phase === 'category-induction' ? 'wiki-category-induction' : plan.phase === 'category-proposals' ? 'wiki-category-proposals' : plan.phase === 'preclassification' ? 'wiki-preclassification' : 'wiki-incremental-induction', model: DEEPSEEK_PROFILE, inputHash: plan.inputHash, caseIds: plan.caseIds,
     ...(dockerBackend === undefined ? {} : { dockerBackend }),
     containerId: result.containerId, cleaned: result.cleaned, isolation: result.isolation, calls: result.receipt?.calls ?? null };
   options.onEvent?.(proof);
@@ -97,6 +113,12 @@ async function proposeWikiCategories(args, options = {}) {
   assertGenerationConsent(args);
   const plan = prepareWikiCategoryProposals(args.store), generated = await generateWikiOutput(plan, args, options);
   try { return args.store.recordCategoryProposals(generated.payload, args.expectedRevision); }
+  catch (error) { if (error.code === 'wiki_model_output_invalid') generated.diagnose(error); throw error; }
+}
+async function inductWikiCategory(args, options = {}) {
+  assertGenerationConsent(args);
+  const plan = prepareWikiCategoryInduction(args.store, args.pendingPatternId), generated = await generateWikiOutput(plan, args, options);
+  try { return args.store.recordCategoryInduction({ ...generated.payload, pendingPatternId: args.pendingPatternId }, args.expectedRevision); }
   catch (error) { if (error.code === 'wiki_model_output_invalid') generated.diagnose(error); throw error; }
 }
 async function inductWikiCases(args, options = {}) {
@@ -151,4 +173,4 @@ if (require.main === module) main().catch(e => {
   const code = /^wiki_[a-z_]+$/.test(e.code || '') || e.code === 'capture_writer_busy' ? e.code : 'wiki_generation_failed';
   process.stderr.write(JSON.stringify({ error: code }) + '\n'); process.exitCode = 1;
 });
-module.exports = { prepareWikiInduction, prepareWikiCategoryProposals, inductWikiCases, proposeWikiCategories, main };
+module.exports = { prepareWikiInduction, prepareWikiCategoryProposals, prepareWikiCategoryInduction, inductWikiCases, proposeWikiCategories, inductWikiCategory, main };

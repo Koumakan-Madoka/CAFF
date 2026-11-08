@@ -20,7 +20,8 @@ import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehyd
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
-import { resolveWikiPatternLabel, wikiPendingPatternText } from './wiki-pattern-label';
+import { resolveWikiPatternLabel, wikiPendingPatternText, appendWikiPendingPatternLink } from './wiki-pattern-label';
+import { wikiUnlinkedCategoryCaseIds, wikiCategoryTrainingCases, assertWikiCategoryDraftAvailable } from './wiki-category-induction';
 import { appendWikiCategoryProposals, confirmWikiCategoryProposal, rejectWikiCategoryProposal, projectWikiCategoryProposals } from './wiki-category-proposals';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
@@ -590,8 +591,8 @@ export function createWikiStore(options: any) {
         return { changed: true, value: saved };
       }).value;
     },
-    // Linking is explicit immutable consent, separate from review and learning.
-    // Existing label, split and version bytes are never rewritten.
+    // Manual linking and initial category approval share immutable link records.
+    // Existing label and split bytes are never rewritten.
     linkPendingPattern(input: any) {
       if (!global) throw fail('wiki_global_required');
       shape(input, ['pendingPatternId', 'entryId', 'expectedRevision']);
@@ -606,10 +607,7 @@ export function createWikiStore(options: any) {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         if (!state.pendingPatterns?.some((p: any) => p.id === input.pendingPatternId)) throw fail('wiki_pending_pattern_not_found');
         if (!state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
-        const content = { pendingPatternId: input.pendingPatternId, entryId: input.entryId, source: 'badcase-page',
-          confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
-        const saved = { ...content, hash: hash(JSON.stringify(content)) };
-        (state.pendingPatternLinks || (state.pendingPatternLinks = [])).push(saved);
+        const saved = appendWikiPendingPatternLink(state, input.pendingPatternId, input.entryId);
         appendEvent(state, { type: 'pending-pattern-linked', pendingPatternId: input.pendingPatternId, entryId: input.entryId, linkHash: saved.hash });
         return { changed: true, value: saved };
       }).value;
@@ -843,6 +841,43 @@ export function createWikiStore(options: any) {
       if (!global) throw fail('wiki_global_required');
       return change(state => ({ changed: true, value: rejectWikiCategoryProposal(state, input) })).value;
     },
+    recordCategoryInduction(input: any, expectedRevision: number) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['pendingPatternId', 'caseIds', 'model', 'proof', 'results']);
+      id(input.pendingPatternId);
+      const caseIds = ids(input.caseIds);
+      if (!Number.isSafeInteger(expectedRevision) || input.model !== MODEL) throw fail('wiki_invalid_input');
+      shape(input.proof, ['inputHash', 'calls', 'cleaned', 'isolation', 'containerId']);
+      if (typeof input.proof.inputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.proof.inputHash) || !Array.isArray(input.proof.calls) || input.proof.cleaned !== true) throw fail('wiki_invalid_input');
+      return change(state => {
+        if (state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
+        const { pending, cases } = wikiCategoryTrainingCases(state, input.pendingPatternId);
+        assertWikiCategoryDraftAvailable(state, pending.id);
+        const trainingIds = cases.map((c: any) => c.id);
+        if (caseIds.length !== trainingIds.length || caseIds.some(c => !trainingIds.includes(c))) throw fail('wiki_invalid_case_ids');
+        if (!Array.isArray(input.results) || input.results.length !== 1) modelInvalid('results', 'exactly_one_pattern_required');
+        const result = input.results[0];
+        let prose: any;
+        try {
+          atField('results[0]', () => shape(result, ['failureMode', 'symptoms', 'rootCauseHypothesis', 'guideline']));
+          prose = entry({ ...result, title: pending.name, caseIds: trainingIds }, new Set<string>(trainingIds));
+        } catch (e: any) { modelInvalid(e.validationIssue?.field || 'results[0]', e.validationIssue?.rule || e.code); }
+        const now = new Date().toISOString(), base = state.versions.at(-1);
+        const nextEntry = 1 + state.versions.flatMap((v: any) => v.entries).reduce((max: number, e: any) => Math.max(max, Number(/^entry-(\d+)$/.exec(e.id)?.[1] || 0)), 0);
+        const current = { id: `entry-${nextEntry}`, ...prose, sourcePendingPatternId: pending.id, categoryReviewRequired: true, status: 'draft', createdAt: now };
+        const allCaseIds = [...new Set([...(base?.caseIds || []), ...trainingIds])];
+        const run = { id: `induction-${state.revision + 1}-${hash(JSON.stringify(input)).slice(0, 16)}`, phase: 'category-induction', sourcePendingPatternId: pending.id,
+          createdAt: now, model: MODEL, caseIds: trainingIds, inputHash: input.proof.inputHash, calls: structuredClone(input.proof.calls), cleaned: true,
+          ...(input.proof.containerId === undefined ? {} : { containerId: text(input.proof.containerId, 128) }),
+          ...(input.proof.isolation === undefined ? {} : { isolation: structuredClone(input.proof.isolation) }) };
+        const version = { id: `wiki-${state.revision + 1}`, kind: 'category-induction', sourcePendingPatternId: pending.id, createdAt: now,
+          model: MODEL, role: base?.role || 'global', caseIds: allCaseIds, trainingHash: hash(JSON.stringify(allCaseIds)),
+          entries: [...structuredClone(base?.entries || []), current], unclassified: structuredClone(base?.unclassified || []).filter((u: any) => !trainingIds.includes(u.caseId)), inductionRunId: run.id };
+        state.versions.push(version); state.inductionRuns.push(run);
+        appendEvent(state, { type: 'category-induction-run', pendingPatternId: pending.id, versionId: version.id, runId: run.id, caseIds: trainingIds });
+        return { changed: true, value: { run, version } };
+      }).value;
+    },
     previewPreclassification(input: any, expectedRevision: number) {
       return this.recordInduction(input, expectedRevision, 'preclassification', undefined, true);
     },
@@ -859,10 +894,11 @@ export function createWikiStore(options: any) {
       const apply = (state: any) => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
         const preclassify = phase === 'preclassification';
+        const categoryCases = wikiUnlinkedCategoryCaseIds(state);
         for (const caseId of caseIds) {
           const c = state.cases.find((item: any) => item.id === caseId);
           if (!c || (preclassify ? c.split !== null || caseStateView(state, caseId).status !== 'pending-preclassification' || c.kind !== 'marked-badcase'
-            : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending')) throw fail('wiki_not_pending');
+            : c.split !== 'train' || caseStateView(state, caseId).status !== 'pending' || categoryCases.has(caseId))) throw fail('wiki_not_pending');
         }
         // A preclassification run owns the complete pending batch, never a
         // caller-chosen subset that could change quota allocation order.
@@ -1269,6 +1305,21 @@ export function createWikiStore(options: any) {
         const version = state.versions.find((v: any) => v.id === versionId), current = version?.entries.find((e: any) => e.id === entryId);
         if (!current) throw fail('wiki_entry_not_found');
         if (current.status !== 'draft') throw fail('wiki_entry_reviewed');
+        const categoryDraft = current.categoryReviewRequired === true && current.sourcePendingPatternId;
+        if (categoryDraft) {
+          // An older version can contain a cloned draft. Never approve an old
+          // copy while the latest knowledge base would still expose a draft.
+          if (version !== state.versions.at(-1)) throw fail('wiki_revision_conflict');
+          if (input.decision === 'approved') {
+            const { cases } = wikiCategoryTrainingCases(state, categoryDraft);
+            if (cases.length !== current.caseIds.length || cases.some((c: any) => !current.caseIds.includes(c.id))) throw fail('wiki_category_not_ready');
+          }
+          // Rejection remains available after new members or a manual link so
+          // an obsolete draft cannot permanently block a fresh induction.
+          // The existing knowledge editor round-trips all prose fields. An
+          // unchanged title is compatible; only category content is editable.
+          if (input.patch?.title !== undefined && input.patch.title !== current.title) throw fail('wiki_invalid_input');
+        }
         const fields = Object.fromEntries(ENTRY_FIELDS.map(k => [k, current[k]]));
         // Changing membership would invalidate whole-version coverage. This
         // minimal review editor supports prose edits only; regenerate to regroup.
@@ -1277,6 +1328,19 @@ export function createWikiStore(options: any) {
         Object.assign(current, revised);
         if (input.decision) {
           current.status = input.decision; current.reviewedAt = new Date().toISOString();
+          if (categoryDraft && input.decision === 'approved') {
+            for (const caseId of current.caseIds) {
+              const view = caseStateView(state, caseId);
+              if (!view.memberships.some((m: any) => m.entryId === current.id)) view.memberships.push({ entryId: current.id, source: 'model-confirmed', at: current.reviewedAt });
+              // Approval may already project membership from the version; make
+              // the explicit confirmation provenance deterministic nonetheless.
+              view.memberships = view.memberships.map((m: any) => m.entryId === current.id ? { entryId: current.id, source: 'model-confirmed', at: current.reviewedAt } : m);
+              saveCaseState(state, { ...view, status: 'assigned', reason: '', updatedAt: current.reviewedAt });
+            }
+            const link = appendWikiPendingPatternLink(state, categoryDraft, current.id);
+            current.categoryReviewRequired = false;
+            appendEvent(state, { type: 'pending-pattern-linked', pendingPatternId: categoryDraft, entryId: current.id, linkHash: link.hash });
+          }
           // A model-proposed pattern still uses the normal draft review API.
           // Only its approval confirms the associated membership suggestions.
           for (const suggestionId of current.suggestionIds || []) {

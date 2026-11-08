@@ -24,8 +24,13 @@ export function wikiCategoryEligibleCases(state: any) {
     && c.split === null && !confirmed.has(c.id) && c.preclassification?.kind === 'new');
 }
 export function projectWikiCategoryProposals(state: any) {
-  return (state.categoryProposals || []).map((p: any) => ({ ...structuredClone(p),
-    status: state.categoryProposalResolutions?.find((r: any) => r.proposalHash === p.hash)?.status || 'pending' }));
+  const eligible = new Set(wikiCategoryEligibleCases(state).map((c: any) => c.id));
+  return (state.categoryProposals || []).map((p: any) => {
+    const status = state.categoryProposalResolutions?.find((r: any) => r.proposalHash === p.hash)?.status || 'pending';
+    return { ...structuredClone(p), status, members: p.members.map((m: any) => ({ ...m,
+      canConfirm: status === 'pending' && eligible.has(m.caseId),
+      unavailableReason: status !== 'pending' ? 'wiki_category_proposal_resolved' : eligible.has(m.caseId) ? null : 'wiki_pattern_label_frozen' })) };
+  });
 }
 function resolve(state: any, proposalHash: string, status: string, extra: any = {}) {
   const content = { proposalHash, status, ...extra, resolvedAt: new Date().toISOString(), resolvedRevision: state.revision };
@@ -107,7 +112,7 @@ export function confirmWikiCategoryProposal(state: any, input: any) {
     if (name !== pendingPattern.name || scope !== p.scope) throw fail('wiki_invalid_input');
   } else {
     if (state.pendingPatterns?.some((v: any) => v.name === name)
-      || labels[0]?.options.some((e: any) => e.title.trim() === name)) throw fail('wiki_pending_pattern_name_conflict');
+      || state.versions.at(-1)?.entries.some((e: any) => e.status === 'approved' && e.title.trim() === name)) throw fail('wiki_pending_pattern_name_conflict');
     const content = { id: 'pending-' + crypto.randomUUID(), name, scope, sourceProposalHash: p.hash,
       createdRevision: state.revision, createdAt: new Date().toISOString(), source: 'badcase-page' };
     pendingPattern = { ...content, hash: hash(content) };

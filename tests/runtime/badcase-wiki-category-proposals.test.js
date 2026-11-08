@@ -166,6 +166,20 @@ test('model may suggest joining an existing scoped pending category without dupl
   assert.ok(labels(h.store.read()).filter(l => caseIds.includes(l.caseId)).every(l => l.pendingPatternId === first.pendingPatternId));
 });
 
+test('proposal member views expose current confirmability without rewriting immutable proposals', t => {
+  const h = setup(t), p = record(h).proposals[0], raw = JSON.stringify(h.store.read().categoryProposals);
+  assert.ok(h.store.getCategoryProposals()[0].members.every(m => m.canConfirm === true && m.unavailableReason === null));
+  h.confirm('new-1', { entryId: null });
+  const bytes = h.bytes(), view = h.store.getCategoryProposals()[0];
+  assert.equal(view.members.find(m => m.caseId === 'new-1').canConfirm, false);
+  assert.equal(view.members.find(m => m.caseId === 'new-1').unavailableReason, 'wiki_pattern_label_frozen');
+  assert.ok(view.members.filter(m => m.caseId !== 'new-1').every(m => m.canConfirm));
+  unchanged(h, () => h.store.confirmCategoryProposal(consent(h, p)), /wiki_pattern_label_frozen/);
+  assert.equal(JSON.stringify(h.store.read().categoryProposals), raw); assert.deepEqual(h.bytes(), bytes);
+  h.store.rejectCategoryProposal({ proposalHash: p.hash, expectedRevision: h.store.read().revision });
+  assert.ok(h.store.getCategoryProposals()[0].members.every(m => m.canConfirm === false && m.unavailableReason === 'wiki_category_proposal_resolved'));
+});
+
 test('manual new categories require scope, and single-case options expose scoped category identity and members', t => {
   const h = setup(t);
   unchanged(h, () => h.confirm('new-1', { pendingPattern: { name: '只有名字不够' } }), /wiki_pending_pattern_scope_invalid/);

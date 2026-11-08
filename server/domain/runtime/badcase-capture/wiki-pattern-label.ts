@@ -1,5 +1,15 @@
 // Resolve manual pending-pattern consent without rewriting its frozen label.
 // A link changes grouping/evaluation identity, never training membership.
+import crypto from 'node:crypto';
+// Shared by explicit manual linking and initial category-draft approval. Caller
+// validates consent/target inside the same store transaction before appending.
+export function appendWikiPendingPatternLink(state: any, pendingPatternId: string, entryId: string) {
+  if (state.pendingPatternLinks?.some((r: any) => r.pendingPatternId === pendingPatternId)) throw Object.assign(Error('wiki_pending_pattern_link_frozen'), { code: 'wiki_pending_pattern_link_frozen' });
+  const content = { pendingPatternId, entryId, source: 'badcase-page', confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
+  const saved = { ...content, hash: crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex') };
+  (state.pendingPatternLinks || (state.pendingPatternLinks = [])).push(saved);
+  return saved;
+}
 export function resolveWikiPatternLabel(state: any, label: any) {
   if (!label.pendingPatternId) return { entryId: label.entryId, patternKey: label.entryId ?? 'unclassified' };
   const pending = state.pendingPatterns?.find((p: any) => p.id === label.pendingPatternId);

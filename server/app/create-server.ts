@@ -1354,6 +1354,10 @@ export function createServerApp(options: any = {}) {
         require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageCategoryProposals(input, {
           configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
         })),
+      runCategoryInduction: options.badcaseWikiCategoryInductionRunner || ((input: any) =>
+        require('../../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageCategoryInduction(input, {
+          configFile: options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG,
+        })),
       runInduction: options.badcaseWikiInductionRunner || ((input: any) => {
         const configFile = options.badcaseWikiRuntimeConfig ?? process.env.CAFF_BADCASE_WIKI_RUNTIME_CONFIG;
         if (configFile !== undefined || options.badcaseWikiInductionImage === undefined) {

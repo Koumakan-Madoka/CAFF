@@ -22,6 +22,7 @@ import { planWikiInitialSplit, projectWikiPatternLabels } from '../domain/runtim
 import { projectWikiPipelineStates } from '../domain/runtime/badcase-capture/wiki-pipeline';
 import { createWikiPipelinePrecheckStore, readWikiPipelineInputs } from '../domain/runtime/badcase-capture/wiki-pipeline-prechecks';
 
+import { wikiCategoryTrainingCases, assertWikiCategoryDraftAvailable } from '../domain/runtime/badcase-capture/wiki-category-induction';
 import { preparePageDehydration, pageRecommendationAvailability } from '../domain/runtime/badcase-capture/wiki-dehydration-runner';
 // Per-storage, per-case latch spans separate controller/store objects in this instance.
 const recommending = new Set<string>();
@@ -52,6 +53,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_pattern_label_frozen: 409, wiki_pattern_label_stale: 409,
     wiki_pending_pattern_name_invalid: 422, wiki_pending_pattern_scope_invalid: 422, wiki_pending_pattern_name_conflict: 409,
     wiki_category_proposal_not_found: 404, wiki_category_proposal_resolved: 409,
+    wiki_category_not_ready: 409, wiki_category_draft_pending: 409,
     wiki_pending_pattern_not_found: 404, wiki_pending_pattern_link_frozen: 409,
     wiki_initial_split_stale: 409, wiki_initial_split_empty: 409, wiki_initial_split_labels_required: 409, wiki_regroup_quota_invalid: 409,
     wiki_experience_invalid: 422, wiki_experience_not_found: 404, wiki_experience_reviewed: 409,
@@ -71,7 +73,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     const recommendMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/dehydration\/recommend$/);
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|category-propose|category-confirm|category-reject))?$/)
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|category-propose|category-confirm|category-reject|category-induct))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : recommendMatch ? [pathname, 'dehydration-recommend'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
@@ -85,6 +87,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'confirm-global-candidate': ['confirmed', 'candidateId', 'candidateHash', 'expectedRevision'],
         induct: ['confirmed', 'expectedRevision'],
         'category-propose': ['confirmed', 'expectedRevision'],
+        'category-induct': ['confirmed', 'pendingPatternId', 'expectedRevision'],
         'category-confirm': ['confirmed', 'proposalHash', 'expectedRevision', 'name', 'scope', 'members'],
         'category-reject': ['confirmed', 'proposalHash', 'expectedRevision'],
         suggestion: ['confirmed', 'suggestionId', 'decision', 'expectedRevision'],
@@ -184,6 +187,15 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (store.read().revision !== input.expectedRevision) throw Object.assign(Error(), { code: 'wiki_revision_conflict' });
         if (typeof options.runCategoryProposals !== 'function') throw Object.assign(Error(), { code: 'wiki_runtime_config_required' });
         await options.runCategoryProposals({ store, expectedRevision: input.expectedRevision });
+      }
+      if (match[1] === 'category-induct') {
+        if (!Number.isSafeInteger(input.expectedRevision)) throw Object.assign(Error(), { code: 'wiki_invalid_input' });
+        const current = store.read();
+        if (current.revision !== input.expectedRevision) throw Object.assign(Error(), { code: 'wiki_revision_conflict' });
+        wikiCategoryTrainingCases(current, input.pendingPatternId);
+        assertWikiCategoryDraftAvailable(current, input.pendingPatternId);
+        if (typeof options.runCategoryInduction !== 'function') throw Object.assign(Error(), { code: 'wiki_runtime_config_required' });
+        await options.runCategoryInduction({ store, pendingPatternId: input.pendingPatternId, expectedRevision: input.expectedRevision });
       }
       if (match[1] === 'initial-split-confirm') store.confirmInitialSplit(input);
       if (match[1] === 'review') store.review(input);

@@ -38,6 +38,18 @@ async function runPageCategoryProposals(input, { configFile } = {}, dependencies
     readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
   });
 }
+async function runPageCategoryInduction(input, { configFile } = {}, dependencies = {}) {
+  const induction = require('./wiki-induction.cjs');
+  induction.prepareWikiCategoryInduction(input.store, input.pendingPatternId); // before config/auth/model
+  const config = readPageRuntimeConfig(configFile);
+  const readKey = dependencies.readKey || require('./direct-model.cjs').readCaffDeepseekKey;
+  return (dependencies.inductCategory || induction.inductWikiCategory)({
+    store: input.store, pendingPatternId: input.pendingPatternId, expectedRevision: input.expectedRevision, confirmed: true, image: config.image,
+    ...(config.dockerBackend === undefined ? {} : { dockerBackend: config.dockerBackend }),
+  }, { readKey: () => readKey({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+    readDiagnosticValues: () => require('./wiki-diagnostics.cjs').readDiagnosticValues({ ...process.env, PI_CODING_AGENT_DIR: config.credentialDir }),
+  });
+}
 // Host-only, explicit single-shot action. Uses the SAME operator runtime/auth
 // selection as preclassification; no Docker/tools, credential copy or writeback.
 async function runPageDehydration(input, { configFile } = {}, dependencies = {}) {
@@ -69,4 +81,4 @@ function inspectPageReplay({ replay, scope }, dependencies = {}) {
     return { supported: false, reason: /^replay_[a-z_]+$/.test(result?.reason || '') ? result.reason : 'replay_check_failed' };
   } catch { return { supported: false, reason: 'replay_check_failed' }; }
 }
-module.exports = { runPageInduction, runPageCategoryProposals, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };
+module.exports = { runPageInduction, runPageCategoryProposals, runPageCategoryInduction, runPageDehydration, readPageRuntimeConfig, inspectPageReplay };
