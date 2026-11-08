@@ -34,7 +34,7 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
   const project = path.join(root, 'project'); fs.mkdirSync(project);
   const options = { agentDir: isolated.PI_CODING_AGENT_DIR, sourceWorktree: project };
   const cases = Array.from({ length: 36 }, (_, i) => ({
-    id: `layout-${i + 1}`, kind: 'marked-badcase', split: 'train', role: 'GPT',
+    id: `layout-${i + 1}`, kind: 'marked-badcase', split: 'train', role: 'role-family-gpt',
     actual: `【合成布局用例】先堆细节，结论后置 · ${i + 1}`, expected: '开头用白话讲清结果和影响。',
     message: '合成回复，不代表真实模型输出。', traceExcerpt: '', traceState: 'missing',
     source: { projectId: null, conversationId: 'layout-room', conversationTitle: '隔离布局测试（非生产数据）', messageId: `layout-${i}`, agentId: 'role-family-gpt' },

@@ -5,7 +5,7 @@ function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dehydration-workflow-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = createWikiStore({ globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') });
   const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'room', messageId: 'm', agentId: 'role-family-gpt' },
-    role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+    role: 'role-family-gpt', actual: 'wrong', expected: 'right', message: 'reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
   const bundle = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source: c.source, origin: 'mark', frozenAt: '2026-11-05T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' }, markedStep: 1,
     markedMessage: 'reply', actual: 'wrong', expected: 'right', context: { systemPrompt: 'system', priorSessionEntries: [], trigger: { type: 'message', message: { role: 'user', content: 'solve this' } } },
     steps: [{ step: 1, output: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] }, toolResults: [] }] };
@@ -143,7 +143,7 @@ test('revision changes across network forbid a retry/publication and concurrent 
   let release, calls = 0;
   const pending = recommendDehydration(input, { client: { ask: () => { calls++; return new Promise(r => { release = r; }); } } });
   await assert.rejects(recommendDehydration(input, { client: { ask: () => { calls++; } } }), e => e.code === 'wiki_dehydration_busy');
-  h.store.addMarkedCase({ source: { projectId: null, conversationId: 'second-room', conversationTitle: 'other', messageId: 'm', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'wrong', expected: 'right', message: 'other', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false });
+  h.store.addMarkedCase({ source: { projectId: null, conversationId: 'second-room', conversationTitle: 'other', messageId: 'm', agentId: 'role-family-gpt' }, role: 'role-family-gpt', actual: 'wrong', expected: 'right', message: 'other', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false });
   release({ content: 'bad json', finishReason: 'stop' });
   await assert.rejects(pending, e => e.code === 'wiki_revision_conflict'); assert.equal(calls, 1); assert.equal(h.store.getDehydration(h.c.id), null);
 });

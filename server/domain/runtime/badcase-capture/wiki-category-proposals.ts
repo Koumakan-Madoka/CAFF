@@ -20,7 +20,7 @@ function revision(state: any, expected: any) {
 }
 export function wikiCategoryEligibleCases(state: any) {
   const confirmed = new Set(projectWikiPatternLabels(state).filter((l: any) => l.confirmed).map((l: any) => l.caseId));
-  return state.cases.filter((c: any) => c.kind === 'marked-badcase' && c.role === 'GPT' && c.source?.agentId === 'role-family-gpt'
+  return state.cases.filter((c: any) => c.kind === 'marked-badcase' && c.source?.agentId === 'role-family-gpt'
     && c.split === null && !confirmed.has(c.id) && c.preclassification?.kind === 'new');
 }
 export function projectWikiCategoryProposals(state: any) {

@@ -4,6 +4,7 @@ const {wikiGoalCaseNumber}=require('../../build/server/domain/runtime/badcase-ca
 function fixture(){
  const a={id:'new-gpt-gate',kind:'marked-badcase',role:'role-family-gpt',source:{agentId:'role-family-gpt'},split:'gate',preclassification:{entryId:'entry-1'}};
  const b={...structuredClone(a),id:'new-gpt-test',split:'test'};
+ // Deliberately spoof the display role: authoritative source identity must still exclude DeepSeek.
  const other={...structuredClone(a),id:'deepseek-gate',role:'GPT',source:{agentId:'role-family-deepseek'}};
  const state={cases:[a,b,other],versions:[{entries:[{id:'entry-1',status:'approved',caseIds:[]},{id:'entry-2',status:'approved',caseIds:[]}]}],classifications:[]};
  const selections=state.cases.map(c=>({sourceCaseId:c.id,category:'reproduction'}));
@@ -24,6 +25,7 @@ test('Badcase-page confirmed labels unlock frozen holdouts without legacy precla
  for(const patch of [{source:'model'},{confirmedAt:'not-a-date'}]){const x=fixture();for(const c of x.state.cases)x.confirm(c);delete x.a.preclassification;x.state.classifications=x.state.classifications.filter(c=>c.caseId!==x.a.id);x.state.patternLabels=[{caseId:x.a.id,entryId:'entry-1',source:'badcase-page',confirmedAt:'2026-11-06T00:00:00.000Z',...patch}];assert.throws(x.plan);}
 });
 test('authoritative agent family recognizes role-family-gpt and never promotes DeepSeek with a GPT display label',()=>{
+ // Keep the marked-badcase + role 'GPT' adversarial shape here to prove unknown agents cannot claim GPT via role.
  const h=fixture();assert.equal(wikiSourceFamily(h.a),'GPT');assert.equal(wikiSourceFamily(h.other),'deepseek');assert.equal(wikiSourceFamily({role:'GPT',source:{agentId:'legacy-custom'}}),'GPT');assert.equal(wikiSourceFamily({kind:'marked-badcase',role:'GPT',source:{agentId:'unknown'}}),null);
  for(const c of h.state.cases)h.confirm(c);h.state.classifications[0].entryId='entry-2';const p=h.plan();assert.deepEqual(p.targetReproductionCaseIds,[]);assert.ok(!p.cases.find(c=>c.sourceCaseId===h.a.id).targetReproduction);
 });

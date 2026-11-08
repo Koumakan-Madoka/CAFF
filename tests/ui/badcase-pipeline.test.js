@@ -215,7 +215,7 @@ test('multiple training-derived approved patterns sort first without selecting a
 function categoryFixture(t, callbacks = {}) {
   const sent = [], h = setup(t, null, { onConfirmCategory: body => sent.push(body), ...callbacks });
   h.data.revision = 7;
-  h.data.cases = Array.from({ length: 4 }, (_, i) => ({ id: 'new-' + i, n: 21 + i, role: 'GPT', kind: 'marked-badcase', split: null, actual: '<b>约束问题' + i + '</b>', expected: '先检查', sealedCheckpointId: 'cp-' + i, source: { agentId: 'role-family-gpt' }, preclassification: { kind: 'new', reason: '新类别' } }));
+  h.data.cases = Array.from({ length: 4 }, (_, i) => ({ id: 'new-' + i, n: 21 + i, role: 'role-family-gpt', kind: 'marked-badcase', split: null, actual: '<b>约束问题' + i + '</b>', expected: '先检查', sealedCheckpointId: 'cp-' + i, source: { agentId: 'role-family-gpt' }, preclassification: { kind: 'new', reason: '新类别' } }));
   h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, confirmed: false, labelHash: String(i).repeat(64), options: [], pendingOptions: [] }));
   h.data.categoryProposalViews = [{ hash: 'a'.repeat(64), name: '调用前检查', scope: '<script>范围只供归类</script>', status: 'pending', members: h.data.cases.slice(0, 3).map((c, i) => ({ caseId: c.id, reason: '理由' + i, canConfirm: i !== 2, unavailableReason: i === 2 ? 'wiki_pattern_label_frozen' : null })) },
     { hash: 'b'.repeat(64), name: '另一类', scope: '另一范围', status: 'pending', members: [{ caseId: 'new-3', reason: '理由3', canConfirm: true }] }];
@@ -267,6 +267,34 @@ test('category validation, rejection, and read-only controls never send partial 
   h.panel.setWritable(true); assert.equal(h.card().querySelector('[data-category-member="new-2"]').disabled, true);
   h.card().querySelector('[data-category-reject]').click(); assert.deepEqual(JSON.parse(JSON.stringify(rejected)), [{ proposalHash: 'a'.repeat(64) }]); assert.equal(h.sent.length, 0);
 });
+test('page proposal batch and confirmable members match server eligibility/views on the same production-shaped mixed state', t => {
+  const { fixture, hash } = require('../helpers/wiki-pending-patterns.cjs');
+  const base = '../../build/server/domain/runtime/badcase-capture/';
+  const { wikiCategoryEligibleCases, projectWikiCategoryProposals } = require(base + 'wiki-category-proposals');
+  const { projectWikiPatternLabels } = require(base + 'wiki-initial-split');
+  const state = fixture(), sample = state.cases.find(c => c.id === 'new-1');
+  state.cases.push({ ...structuredClone(sample), id: 'deepseek-new', role: 'role-family-deepseek', source: { ...sample.source, agentId: 'role-family-deepseek' } },
+    { ...structuredClone(sample), id: 'text-new', kind: 'text-only', role: 'GPT' },
+    { ...structuredClone(sample), id: 'allocated', split: 'train' },
+    { ...structuredClone(sample), id: 'not-preclassified', preclassification: undefined },
+    { ...structuredClone(sample), id: 'assigned', preclassification: { kind: 'assign', entryId: 'entry-1' } });
+  state.patternLabels.push({ caseId: 'new-4', entryId: null });
+  const h = setup(t, null, { onProposeCategories: () => {}, onConfirmCategory: () => {} });
+  Object.assign(h.data, state, { cases: state.cases.map((c, i) => ({ ...c, n: i + 21 })), casePatterns: projectWikiPatternLabels(state), categoryProposalViews: projectWikiCategoryProposals(state) });
+  h.panel.render(h.data);
+  const numbers = h.root.querySelector('[data-categories] [data-propose-categories]').closest('.bc-notice').querySelector('p').textContent.match(/#\d+/g);
+  const pageIds = h.data.cases.filter(c => numbers.includes('#' + c.n)).map(c => c.id);
+  assert.deepEqual(pageIds, ['new-1', 'new-2', 'new-3']);
+  assert.deepEqual(pageIds, wikiCategoryEligibleCases(state).map(c => c.id));
+  state.categoryProposals = [{ hash: hash('synthetic mixed proposal'), name: '约束检查', scope: '归类范围',
+    members: state.cases.map(c => ({ caseId: c.id, reason: 'Synthetic membership' })) }];
+  h.data.categoryProposalViews = projectWikiCategoryProposals(state); h.panel.render(h.data);
+  const confirmable = h.data.categoryProposalViews[0].members.filter(m => m.canConfirm).map(m => m.caseId);
+  assert.deepEqual(confirmable, pageIds);
+  assert.deepEqual([...h.root.querySelectorAll('[data-category-member]:not(:disabled)')].map(el => el.dataset.categoryMember), pageIds);
+  assert.equal(h.root.querySelector('[data-category-member="deepseek-new"]').disabled, true);
+});
+
 test('separate category proposal entry names its full eligible batch, never repeats while every member has a pending proposal', t => {
   let calls = 0; const h = categoryFixture(t, { onProposeCategories: () => calls++ });
   assert.equal(h.root.querySelector('[data-propose-categories]'), null);

@@ -39,6 +39,40 @@ test('standalone preparation uses all eligible identity cases, not old training/
   assert.deepEqual(h.bytes(), before);
 });
 
+test('production-shaped marked cases complete fake-model proposal, group confirmation, split, bounded induction and approval', async t => {
+  const h = setup(t), state = h.store.read(), sample = state.cases.find(c => c.id === 'new-1');
+  assert.equal(sample.role, 'role-family-gpt');
+  state.cases.push({ ...structuredClone(sample), id: 'deepseek-new', role: 'role-family-deepseek', source: { ...sample.source, agentId: 'role-family-deepseek' } });
+  state.revision++; h.publish(state);
+  const run = runner(h, [{ proposals: [proposal()] }]), saved = await generation.proposeWikiCategories(run.args, run.options);
+  assert.deepEqual(run.calls[0].cases.map(c => c.id), ids);
+  const base = '../../build/server/domain/runtime/badcase-capture/';
+  const { projectWikiPatternLabels, planWikiInitialSplit } = require(base + 'wiki-initial-split');
+  const before = h.store.read(), p = saved.proposals[0], labels = projectWikiPatternLabels(before);
+  const categoryId = h.store.confirmCategoryProposal({ proposalHash: p.hash, expectedRevision: before.revision, name: p.name, scope: p.scope,
+    members: p.members.map(m => ({ caseId: m.caseId, labelHash: labels.find(l => l.caseId === m.caseId).labelHash })) }).pendingPattern.id;
+  const split = planWikiInitialSplit(h.store.read(), []);
+  h.store.confirmInitialSplit({ proposalHash: split.hash, patternKey: categoryId, expectedRevision: h.store.read().revision });
+  const { wikiCategoryTrainingCases } = require(base + 'wiki-category-induction');
+  const training = wikiCategoryTrainingCases(h.store.read(), categoryId).cases.map(c => c.id); let calls = 0;
+  const { content } = require('../helpers/wiki-category-induction.cjs');
+  const draft = await generation.inductWikiCategory({ store: h.store, confirmed: true, expectedRevision: h.store.read().revision, pendingPatternId: categoryId, image: {} }, {
+    readKey: () => key, execute: async (_image, files) => {
+      calls++; assert.deepEqual(JSON.parse(files[0].bytes).cases.map(c => c.id), training);
+      return { cleaned: true, receipt: { ok: true, calls: [], results: [content()] } };
+    },
+  });
+  const entry = draft.version.entries.at(-1);
+  h.store.review({ versionId: draft.version.id, entryId: entry.id, expectedRevision: h.store.read().revision, decision: 'approved' });
+  const after = h.store.read(); assert.equal(calls, 1); assert.equal(after.versions.at(-1).entries.at(-1).status, 'approved');
+  assert.equal(after.pendingPatternLinks.find(l => l.pendingPatternId === categoryId).entryId, entry.id);
+  for (const id of training) assert.ok(h.store.getCaseStates().find(c => c.caseId === id).memberships.some(m => m.entryId === entry.id));
+  const selections = after.cases.filter(c => ids.includes(c.id) && ['gate', 'test'].includes(c.split)).map(c => ({ sourceCaseId: c.id, category: 'reproduction' }));
+  const suite = require(base + 'wiki-evaluation-suite').planWikiEvaluationSuite(after, selections, entry.id);
+  assert.equal(suite.targetReproductionCaseIds.length, 1); assert.equal(suite.targetTestReproductionCaseIds.length, 1);
+  assert.equal(after.cases.find(c => c.id === 'deepseek-new').split, null); assert.ok(!after.patternLabels.some(l => l.caseId === 'deepseek-new'));
+});
+
 test('category prompt is identity-only, untrusted-data-only, has closed schema/limits and permits joining existing categories', () => {
   const body = JSON.parse(buildRequestBody({ phase: 'category-proposals', cases: [{ id: 'a' }], pendingPatterns: [] }));
   const prompt = body.messages[0].content;

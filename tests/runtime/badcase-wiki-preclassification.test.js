@@ -16,7 +16,7 @@ function setup(t, count = 4) {
   const v = store.saveDraft({ model: MODEL, caseIds: trainIds, entries: [fields, { ...fields, title: '另一已审核模式' }], unclassified: [] });
   for (const e of v.entries) store.review({ versionId: v.id, entryId: e.id, decision: 'approved', expectedRevision: store.read().revision });
   function mark(i, checkpoint = 'cp-' + i) {
-    return store.addMarkedCase({ source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: String(i), agentId: 'role-family-gpt' }, role: 'GPT', actual: '新问题' + i, expected: '新期望' + i, message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: checkpoint }).case;
+    return store.addMarkedCase({ source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: String(i), agentId: 'role-family-gpt' }, role: 'role-family-gpt', actual: '新问题' + i, expected: '新期望' + i, message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: checkpoint }).case;
   }
   const result = (c, kind = 'assign') => ({ caseId: c.id, kind, ...(kind === 'assign' ? { entryId: 'entry-1' } : {}), reason: '症状相符', confidence: '高' });
   const record = results => store.recordPreclassification({ caseIds: results.map(r => r.caseId), model: MODEL, proof, results }, store.read().revision);

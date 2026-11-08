@@ -125,7 +125,7 @@ test('missing session and original context are explicit, not a synthetic reconst
 test('sealed sources retain verified pre-turn material but never invent the marked run', t => {
   const h = fixture(t), captureRoot = path.join(h.root, 'sealed-copy'), pr = path.join(captureRoot, 'projects', 'project');
   fs.mkdirSync(path.join(pr, 'checkpoints'), { recursive: true });
-  const item = h.store.addMarkedCase({ source: { projectId: 'project', conversationId: 'room', agentId: 'role-family-gpt', messageId: 'sealed-message', conversationTitle: 'Sealed test' }, role: 'GPT', actual: 'wrong', expected: 'right', message: 'reply', sealedCheckpointId: 'cp', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }).case;
+  const item = h.store.addMarkedCase({ source: { projectId: 'project', conversationId: 'room', agentId: 'role-family-gpt', messageId: 'sealed-message', conversationTitle: 'Sealed test' }, role: 'role-family-gpt', actual: 'wrong', expected: 'right', message: 'reply', sealedCheckpointId: 'cp', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }).case;
   const prompt = Buffer.from('sealed prompt inert-known-value'), ph = hash(prompt);
   fs.mkdirSync(path.join(pr, 'blobs', ph.slice(0, 2)), { recursive: true }); fs.writeFileSync(path.join(pr, 'blobs', ph.slice(0, 2), ph), prompt);
   fs.writeFileSync(path.join(pr, 'checkpoints/cp.json'), JSON.stringify({ checkpointId: 'cp', projectId: 'project', conversationId: 'room', agentId: 'role-family-gpt', files: {}, replayInput: { promptBlobHash: ph } }));

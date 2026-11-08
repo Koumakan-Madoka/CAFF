@@ -24,6 +24,22 @@ function unchanged(h, action, error) {
   assert.deepEqual(h.store.read(), state); assert.deepEqual(h.bytes(), bytes, 'failure must not publish even a partial snapshot');
 }
 
+test('category eligibility uses marked source agent identity with production-shaped roles, excluding DeepSeek and text-only', t => {
+  const { wikiCategoryEligibleCases } = require('../../build/server/domain/runtime/badcase-capture/wiki-category-proposals');
+  const h = setup(t), state = h.store.read(), sample = state.cases.find(c => c.id === 'new-1');
+  assert.equal(sample.kind, 'marked-badcase'); assert.equal(sample.role, 'role-family-gpt');
+  state.cases.push({ ...structuredClone(sample), id: 'deepseek-new', role: 'role-family-deepseek', source: { ...sample.source, agentId: 'role-family-deepseek' } },
+    { ...structuredClone(sample), id: 'text-only-new', kind: 'text-only', role: 'GPT' });
+  state.revision++; h.publish(state);
+  assert.deepEqual(wikiCategoryEligibleCases(h.store.read()).map(c => c.id), caseIds);
+  const p = record(h).proposals[0], view = h.store.getCategoryProposals()[0];
+  assert.deepEqual(view.members.filter(m => m.canConfirm).map(m => m.caseId), caseIds);
+  h.store.confirmCategoryProposal(consent(h, p));
+  assert.ok(labels(h.store.read()).filter(l => caseIds.includes(l.caseId)).every(l => l.confirmed));
+  assert.equal(labels(h.store.read()).find(l => l.caseId === 'deepseek-new').confirmed, false);
+  assert.deepEqual(wikiCategoryEligibleCases(h.store.read()), []);
+});
+
 test('model category proposals are immutable hashed records, not labels, memberships or group assignments', t => {
   const h = setup(t), before = h.store.read(), bytes = h.bytes(), result = record(h);
   assert.equal(result.proposals.length, 1);

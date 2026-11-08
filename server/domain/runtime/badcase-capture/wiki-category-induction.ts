@@ -12,7 +12,7 @@ export function wikiCategoryTrainingCases(state: any, pendingPatternId: any) {
   if (state.pendingPatternLinks?.some((r: any) => r.pendingPatternId === pendingPatternId)) throw fail('wiki_pending_pattern_link_frozen');
   const members = (state.patternLabels || []).filter((r: any) => r.pendingPatternId === pendingPatternId)
     .map((r: any) => state.cases.find((c: any) => c.id === r.caseId));
-  if (!members.length || members.some((c: any) => !c || c.role !== 'GPT' || c.source?.agentId !== 'role-family-gpt' || !['train', 'gate', 'test'].includes(c.split))) throw fail('wiki_category_not_ready');
+  if (!members.length || members.some((c: any) => !c || c.source?.agentId !== 'role-family-gpt' || !['train', 'gate', 'test'].includes(c.split))) throw fail('wiki_category_not_ready');
   const cases = members.filter((c: any) => c.split === 'train').sort((a: any, b: any) => a.id.localeCompare(b.id));
   if (!cases.length) throw fail('wiki_category_not_ready');
   if (cases.length > 20) throw fail('wiki_collection_too_large');
