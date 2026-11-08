@@ -89,7 +89,7 @@ test('GET and confirmation refresh only read offline prechecks; cache failures a
 test('pattern label and initial split confirmations are local-admin/CSRF guarded, closed and hash/revision bound without model calls', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = async () => { calls++; };
-  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'role-family-gpt', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
   const before = h.store.read(), get = await h.invoke();
   assert.equal(h.store.read().revision, before.revision, 'GET only projects a proposal');
   const label = get.body.casePatterns.find(r => r.caseId === c.id);
@@ -120,7 +120,7 @@ test('pending label and link endpoints enforce local-admin/CSRF, closed consent 
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   let calls = 0; h.options.runInduction = h.options.runDehydration = h.options.runRubricDraft = () => { calls++; throw Error('no model calls'); };
   const add = messageId => h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId, agentId: 'role-family-gpt' },
-    role: 'GPT', actual: 'Synthetic new pattern', expected: 'Check first', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-' + messageId }).case;
+    role: 'role-family-gpt', actual: 'Synthetic new pattern', expected: 'Check first', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-' + messageId }).case;
   const c = add('pending-create'), other = add('pending-join');
   const before = h.store.read(), get = await h.invoke(), label = get.body.casePatterns.find(r => r.caseId === c.id);
   const route = { pathname: '/api/wikiskill/pattern-label-confirm' };
@@ -189,7 +189,7 @@ test('page-labelled holdouts project confirmed status and both legacy HTTP write
 test('assigned GPT label gaps block the first-split HTTP endpoint with a distinct error until labels are confirmed', async t => {
   const h = setup(t), v = h.seed(); h.store.review({ versionId: v.id, entryId: v.entries[0].id, decision: 'approved', expectedRevision: h.store.read().revision });
   const gap = h.store.addTextCases([{ source: { origin: 'http://127.0.0.1:3100', projectId: 'p1', conversationId: 'c1', messageId: 'assigned-unlabelled', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'synthetic assigned but unlabelled', expected: 'synthetic expectation', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false }]).cases[0];
-  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new-label-gap', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic', conversationTitle: 'synthetic', messageId: 'new-label-gap', agentId: 'role-family-gpt' }, role: 'role-family-gpt', actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'cp-new' }).case;
   let get = await h.invoke(); const own = get.body.casePatterns.find(r => r.caseId === c.id);
   await h.invoke({ confirmed: true, caseId: c.id, entryId: 'entry-1', labelHash: own.labelHash, expectedRevision: get.body.revision }, { pathname: '/api/wikiskill/pattern-label-confirm' });
   const before = h.store.read(); get = await h.invoke(); const p = get.body.initialSplitProposal;

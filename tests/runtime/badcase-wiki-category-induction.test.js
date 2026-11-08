@@ -7,6 +7,18 @@ function unchanged(h, action, error) { const before = h.store.read(), bytes = h.
 const frozen = s => Object.fromEntries(['cases', 'patternLabels', 'pendingPatterns', 'initialSplitConfirmations', 'dehydrations', 'rubrics', 'classifications'].map(k => [k, JSON.stringify(s[k])]));
 const selections = h => h.members.filter(c => ['gate', 'test'].includes(c.split)).map(c => ({ sourceCaseId: c.id, category: 'reproduction' })).concat({ sourceCaseId: 'old-control', category: 'control' });
 
+test('category readiness accepts production-shaped GPT roles and rejects DeepSeek members in every split', t => {
+  const { wikiCategoryTrainingCases } = require(base + 'wiki-category-induction');
+  const h = setup(t), state = h.store.read();
+  assert.ok(h.members.every(c => c.kind === 'marked-badcase' && c.role === 'role-family-gpt' && c.source.agentId === 'role-family-gpt'));
+  assert.deepEqual(wikiCategoryTrainingCases(state, h.categoryId).cases.map(c => c.id), h.trainIds);
+  for (const split of ['train', 'gate', 'test']) {
+    const invalid = structuredClone(state), member = invalid.cases.find(c => h.members.some(m => m.id === c.id) && c.split === split);
+    assert.ok(member); member.role = member.source.agentId = 'role-family-deepseek';
+    assert.throws(() => wikiCategoryTrainingCases(invalid, h.categoryId), /wiki_category_not_ready/);
+  }
+});
+
 test('category induction appends a draft version with fixed title/train IDs/source; approval atomically confirms train members and immutable link', t => {
   const h = setup(t), before = h.store.read(), saved = h.draft(), draft = saved.version.entries.at(-1), afterDraft = h.store.read();
   assert.equal(afterDraft.revision, before.revision + 1); assert.equal(draft.title, '调用前检查约束');

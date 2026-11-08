@@ -176,7 +176,7 @@ test('split confirmation rejects stale hashes/revisions/evidence, empty patterns
 });
 test('model preclassification only proposes a pattern and cannot allocate a new case or change old groups', t => {
   const h = setup(t), state = h.store.read(); state.cases = state.cases.filter(c => c.id === 'already'); h.publish(state);
-  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'GPT',
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'room', conversationTitle: 'synthetic', messageId: 'new', agentId: 'role-family-gpt' }, role: 'role-family-gpt',
     actual: 'new issue', expected: 'expected', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false, sealedCheckpointId: 'new-checkpoint' }).case;
   const before = h.store.read();
   h.store.recordPreclassification({ caseIds: [c.id], model: 'deepseek/deepseek-v4-flash', proof: { inputHash: hash('input'), calls: [], cleaned: true },

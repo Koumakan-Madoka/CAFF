@@ -79,7 +79,7 @@ test('invalid backend and unavailable Windows backend fail before reading auth o
   const { inductWikiCases } = require('../../scripts/badcase-capture/wiki-induction.cjs');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-backend-preflight-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = createWikiStore({ globalRoot: path.join(root, 'global'), sourceWorktree: path.join(root, 'source') });
-  store.addMarkedCase({ source: { projectId: 'p1', conversationId: 'c1', conversationTitle: 'Synthetic', messageId: 'm1', agentId: 'role-family-gpt' }, role: 'GPT', actual: 'a', expected: 'b', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false });
+  store.addMarkedCase({ source: { projectId: 'p1', conversationId: 'c1', conversationTitle: 'Synthetic', messageId: 'm1', agentId: 'role-family-gpt' }, role: 'role-family-gpt', actual: 'a', expected: 'b', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false });
   let reads = 0; const before = store.read(), args = { store, confirmed: true, expectedRevision: before.revision };
   const options = { readKey: () => { reads++; throw Error('must not read'); } };
   await assert.rejects(inductWikiCases({ ...args, dockerBackend: { kind: 'windows-wsl-v1', distribution: 'bad;name' } }, options), /evaluation_wsl_backend_invalid/);

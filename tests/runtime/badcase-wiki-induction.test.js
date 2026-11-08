@@ -17,7 +17,7 @@ function setup(t) {
   const oldCaseId = imported.cases[0].id;
   const version = store.saveDraft({ caseIds: [oldCaseId], model: MODEL, entries: [{ title: '先核验', failureMode: '未核验就汇报', symptoms: '没有检查', rootCauseHypothesis: '跳过验证', guideline: '先核验再汇报。', caseIds: [oldCaseId] }], unclassified: [] });
   store.review({ versionId: version.id, entryId: 'entry-1', expectedRevision: 2, decision: 'approved' });
-  const markedInput = { source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: 'new-message', agentId: 'role-family-gpt' }, role: 'GPT', sealedCheckpointId: 'synthetic-checkpoint',
+  const markedInput = { source: { projectId: 'p1', conversationId: 'new-room', conversationTitle: '新房间', messageId: 'new-message', agentId: 'role-family-gpt' }, role: 'role-family-gpt', sealedCheckpointId: 'synthetic-checkpoint',
     actual: '简单任务外又增加流程', expected: '直接完成用户要求', message: '', traceExcerpt: '', traceState: 'missing', messageTruncated: false, traceTruncated: false };
   const marked = store.addMarkedCase(markedInput);
   return { root, config, store, oldCaseId, markedInput, marked, caseId: marked.case.id };

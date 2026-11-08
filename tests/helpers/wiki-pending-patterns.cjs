@@ -5,13 +5,14 @@ const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).
 const legacyId = 'text-1c6e58c2f58ac57383a1910cd01dd96b4b6c2989078d6963b83284a4a8abaa47';
 function fixture(count = 4) {
   const at = '2026-11-08T00:00:00.000Z';
-  const trace = (id, split = null) => ({ id, kind: 'marked-badcase', role: 'GPT', split, sealedCheckpointId: 'cp-' + id,
+  // Live marked cases store the agent ID in role, not the display family name.
+  const trace = (id, split = null) => ({ id, kind: 'marked-badcase', role: 'role-family-gpt', split, sealedCheckpointId: 'cp-' + id,
     source: { agentId: 'role-family-gpt', conversationId: 'synthetic-room', messageId: id },
     actual: 'Synthetic failure ' + id, expected: 'Check tool constraints first', createdAt: at, traceBundle: { hash: hash(id) },
     preclassification: { kind: 'new', entryId: null, confidence: 'high', reason: 'Synthetic new pattern suggestion', createdAt: at } });
   const oldLabel = { caseId: legacyId, entryId: null, source: 'badcase-page', labelHash: hash('old label'), confirmedRevision: 100, confirmedAt: at };
   const state = { schemaVersion: 1, scope: 'global', revision: 118,
-    cases: [trace('old-train', 'train'), trace('old-control', 'gate'), { ...trace(legacyId, 'test'), kind: 'text-only' },
+    cases: [trace('old-train', 'train'), trace('old-control', 'gate'), { ...trace(legacyId, 'test'), kind: 'text-only', role: 'GPT' },
       ...Array.from({ length: count }, (_, i) => trace('new-' + (i + 1)))],
     versions: [{ id: 'wiki-3', createdAt: at, entries: [1, 2, 3].map(i => ({ id: 'entry-' + i, title: 'Approved pattern ' + i,
       status: i === 3 ? 'draft' : 'approved', caseIds: i === 1 ? ['old-train'] : [] })) }],
