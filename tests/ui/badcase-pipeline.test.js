@@ -109,6 +109,29 @@ test('new-mode suggestions default to pending create/join, validate names and bi
   assert.equal(host().querySelector('[data-pattern-kind]:checked').value, 'entry'); assert.equal(host().querySelector('[data-pattern-entry]').value, 'entry-1');
 });
 
+for (const linked of [true, false]) test(`joining a ${linked ? 'linked' : 'unlinked'} pending pattern explains the actual grouping and evaluation identity before locking`, t => {
+  const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body) });
+  const name = '<script>先核对约束</script>', title = '<b>先查前置条件</b>', pendingId = linked ? 'pending-linked' : 'pending-unlinked';
+  h.data.cases[1].split = null; h.data.cases[1].preclassification = { kind: 'new' };
+  h.data.versions = [{ entries: [{ id: 'entry-1', title, status: 'approved' }] }];
+  h.data.casePatterns = [{ caseId: 'c2', confirmed: false, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title }], pendingOptions: [
+    { id: 'pending-unlinked', name, entryId: null }, { id: 'pending-linked', name, entryId: 'entry-1' },
+  ] }];
+  h.panel.render(h.data); h.panel.focus(19);
+  const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label="c2"]');
+  const select = host().querySelector('[data-pattern-pending-id]'); select.value = pendingId;
+  select.dispatchEvent(new h.window.Event('change', { bubbles: true })); host().querySelector('[data-pattern-confirm]').click();
+  const consent = host().querySelector('[data-label-consent]');
+  assert.equal(consent.querySelector('b').textContent, `确认后不能改：#19 → 待归纳新模式「${name}」${linked ? `（已关联到「${title}」）` : ''}`);
+  assert.equal(consent.querySelector('span').textContent, linked
+    ? `它会直接在「${title}」里按配额分组；门槛和测试用例评测「${title}」的候选时算目标复现题。`
+    : '它会在这个新模式自己的组里分组；新模式归纳并审核通过、你关联之后，才算那个模式的用例。');
+  assert.equal(consent.querySelector('script, b b, span b'), null);
+  if (linked) assert.doesNotMatch(consent.textContent, /自己的组|关联之后|归纳并审核通过/);
+  assert.equal(sent.length, 0); host().querySelector('[data-pattern-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ caseId: 'c2', pendingPattern: { id: pendingId }, labelHash: 'c'.repeat(64) }]);
+});
+
 test('pending boards warn without blocking and offer immutable inline linking plus resolved target lists', t => {
   const sent = [], h = setup(t, null, { onConfirmInitialSplit: () => {}, onLinkPendingPattern: body => sent.push(body), confirm: () => { throw Error('no dialog'); } });
   const option = { id: 'pending-1', name: '<script>Named pending</script>', entryId: null };
