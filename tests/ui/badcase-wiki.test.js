@@ -82,6 +82,53 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+function unallocatedCasesFixture(t) {
+  const h = setup(t), s = h.saved(), sample = clone(s.cases[0]);
+  s.cases = [{ ...clone(sample), displayNumber: 1 }, ...[21, 22].map(n => ({ ...clone(sample), id: 'unallocated-' + n, displayNumber: n,
+    kind: 'marked-badcase', role: 'role-family-gpt', split: null, preclassification: { kind: 'assign', entryId: 'entry-1', reason: 'Suggested only' } }))];
+  s.versions[0].entries[0].caseIds = []; s.versions[0].caseIds = [];
+  s.caseStates = [{ caseId: 'c1', status: 'pending', memberships: [] }, { caseId: 'unallocated-21', status: 'classification-pending', memberships: [] },
+    { caseId: 'unallocated-22', status: 'pending-allocation', memberships: [] }];
+  s.casePatterns = s.cases.slice(1).map(c => ({ caseId: c.id, confirmed: c.displayNumber === 22, source: c.displayNumber === 22 ? 'badcase-page' : null,
+    entryId: c.displayNumber === 22 ? 'entry-1' : null, labelHash: 'a'.repeat(64), options: [{ entryId: 'entry-1', title: approvedEntry.title }], pendingOptions: [] }));
+  s.suggestions = s.cases.map(c => ({ id: 'suggest-' + c.id, caseId: c.id, kind: 'assign', entryId: 'entry-1', status: 'pending', reason: 'Only a suggestion' }));
+  s.replayCases = []; s.candidates = [];
+  return h;
+}
+
+test('all split-null cases appear once in the processing group and its dropdown, without inflating induction counts', async t => {
+  const h = unallocatedCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const numbers = () => [...h.root.querySelectorAll('#cases-body .case-head > .num')].map(el => Number(el.textContent.slice(1)));
+  assert.deepEqual(numbers(), [1, 21, 22]); assert.equal(new Set(numbers()).size, numbers().length);
+  const group = h.root.querySelector('#cases-body > .group'); assert.match(group.querySelector('h3').textContent, /待处理.*待归纳/);
+  assert.match(group.querySelector('.group-note').textContent, /标签待确认.*待分组/);
+  assert.match(h.root.querySelector('#cases-summary').textContent, /待预分类 0 条。待归纳 1 条/);
+  assert.equal(group.querySelector('[data-induct]').disabled, false, 'the existing single pending training case is still inductable');
+  const select = h.root.querySelector('#cases-group'); select.value = 'inbox'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  assert.deepEqual(numbers(), [1, 21, 22]);
+  const split = h.root.querySelector('#cases-split'); split.value = 'unallocated'; split.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  assert.deepEqual(numbers(), [21, 22]); assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
+test('unallocated cards in list and group views offer only a Badcase label/grouping link, never legacy membership or suggestion actions', async t => {
+  const h = unallocatedCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  await h.click('[data-cases-mode="list"]');
+  const check = () => {
+    for (const n of [21, 22]) {
+      const card = h.root.querySelector('#c-' + n); assert.ok(card);
+      assert.equal(card.querySelector('[data-manual-entry],[data-manual-assign],[data-manual-remove],[data-confirm-suggestion],[data-reject-suggestion]'), null);
+      assert.equal(card.querySelector('a[data-go="bc-' + n + '"]').getAttribute('href'), '#bc-' + n);
+      assert.match(card.textContent, /Badcase.*标签.*分组/);
+    }
+    assert.ok(h.root.querySelector('#c-1 [data-manual-assign]'), 'existing training controls are unchanged');
+    assert.ok(h.root.querySelector('#c-1 [data-confirm-suggestion]'), 'training suggestions are unchanged');
+  };
+  check(); await h.click('[data-cases-mode="group"]'); check();
+  await h.click('#c-21 a[data-go="bc-21"]'); assert.equal(h.window.location.hash, '#bc-21');
+  assert.equal(h.root.querySelector('#view-badcases').hidden, false);
+  assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
 function patternCasesFixture(t) {
   const h = setup(t), s = h.saved(), sample = clone(s.cases[0]);
   const marked = (n, split) => ({ ...clone(sample), id: 'marked-' + n, kind: 'marked-badcase', role: 'role-family-gpt', displayNumber: n, split,
