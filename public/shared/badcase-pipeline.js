@@ -198,16 +198,18 @@
     function pendingLinkPanel(x) {
       const p = pendingOptions().find(p => p.id === x.key && !p.entryId);
       if (!p || !x.cases.length || !x.cases.every(c => splitName[c.split])) return '';
-      const approved = approvedOptions(), train = x.cases.filter(c => c.split === 'train').map(c => '#' + c.n).join('、') || '本组训练用例';
-      const next = `<p class="hint" data-pending-next>下一步在「知识库」页用训练组的 ${esc(train)} 归纳新模式，审核通过后回到这里关联；门槛和测试不参与归纳。<a href="#wiki">去知识库</a></p>`;
+      const trainCases = x.cases.filter(c => c.split === 'train'), fromTrain = e => e.caseIds?.some(id => trainCases.some(c => c.id === id));
+      const derived = approvedOptions().filter(fromTrain), approved = [...derived, ...approvedOptions().filter(e => !fromTrain(e))], defaultId = derived.length === 1 ? derived[0].id : '';
+      const train = trainCases.map(c => '#' + c.n).join('、') || '本组训练用例';
+      const next = `<p class="hint" data-pending-next>${derived.length ? '用本组训练用例归纳出的模式已通过审核，请核对后关联。' : `下一步在「知识库」页用训练组的 ${esc(train)} 归纳新模式，审核通过后回到这里关联；门槛和测试不参与归纳。<a href="#wiki">去知识库</a>`}</p>`;
       if (!approved.length) return `<div class="bc-notice">${next}<p>还没有可关联的已通过模式。</p></div>`;
       const target = linkConsent?.id === p.id ? approved.find(e => e.id === linkConsent.entryId) : null;
-      return `<section class="bc-notice" data-pending-link-panel="${esc(p.id)}">${next}<b>关联到已通过的模式</b><p>只能关联一次。关联前，这一组不算任何模式的目标用例。</p>${target ? `<div class="bc-confirm-strip" data-link-consent><b>关联后不能改：</b><span>「${esc(p.name)}」的 ${x.cases.length} 条用例都算「${esc(target.title)}」的用例；门槛和测试组成为它候选的目标复现题，已分好的组别不变。</span><div class="row-actions"><button type="button" class="btn primary" data-pending-link-lock="${esc(p.id)}">确认并锁定</button><button type="button" class="btn" data-link-cancel>取消</button></div></div>` : `<label class="field">关联到的模式<select data-pending-link-entry>${approved.map(e => `<option value="${esc(e.id)}">${esc(e.title)}</option>`).join('')}</select></label><button type="button" class="btn primary" data-pending-link="${esc(p.id)}" ${writable && typeof onLinkPendingPattern === 'function' ? '' : 'disabled'}>关联…</button>`}</section>`;
+      return `<section class="bc-notice" data-pending-link-panel="${esc(p.id)}">${next}<b>关联到已通过的模式</b><p>只能关联一次。关联前，这一组不算任何模式的目标用例。</p>${target ? `<div class="bc-confirm-strip" data-link-consent><b>关联后不能改：</b><span>「${esc(p.name)}」的 ${x.cases.length} 条用例都算「${esc(target.title)}」的用例；门槛和测试组成为它候选的目标复现题，已分好的组别不变。</span><div class="row-actions"><button type="button" class="btn primary" data-pending-link-lock="${esc(p.id)}">确认并锁定</button><button type="button" class="btn" data-link-cancel>取消</button></div></div>` : `<label class="field">关联到的模式<select data-pending-link-entry><option value="">选择已通过的模式…</option>${approved.map(e => `<option value="${esc(e.id)}" ${e.id === defaultId ? 'selected' : ''}>${esc(e.title)}${fromTrain(e) ? '（用本组训练用例归纳出）' : ''}</option>`).join('')}</select></label><div class="row-actions"><button type="button" class="btn primary" data-pending-link="${esc(p.id)}" ${writable && typeof onLinkPendingPattern === 'function' && defaultId ? '' : 'disabled'}>关联…</button></div>`}</section>`;
     }
     function targetPanel(x) {
       if (!(D.pendingPatternLinks || []).some(l => l.entryId === x.key)) return '';
       const ids = split => x.cases.filter(c => c.kind === 'marked-badcase' && c.split === split && isGpt(c) && patternLabel(c)?.confirmed && patternLabel(c)?.entryId === x.key).map(c => '#' + c.n).join('、') || '无';
-      return `<section class="bc-notice" data-pattern-targets><b>「${esc(x.title)}」的模式目标</b><p>门槛目标复现题：${ids('gate')}；测试目标复现题：${ids('test')}</p><p class="hint">这里只说明模式归属；断言、现场和评测执行条件仍按现有规则检查，已分组别不变。</p></section>`;
+      return `<section class="bc-notice" data-pattern-targets><b>「${esc(x.title)}」的模式目标</b><p>门槛目标复现题：${ids('gate')}；测试目标复现题：${ids('test')}</p><p class="hint">目标复现题已经确定；要用于评测，还需要冻结断言、通过回放检查并满足原版复现等条件，具体看上面列出的缺项。这里只确认模式归属，不代表已经可以评测；已分组别不变。</p></section>`;
     }
     function formFor(c) {
       if (labelForms.has(c.id)) return labelForms.get(c.id);
@@ -429,7 +431,7 @@
       if (el.dataset.pendingLink || el.dataset.pendingLinkLock) {
         const id = el.dataset.pendingLink || el.dataset.pendingLinkLock, x = patterns().find(x => x.key === id);
         if (!writable || typeof onLinkPendingPattern !== 'function' || !x?.cases.length || !x.cases.every(c => splitName[c.split]) || !pendingOptions().some(p => p.id === id && !p.entryId)) return;
-        if (el.dataset.pendingLink) { linkConsent = { id, entryId: el.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value }; groupingPanel(); return; }
+        if (el.dataset.pendingLink) { const entryId = el.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value; if (!approvedOptions().some(e => e.id === entryId)) return; linkConsent = { id, entryId }; groupingPanel(); return; }
         if (linkConsent?.id !== id || !approvedOptions().some(e => e.id === linkConsent.entryId)) return;
         onLinkPendingPattern({ pendingPatternId: id, entryId: linkConsent.entryId }); return;
       }
@@ -470,10 +472,11 @@
         const host = el.closest('[data-pattern-label]'), c = D.cases.find(c => c.id === host.dataset.patternLabel);
         labelForms.set(c.id, readLabelForm(host, c)); labelConsents.delete(c.id); labelErrors.delete(c.id); refreshLabelPanels(c);
       }
+      if (el.hasAttribute('data-pending-link-entry')) syncWritable();
       if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); }
     });
     function syncWritable() {
-      for (const [selector, fn] of [['[data-dehydration-confirm]', onConfirmDecision], ['[data-dehydration-recommend]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind; });
+      for (const [selector, fn] of [['[data-dehydration-confirm]', onConfirmDecision], ['[data-dehydration-recommend]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
       root.querySelectorAll('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id],[data-pattern-name]').forEach(el => { el.disabled = !writable || typeof onConfirmPatternLabel !== 'function' || el.matches('[data-pattern-pending-mode][value="join"]') && !pendingOptions().length; });
       root.querySelectorAll('[data-pending-link-entry]').forEach(el => { el.disabled = !writable || typeof onLinkPendingPattern !== 'function'; });
     }

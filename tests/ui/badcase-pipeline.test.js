@@ -124,6 +124,7 @@ test('pending boards warn without blocking and offer immutable inline linking pl
   h.data.casePatterns[1] = { ...h.data.casePatterns[0], caseId: 'c2' }; h.data.initialSplitProposal = { rows: [], patterns: [] }; h.panel.render(h.data);
   assert.match(h.root.querySelector('[data-pending-next]').textContent, /知识库.*训练.*归纳.*审核/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
   h.data.versions = [{ entries: [{ id: 'entry-1', title: 'Approved constraints', status: 'approved', caseIds: [] }] }]; h.panel.render(h.data);
+  const select = h.root.querySelector('[data-pending-link-entry]'); select.value = 'entry-1'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
   h.root.querySelector('[data-pending-link]').click(); assert.equal(sent.length, 0);
   assert.match(h.root.querySelector('[data-link-consent]').textContent, /Named pending.*Approved constraints.*目标复现题.*组别不变/s);
   h.panel.setWritable(false); assert.equal(h.root.querySelector('[data-pending-link-lock]').disabled, true); h.panel.setWritable(true);
@@ -131,6 +132,54 @@ test('pending boards warn without blocking and offer immutable inline linking pl
   h.data.pendingPatternLinks = [{ pendingPatternId: 'pending-1', entryId: 'entry-1' }];
   for (const l of h.data.casePatterns) { l.entryId = l.patternKey = 'entry-1'; l.options = [{ entryId: 'entry-1', title: 'Approved constraints' }]; }
   h.panel.render(h.data); assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：#1.*测试目标复现题：#19/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
+  assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /目标复现题已经确定.*用于评测.*冻结断言.*通过回放检查.*上面.*缺项/s);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测候选：缺可用门槛题、可用 trace 测试题/);
+});
+
+function pendingBoard(t, entries) {
+  const sent = [], h = setup(t, null, { onLinkPendingPattern: body => sent.push(body) });
+  h.data.cases = h.data.cases.slice(0, 3);
+  h.data.pendingPatterns = [{ id: 'pending-1', name: 'Check constraints first' }];
+  h.data.casePatterns = h.data.cases.map(c => ({ caseId: c.id, confirmed: true, pendingPatternId: 'pending-1', pendingPatternName: 'Check constraints first', entryId: null, patternKey: 'pending-1' }));
+  h.data.versions = [{ entries }]; h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  return { ...h, sent, select: () => h.root.querySelector('[data-pending-link-entry]'), button: () => h.root.querySelector('[data-pending-link]') };
+}
+test('unrelated approved patterns have an empty link default and a disabled normal-width action, even after write toggles', t => {
+  const h = pendingBoard(t, [{ id: 'unrelated', title: 'Unrelated approved', status: 'approved', caseIds: ['elsewhere'] }]);
+  assert.equal(h.select().options[0].value, ''); assert.equal(h.select().options[0].textContent, '选择已通过的模式…');
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
+  h.panel.setWritable(false); h.panel.setWritable(true); assert.equal(h.button().disabled, true);
+  assert.match(h.root.querySelector('[data-pending-link-panel]').firstElementChild.textContent, /下一步.*知识库.*训练.*归纳.*审核/s);
+  assert.ok(h.button().closest('.row-actions'), 'link action must not stretch as a direct grid child');
+  h.button().disabled = false; h.button().click(); assert.equal(h.root.querySelector('[data-link-consent]'), null); assert.equal(h.sent.length, 0);
+  h.select().value = 'unrelated'; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, false);
+  h.select().value = ''; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, true);
+});
+test('a unique approved pattern derived from group training cases is first, annotated and selected, but remains read-only guarded', t => {
+  const h = pendingBoard(t, [
+    { id: 'unrelated', title: 'Unrelated', status: 'approved', caseIds: [] },
+    { id: 'heldout-only', title: 'Heldout only', status: 'approved', caseIds: ['c2', 'c3'] },
+    { id: 'derived', title: '<b>Derived pattern</b>', status: 'approved', caseIds: ['c1'] },
+    { id: 'draft', title: 'Not approved', status: 'draft', caseIds: ['c1'] },
+  ]);
+  assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived', 'unrelated', 'heldout-only']);
+  assert.equal(h.select().options[1].textContent, '<b>Derived pattern</b>（用本组训练用例归纳出）'); assert.equal(h.select().querySelector('b'), null);
+  assert.equal(h.select().value, 'derived'); assert.equal(h.button().disabled, false);
+  h.panel.setWritable(false); assert.equal(h.button().disabled, true); h.panel.setWritable(true); assert.equal(h.button().disabled, false);
+  h.button().click(); assert.match(h.root.querySelector('[data-link-consent]').textContent, /Derived pattern/);
+  h.root.querySelector('[data-pending-link-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(h.sent)), [{ pendingPatternId: 'pending-1', entryId: 'derived' }]);
+});
+test('multiple training-derived approved patterns sort first without selecting any; heldout-only matches never qualify', t => {
+  const h = pendingBoard(t, [
+    { id: 'heldout-only', title: 'Heldout only', status: 'approved', caseIds: ['c2', 'c3'] },
+    { id: 'derived-1', title: 'Derived 1', status: 'approved', caseIds: ['c1'] },
+    { id: 'derived-2', title: 'Derived 2', status: 'approved', caseIds: ['elsewhere', 'c1'] },
+  ]);
+  assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived-1', 'derived-2', 'heldout-only']);
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
+  assert.equal([...h.select().options].filter(o => o.textContent.includes('（用本组训练用例归纳出）')).length, 2);
+  h.data.versions[0].entries = h.data.versions[0].entries.slice(0, 1); h.panel.render(h.data);
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true); assert.doesNotMatch(h.select().textContent, /用本组训练用例归纳出/);
 });
 
 test('Badcase preclassification button names the whole pending batch and is read-only locked', t => {
