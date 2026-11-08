@@ -74,21 +74,151 @@ test('unscored run output says awaiting scoring only; freezing or loading never 
   row.original.outputs = row.original.unscored = 0; h.data.runReplays = []; h.panel.render(h.data);
   assert.match(h.root.querySelector('.next-line').textContent, /待复现|受信操作方/);
 });
-test('pattern labels require explicit consent, bind the displayed hash, and support legacy holdouts and unclassified without learning', t => {
-  const sent = [], prompts = []; let accept = false;
-  const h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
-  h.data.casePatterns = ['c1', 'c3'].map(caseId => ({ caseId, confirmed: false, entryId: null, patternKey: null, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: '<script>pattern</script>' }] }));
-  h.panel.render(h.data); assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
-  const host = h.root.querySelector('[data-pattern-label="c3"]'); assert.ok(host); assert.equal(host.querySelector('script'), null);
-  const select = host.querySelector('[data-pattern-entry]'); assert.ok([...select.options].some(o => o.textContent === '未归入现有模式'));
-  select.value = 'entry-1'; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent.length, 0);
-  accept = true; host.querySelector('[data-pattern-confirm]').click();
-  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c3', entryId: 'entry-1', labelHash: 'c'.repeat(64) });
-  assert.match(prompts.at(-1), /不改组别.*不.*归纳/);
-  select.value = ''; host.querySelector('[data-pattern-confirm]').click(); assert.equal(sent[1].entryId, null);
-  h.panel.setWritable(false); assert.equal(host.querySelector('[data-pattern-confirm]').disabled, true);
-  assert.equal(h.data.cases.find(c => c.id === 'c3').split, 'test');
+test('three-way labels use named inline consent and locked evaluation roles, never browser dialogs', t => {
+  const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
+  h.data.casePatterns = ['c1', 'c3'].map(caseId => ({ caseId, confirmed: false, entryId: null, patternKey: null, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: '<script>pattern</script>' }], pendingOptions: [] }));
+  h.panel.render(h.data); h.panel.focus(4);
+  const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label="c3"]');
+  assert.match(host().textContent, /决定这条用例在哪个模式下分组.*评测.*目标用例.*确认后不能改/);
+  assert.equal(host().querySelector('details').open, false);
+  const choose = kind => { const radio = host().querySelector(`[data-pattern-kind][value="${kind}"]`); radio.checked = true; radio.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+  choose('entry'); host().querySelector('[data-pattern-entry]').value = 'entry-1'; host().querySelector('[data-pattern-confirm]').click();
+  assert.equal(sent.length, 0); assert.equal(host().querySelector('script'), null); assert.match(host().querySelector('[data-label-consent]').textContent, /<script>pattern<\/script>.*配额.*目标复现题/s);
+  host().querySelector('[data-pattern-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c3', entryId: 'entry-1', labelHash: 'c'.repeat(64) });
+  choose('none'); host().querySelector('[data-pattern-confirm]').click(); assert.match(host().textContent, /共用一组.*不算任何模式的目标用例/);
+  h.panel.setWritable(false); assert.equal(host().querySelector('[data-pattern-lock]').disabled, true); host().querySelector('[data-pattern-lock]').click(); assert.equal(sent.length, 1);
+  h.data.casePatterns[1] = { ...h.data.casePatterns[1], confirmed: true, entryId: 'entry-1', patternKey: 'entry-1' }; h.panel.render(h.data); h.panel.focus(4);
+  assert.match(host().textContent, /已锁定.*<script>pattern<\/script>.*测试组.*目标复现题/s); assert.equal(host().querySelector('[data-pattern-confirm]'), null);
 });
+test('new-mode suggestions default to pending create/join, validate names and bind refreshed label hashes', t => {
+  const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body) });
+  h.data.cases[1].split = null; h.data.cases[1].preclassification = { kind: 'new', confidence: '高', reason: '<b>check constraints</b>' };
+  h.data.casePatterns = [{ caseId: 'c2', confirmed: false, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: 'Approved' }], pendingOptions: [] }];
+  h.panel.render(h.data); h.panel.focus(19); const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label="c2"]');
+  assert.equal(host().querySelector('[data-pattern-kind]:checked').value, 'pending'); assert.equal(host().querySelector('[data-pattern-pending-mode]:checked').value, 'create');
+  assert.match(host().textContent, /预分类建议：新模式.*把握：高.*<b>check constraints<\/b>/s); assert.equal(host().querySelector('b b'), null);
+  for (const name of ['', '字'.repeat(41), 'Approved']) { host().querySelector('[data-pattern-name]').value = name; host().querySelector('[data-pattern-confirm]').click(); assert.ok(host().querySelector('[data-label-error]')); assert.equal(host().querySelector('[data-pattern-lock]'), null); }
+  host().querySelector('[data-pattern-name]').value = '先检查约束'; host().querySelector('[data-pattern-confirm]').click();
+  assert.match(host().querySelector('[data-label-consent]').textContent, /先检查约束.*自己的组.*关联之后/s); assert.equal(sent.length, 0);
+  host().querySelector('[data-pattern-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c2', pendingPattern: { name: '先检查约束' }, labelHash: 'c'.repeat(64) });
+  h.data.casePatterns[0].labelHash = 'd'.repeat(64); h.data.casePatterns[0].pendingOptions = [{ id: 'pending-1', name: '先检查约束', entryId: null }];
+  h.panel.render(h.data); assert.equal(host().querySelector('[data-label-consent]'), null); assert.equal(host().querySelector('[data-pattern-pending-mode]:checked').value, 'join');
+  host().querySelector('[data-pattern-confirm]').click(); host().querySelector('[data-pattern-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[1])), { caseId: 'c2', pendingPattern: { id: 'pending-1' }, labelHash: 'd'.repeat(64) });
+  h.data.cases[1].preclassification = { kind: 'assign', entryId: 'entry-1', confidence: '中', reason: 'Matches' }; h.panel.render(h.data);
+  assert.equal(host().querySelector('[data-pattern-kind]:checked').value, 'entry'); assert.equal(host().querySelector('[data-pattern-entry]').value, 'entry-1');
+});
+
+for (const linked of [true, false]) test(`joining a ${linked ? 'linked' : 'unlinked'} pending pattern explains the actual grouping and evaluation identity before locking`, t => {
+  const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body) });
+  const name = '<script>先核对约束</script>', title = '<b>先查前置条件</b>', pendingId = linked ? 'pending-linked' : 'pending-unlinked';
+  h.data.cases[1].split = null; h.data.cases[1].preclassification = { kind: 'new' };
+  h.data.versions = [{ entries: [{ id: 'entry-1', title, status: 'approved' }] }];
+  h.data.casePatterns = [{ caseId: 'c2', confirmed: false, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title }], pendingOptions: [
+    { id: 'pending-unlinked', name, entryId: null }, { id: 'pending-linked', name, entryId: 'entry-1' },
+  ] }];
+  h.panel.render(h.data); h.panel.focus(19);
+  const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label="c2"]');
+  const select = host().querySelector('[data-pattern-pending-id]'); select.value = pendingId;
+  select.dispatchEvent(new h.window.Event('change', { bubbles: true })); host().querySelector('[data-pattern-confirm]').click();
+  const consent = host().querySelector('[data-label-consent]');
+  assert.equal(consent.querySelector('b').textContent, `确认后不能改：#19 → 待归纳新模式「${name}」${linked ? `（已关联到「${title}」）` : ''}`);
+  assert.equal(consent.querySelector('span').textContent, linked
+    ? `它会直接在「${title}」里按配额分组；门槛和测试用例评测「${title}」的候选时算目标复现题。`
+    : '它会在这个新模式自己的组里分组；新模式归纳并审核通过、你关联之后，才算那个模式的用例。');
+  assert.equal(consent.querySelector('script, b b, span b'), null);
+  if (linked) assert.doesNotMatch(consent.textContent, /自己的组|关联之后|归纳并审核通过/);
+  assert.equal(sent.length, 0); host().querySelector('[data-pattern-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ caseId: 'c2', pendingPattern: { id: pendingId }, labelHash: 'c'.repeat(64) }]);
+});
+
+test('pending boards warn without blocking and offer immutable inline linking plus resolved target lists', t => {
+  const sent = [], h = setup(t, null, { onConfirmInitialSplit: () => {}, onLinkPendingPattern: body => sent.push(body), confirm: () => { throw Error('no dialog'); } });
+  const option = { id: 'pending-1', name: '<script>Named pending</script>', entryId: null };
+  h.data.cases[0].split = h.data.cases[1].split = null; h.data.cases[1].preclassification = { kind: 'new', confidence: 'high', reason: 'New' };
+  h.data.pendingPatterns = [{ id: option.id, name: option.name }]; h.data.pendingPatternLinks = [];
+  h.data.casePatterns = [{ caseId: 'c1', confirmed: true, pendingPatternId: option.id, pendingPatternName: option.name, entryId: null, patternKey: option.id, options: [], pendingOptions: [option] }, { caseId: 'c2', confirmed: false, options: [], pendingOptions: [option] }];
+  const row = { caseId: 'c1', patternKey: option.id, level: 'trace', proposedSplit: 'train' };
+  h.data.initialSplitProposal = { hash: 'a'.repeat(64), rows: [row], patterns: [{ patternKey: option.id, rows: [row] }] };
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  assert.match(h.root.querySelector('.pat-seg').textContent, /Named pending.*待归纳/s); assert.ok(h.root.querySelector('[data-pending-label-hint]')); assert.equal(h.root.querySelector('[data-initial-split-confirm]').disabled, false);
+  assert.equal(h.root.querySelector('[data-grouping] script'), null);
+  h.data.cases[0].kind = 'marked-badcase'; h.data.cases[0].split = 'gate'; h.data.cases[1].split = 'test';
+  h.data.casePatterns[1] = { ...h.data.casePatterns[0], caseId: 'c2' }; h.data.initialSplitProposal = { rows: [], patterns: [] }; h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-pending-next]').textContent, /知识库.*训练.*归纳.*审核/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
+  h.data.versions = [{ entries: [{ id: 'entry-1', title: 'Approved constraints', status: 'approved', caseIds: [] }] }]; h.panel.render(h.data);
+  const select = h.root.querySelector('[data-pending-link-entry]'); select.value = 'entry-1'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  h.root.querySelector('[data-pending-link]').click(); assert.equal(sent.length, 0);
+  assert.match(h.root.querySelector('[data-link-consent]').textContent, /Named pending.*Approved constraints.*目标复现题.*组别不变/s);
+  h.panel.setWritable(false); assert.equal(h.root.querySelector('[data-pending-link-lock]').disabled, true); h.panel.setWritable(true);
+  h.root.querySelector('[data-pending-link-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { pendingPatternId: 'pending-1', entryId: 'entry-1' });
+  h.data.pendingPatternLinks = [{ pendingPatternId: 'pending-1', entryId: 'entry-1' }];
+  for (const l of h.data.casePatterns) { l.entryId = l.patternKey = 'entry-1'; l.options = [{ entryId: 'entry-1', title: 'Approved constraints' }]; }
+  h.panel.render(h.data); assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：#1.*测试目标复现题：#19/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
+  assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /目标复现题已经确定.*用于评测.*冻结断言.*通过回放检查.*上面.*缺项/s);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测候选：缺可用门槛题、可用 trace 测试题/);
+});
+
+function pendingBoard(t, entries) {
+  const sent = [], h = setup(t, null, { onLinkPendingPattern: body => sent.push(body) });
+  h.data.cases = h.data.cases.slice(0, 3);
+  h.data.pendingPatterns = [{ id: 'pending-1', name: 'Check constraints first' }];
+  h.data.casePatterns = h.data.cases.map(c => ({ caseId: c.id, confirmed: true, pendingPatternId: 'pending-1', pendingPatternName: 'Check constraints first', entryId: null, patternKey: 'pending-1' }));
+  h.data.versions = [{ entries }]; h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="pending-1"]').click();
+  return { ...h, sent, select: () => h.root.querySelector('[data-pending-link-entry]'), button: () => h.root.querySelector('[data-pending-link]') };
+}
+test('unrelated approved patterns have an empty link default and a disabled normal-width action, even after write toggles', t => {
+  const h = pendingBoard(t, [{ id: 'unrelated', title: 'Unrelated approved', status: 'approved', caseIds: ['elsewhere'] }]);
+  assert.equal(h.select().options[0].value, ''); assert.equal(h.select().options[0].textContent, '选择已通过的模式…');
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
+  h.panel.setWritable(false); h.panel.setWritable(true); assert.equal(h.button().disabled, true);
+  assert.match(h.root.querySelector('[data-pending-link-panel]').firstElementChild.textContent, /下一步.*知识库.*训练.*归纳.*审核/s);
+  assert.ok(h.button().closest('.row-actions'), 'link action must not stretch as a direct grid child');
+  h.button().disabled = false; h.button().click(); assert.equal(h.root.querySelector('[data-link-consent]'), null); assert.equal(h.sent.length, 0);
+  h.select().value = 'unrelated'; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, false);
+  h.select().value = ''; h.select().dispatchEvent(new h.window.Event('change', { bubbles: true })); assert.equal(h.button().disabled, true);
+});
+test('a unique approved pattern derived from group training cases is first, annotated and selected, but remains read-only guarded', t => {
+  const h = pendingBoard(t, [
+    { id: 'unrelated', title: 'Unrelated', status: 'approved', caseIds: [] },
+    { id: 'heldout-only', title: 'Heldout only', status: 'approved', caseIds: ['c2', 'c3'] },
+    { id: 'derived', title: '<b>Derived pattern</b>', status: 'approved', caseIds: ['c1'] },
+    { id: 'draft', title: 'Not approved', status: 'draft', caseIds: ['c1'] },
+  ]);
+  assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived', 'unrelated', 'heldout-only']);
+  assert.equal(h.select().options[1].textContent, '<b>Derived pattern</b>（用本组训练用例归纳出）'); assert.equal(h.select().querySelector('b'), null);
+  const note = h.root.querySelector('[data-pending-link-derived]');
+  assert.ok(note, 'training-derived recommendation must remain readable outside the narrow native select');
+  assert.equal(note.textContent, '「<b>Derived pattern</b>」（用本组训练用例归纳出）'); assert.equal(note.querySelector('b'), null);
+  assert.equal(h.select().value, 'derived'); assert.equal(h.button().disabled, false);
+  h.panel.setWritable(false); assert.equal(h.button().disabled, true); h.panel.setWritable(true); assert.equal(h.button().disabled, false);
+  h.button().click(); assert.match(h.root.querySelector('[data-link-consent]').textContent, /Derived pattern/);
+  h.root.querySelector('[data-pending-link-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(h.sent)), [{ pendingPatternId: 'pending-1', entryId: 'derived' }]);
+});
+test('multiple training-derived approved patterns sort first without selecting any; heldout-only matches never qualify', t => {
+  const h = pendingBoard(t, [
+    { id: 'heldout-only', title: 'Heldout only', status: 'approved', caseIds: ['c2', 'c3'] },
+    { id: 'derived-1', title: 'Derived 1', status: 'approved', caseIds: ['c1'] },
+    { id: 'derived-2', title: 'Derived 2', status: 'approved', caseIds: ['elsewhere', 'c1'] },
+  ]);
+  assert.deepEqual([...h.select().options].map(o => o.value), ['', 'derived-1', 'derived-2', 'heldout-only']);
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true);
+  assert.equal([...h.select().options].filter(o => o.textContent.includes('（用本组训练用例归纳出）')).length, 2);
+  assert.match(h.root.querySelector('[data-pending-link-derived]').textContent, /Derived 1.*Derived 2/s);
+  h.data.versions[0].entries = h.data.versions[0].entries.slice(0, 1); h.panel.render(h.data);
+  assert.equal(h.select().value, ''); assert.equal(h.button().disabled, true); assert.doesNotMatch(h.select().textContent, /用本组训练用例归纳出/);
+  assert.equal(h.root.querySelector('[data-pending-link-derived]'), null);
+});
+
+test('Badcase preclassification button names the whole pending batch and is read-only locked', t => {
+  let calls = 0; const h = setup(t, null, { onPreclassify: () => calls++ });
+  for (const c of h.data.cases.slice(0, 2)) { c.kind = 'marked-badcase'; c.split = null; }
+  h.data.casePatterns = h.data.cases.slice(0, 2).map(c => ({ caseId: c.id, confirmed: false, options: [], pendingOptions: [] }));
+  h.panel.render(h.data); const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label]');
+  assert.match(host().textContent, /全部.*2.*#1.*#19/s); assert.equal(calls, 0);
+  h.panel.setWritable(false); assert.equal(host().querySelector('[data-preclassify]').disabled, true); h.panel.setWritable(true); host().querySelector('[data-preclassify]').click(); assert.equal(calls, 1);
+});
+
 test('assigned-label blockers are shown verbatim and suppress all first-split confirmation buttons', t => {
   const sent = [], h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => true });
   h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', blockingReason: 'assigned_pattern_labels_unconfirmed', blockingMessage: '先确认 #1 的模式标签', blockers: [{ caseId: 'c1', caseNumber: 1 }], rows: [], patterns: [] };
@@ -100,19 +230,20 @@ test('assigned-label blockers are shown verbatim and suppress all first-split co
 });
 
 test('initial split preview never activates groups until explicit per-pattern hash-bound confirmation', t => {
-  let accept = false; const sent = [];
-  const h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => accept });
+  const sent = [];
+  const h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
   h.data.cases[0].split = h.data.cases[1].split = null;
   const rows = [{ caseId: 'c1', patternKey: 'entry-1', level: 'run', previousSplit: null, proposedSplit: 'train' }, { caseId: 'c2', patternKey: 'entry-1', level: 'trace', previousSplit: null, proposedSplit: 'gate' }];
   h.data.casePatterns = rows.map(r => ({ caseId: r.caseId, confirmed: true, entryId: 'entry-1', patternKey: 'entry-1', options: [{ entryId: 'entry-1', title: '模式一' }] }));
   h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', rows, patterns: [{ patternKey: 'entry-1', rows, counts: { trace: { train: 0, gate: 1, test: 0 }, run: { train: 1, gate: 0, test: 0 } } }] };
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="entry-1"]').click(); assert.equal(h.calls.length, 0); assert.equal(sent.length, 0);
-  const host = h.root.querySelector('[data-initial-split]'); assert.ok(host); assert.match(host.textContent, /尚未生效|你确认后/);
-  host.querySelector('[data-initial-split-confirm]').click(); assert.equal(sent.length, 0);
-  accept = true; host.querySelector('[data-initial-split-confirm]').click();
+  let host = h.root.querySelector('[data-initial-split]'); assert.ok(host); assert.match(host.textContent, /尚未生效|你确认后/);
+  host.querySelector('[data-initial-split-confirm]').click(); assert.equal(sent.length, 0); host = h.root.querySelector('[data-initial-split]');
+  assert.match(host.querySelector('[data-split-consent]').textContent, /模式一.*#1.*训练.*#19.*门槛/s);
+  host.querySelector('[data-initial-split-lock]').click();
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { proposalHash: 'd'.repeat(64), patternKey: 'entry-1' });
   assert.equal(h.data.cases[0].split, null); assert.equal(h.data.cases[1].split, null);
-  h.panel.setWritable(false); assert.equal(host.querySelector('[data-initial-split-confirm]').disabled, true);
+  h.panel.setWritable(false); assert.equal(host.querySelector('[data-initial-split-lock]').disabled, true);
 });
 
 test('pipeline has truthful stepper, actor groups, two funnels, backfill states and source-only exclusions without writes', t => {
@@ -372,7 +503,7 @@ test('mode-first board has solid effective groups, dashed proposals, per-mode qu
   assert.ok(board.querySelector('[data-board-quotas]')); assert.equal(board.querySelector('script'), null);
   assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2, 'unconfirmed labels never silently join a suggested mode');
   h.root.querySelector('[data-bc-pattern="pending"]').click();
-  assert.ok(board.querySelector('[data-pattern-confirm="c3"]'), 'legacy holdout label confirmation lives inside board');
+  assert.ok(board.querySelector('[data-bc-pick="c3"]'), 'legacy holdout opens its label panel in the selected detail');
   h.root.querySelector('[data-bc-pattern="all"]').click();
   assert.ok(board.querySelector('[data-pattern-overview]')); assert.equal(board.querySelector('[data-bc-pick]'), null, 'overview contains counts, not mixed-case chips');
   assert.match(board.textContent, /不能|尚不能|缺/); assert.equal(h.calls.length, 0);

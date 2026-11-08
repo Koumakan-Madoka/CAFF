@@ -20,6 +20,7 @@ import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehyd
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
+import { resolveWikiPatternLabel } from './wiki-pattern-label';
 import { createWikiRunStore, projectWikiRunAccounting } from './wiki-run-store';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
 import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline';
@@ -116,6 +117,14 @@ function caseStateView(state: any, caseId: string) {
       memberships: [], reason: c.preclassification?.reason || '', updatedAt: c.preclassification?.createdAt || c.createdAt };
   }
   if (c.split !== 'train') {
+    const label = state.patternLabels?.find((r: any) => r.caseId === caseId && r.source === 'badcase-page');
+    if (label) {
+      const resolved = resolveWikiPatternLabel(state, label);
+      return { caseId, status: 'classification-confirmed',
+        memberships: resolved.entryId ? [{ entryId: resolved.entryId, source: 'manual', at: label.confirmedAt }] : [],
+        reason: resolved.pendingPatternId && resolved.entryId === null ? `待归纳新模式「${resolved.pendingPatternName}」尚未关联已通过模式` : '',
+        updatedAt: label.confirmedAt };
+    }
     if (c.preclassification) {
       const confirmed = (state.classifications || []).find((v: any) => v.caseId === caseId);
       return { caseId, status: confirmed ? 'classification-confirmed' : 'classification-pending',
@@ -240,7 +249,7 @@ export function createWikiStore(options: any) {
           seen.add(key);
         }
       }
-      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations', 'patternLabels', 'initialSplitConfirmations']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
+      for (const field of ['dehydrations', 'deletedCases', 'regroupProposals', 'regroupConfirmations', 'patternLabels', 'initialSplitConfirmations', 'pendingPatterns', 'pendingPatternLinks']) if (record[field] !== undefined && !Array.isArray(record[field])) throw Error();
       return record;
     } catch { throw fail('wiki_record_invalid'); }
   }
@@ -526,26 +535,81 @@ export function createWikiStore(options: any) {
     // a group. Legacy confirmed labels and frozen records are not rewritten.
     confirmPatternLabel(input: any) {
       if (!global) throw fail('wiki_global_required');
-      shape(input, ['caseId', 'entryId', 'labelHash', 'expectedRevision']);
-      id(input.caseId); if (input.entryId !== null) id(input.entryId);
+      shape(input, ['caseId', 'entryId', 'pendingPattern', 'labelHash', 'expectedRevision']);
+      id(input.caseId);
+      const pending = Object.hasOwn(input, 'pendingPattern');
+      let pendingId: string | undefined, name: string | undefined;
+      if (pending) {
+        if (Object.hasOwn(input, 'entryId')) throw fail('wiki_invalid_input');
+        shape(input.pendingPattern, ['id', 'name']);
+        if (Object.keys(input.pendingPattern).length !== 1) throw fail('wiki_invalid_input');
+        if (Object.hasOwn(input.pendingPattern, 'id')) pendingId = id(input.pendingPattern.id);
+        else {
+          if (typeof input.pendingPattern.name !== 'string') throw fail('wiki_pending_pattern_name_invalid');
+          name = text(input.pendingPattern.name, 1024, true).trim();
+          if (![...name].length || [...name].length > 40) throw fail('wiki_pending_pattern_name_invalid');
+        }
+      } else if (input.entryId !== null) id(input.entryId);
       if (!/^[a-f0-9]{64}$/.test(input.labelHash || '') || !Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
       return change(state => {
         const previous = state.patternLabels?.find((r: any) => r.caseId === input.caseId);
         if (previous) {
-          if (previous.entryId !== input.entryId || previous.labelHash !== input.labelHash) throw fail('wiki_pattern_label_frozen');
+          const same = pending ? Boolean(previous.pendingPatternId) && (pendingId ? previous.pendingPatternId === pendingId
+            : state.pendingPatterns?.some((p: any) => p.id === previous.pendingPatternId && p.name === name))
+            : !previous.pendingPatternId && previous.entryId === input.entryId;
+          if (!same || previous.labelHash !== input.labelHash) throw fail('wiki_pattern_label_frozen');
           return { changed: false, value: previous };
         }
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const label = projectWikiPatternLabels(state).find((r: any) => r.caseId === input.caseId);
         if (!label) throw fail('wiki_unknown_case');
         if (label.labelHash !== input.labelHash) throw fail('wiki_pattern_label_stale');
-        if (input.entryId !== null && !label.options.some((e: any) => e.entryId === input.entryId)) throw fail('wiki_entry_not_found');
-        if (label.confirmed && label.entryId !== input.entryId) throw fail('wiki_pattern_label_frozen');
-        const content = { caseId: input.caseId, entryId: input.entryId, labelHash: input.labelHash, source: 'badcase-page',
-          confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
+        if (label.confirmed && (pending || label.entryId !== input.entryId)) throw fail('wiki_pattern_label_frozen');
+        const now = new Date().toISOString();
+        if (pending) {
+          if (pendingId) {
+            if (!state.pendingPatterns?.some((p: any) => p.id === pendingId)) throw fail('wiki_pending_pattern_not_found');
+          } else {
+            if (state.pendingPatterns?.some((p: any) => p.name === name)
+              || label.options.some((e: any) => e.title.trim() === name)) throw fail('wiki_pending_pattern_name_conflict');
+            pendingId = 'pending-' + crypto.randomUUID();
+            const content = { id: pendingId, name, createdRevision: state.revision, createdAt: now, source: 'badcase-page' };
+            (state.pendingPatterns || (state.pendingPatterns = [])).push({ ...content, hash: hash(JSON.stringify(content)) });
+          }
+        } else if (input.entryId !== null && !label.options.some((e: any) => e.entryId === input.entryId)) throw fail('wiki_entry_not_found');
+        // Optional new records only: legacy null and entry labels retain their
+        // original shape. One snapshot atomically publishes a name and consent.
+        const content = { caseId: input.caseId, entryId: pending ? null : input.entryId,
+          ...(pending ? { pendingPatternId: pendingId } : {}), labelHash: input.labelHash, source: 'badcase-page',
+          confirmedRevision: state.revision, confirmedAt: now };
         const saved = { ...content, hash: hash(JSON.stringify(content)) };
         (state.patternLabels || (state.patternLabels = [])).push(saved);
-        appendEvent(state, { type: 'pattern-label-confirmed', caseIds: [input.caseId], entryId: input.entryId, labelHash: saved.hash });
+        appendEvent(state, { type: 'pattern-label-confirmed', caseIds: [input.caseId], entryId: content.entryId,
+          ...(pending ? { pendingPatternId: pendingId } : {}), labelHash: saved.hash });
+        return { changed: true, value: saved };
+      }).value;
+    },
+    // Linking is explicit immutable consent, separate from review and learning.
+    // Existing label, split and version bytes are never rewritten.
+    linkPendingPattern(input: any) {
+      if (!global) throw fail('wiki_global_required');
+      shape(input, ['pendingPatternId', 'entryId', 'expectedRevision']);
+      id(input.pendingPatternId); id(input.entryId);
+      if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
+      return change(state => {
+        const previous = state.pendingPatternLinks?.find((r: any) => r.pendingPatternId === input.pendingPatternId);
+        if (previous) {
+          if (previous.entryId !== input.entryId) throw fail('wiki_pending_pattern_link_frozen');
+          return { changed: false, value: previous };
+        }
+        if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
+        if (!state.pendingPatterns?.some((p: any) => p.id === input.pendingPatternId)) throw fail('wiki_pending_pattern_not_found');
+        if (!state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
+        const content = { pendingPatternId: input.pendingPatternId, entryId: input.entryId, source: 'badcase-page',
+          confirmedRevision: state.revision, confirmedAt: new Date().toISOString() };
+        const saved = { ...content, hash: hash(JSON.stringify(content)) };
+        (state.pendingPatternLinks || (state.pendingPatternLinks = [])).push(saved);
+        appendEvent(state, { type: 'pending-pattern-linked', pendingPatternId: input.pendingPatternId, entryId: input.entryId, linkHash: saved.hash });
         return { changed: true, value: saved };
       }).value;
     },
@@ -882,6 +946,7 @@ export function createWikiStore(options: any) {
         const current = caseStateView(state, suggestion.caseId), now = new Date().toISOString();
         const c = state.cases.find((v: any) => v.id === suggestion.caseId);
         if (c.split !== 'train') {
+          if (state.patternLabels?.some((r: any) => r.caseId === c.id && r.source === 'badcase-page')) throw fail('wiki_pattern_label_frozen');
           if (!c.preclassification || suggestion.kind !== 'assign') throw fail('wiki_unknown_training_case');
           if (input.decision === 'accepted') {
             if (!state.versions.at(-1)?.entries.some((e: any) => e.id === suggestion.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
@@ -917,6 +982,7 @@ export function createWikiStore(options: any) {
         const now = new Date().toISOString();
         const c = state.cases.find((v: any) => v.id === caseId);
         if (c.split !== 'train') {
+          if (state.patternLabels?.some((r: any) => r.caseId === caseId && r.source === 'badcase-page')) throw fail('wiki_pattern_label_frozen');
           if (!c.preclassification) throw fail('wiki_unknown_training_case');
           if (input.entryId !== null && !state.versions.at(-1)?.entries.some((e: any) => e.id === input.entryId && e.status === 'approved')) throw fail('wiki_entry_not_found');
           saveClassification(state, caseId, input.entryId, 'manual', now);

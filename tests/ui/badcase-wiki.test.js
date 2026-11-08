@@ -82,6 +82,43 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+test('page-labelled holdouts leave knowledge inbox and expose resolved names without any legacy assign actions', async t => {
+  const h = setup(t), s = h.saved();
+  s.cases[3].split = 'gate'; s.cases[3].preclassification = { kind: 'assign', entryId: 'entry-1', reason: 'Suggested' };
+  s.casePatterns = [{ caseId: 'c2', confirmed: true, source: 'badcase-page', entryId: 'entry-1', options: [{ entryId: 'entry-1', title: approvedEntry.title }] },
+    { caseId: 'c4', confirmed: true, source: 'badcase-page', entryId: null, pendingPatternId: 'pending-1', pendingPatternName: '先检查工具约束', options: [] }];
+  s.patternLabels = s.casePatterns.map(l => ({ caseId: l.caseId, source: 'badcase-page' }));
+  for (const id of ['c2', 'c4']) Object.assign(s.caseStates.find(v => v.caseId === id), { status: 'classification-confirmed', memberships: id === 'c2' ? [{ entryId: 'entry-1', source: 'manual' }] : [], reason: id === 'c4' ? '待归纳新模式「先检查工具约束」尚未关联已通过模式' : '' });
+  await h.panel.load(); assert.doesNotMatch(h.root.querySelector('#wiki-inbox').textContent, /#4.*归类待确认|#4.*建议归入/);
+  await h.click('[data-tab="cases"]');
+  for (const n of [2, 4]) { const card = h.root.querySelector('#c-' + n); assert.match(card.textContent, /归类已确认/); assert.equal(card.querySelector('[data-manual-assign],[data-manual-remove],[data-confirm-suggestion],[data-reject-suggestion]'), null); }
+  assert.match(h.root.querySelector('#c-4').textContent, /待归纳新模式.*先检查工具约束/); assert.doesNotMatch(h.root.querySelector('#c-4').textContent, /已确认未归类/);
+  assert.equal(h.posts().length, 0);
+});
+
+test('Badcase label writes re-read full state and the next consent uses new revision, choices and hash', async t => {
+  const h = setup(t, (url, options, saved) => {
+    if (url !== '/api/wikiskill/pattern-label-confirm' || options.method !== 'POST') return undefined;
+    const l = saved.casePatterns.find(l => l.caseId === options.body.caseId);
+    const pending = { id: 'pending-1', name: '先核验约束', entryId: null };
+    saved.pendingPatterns = [{ id: pending.id, name: pending.name }]; saved.revision++;
+    Object.assign(l, { confirmed: true, source: 'badcase-page', entryId: null, patternKey: pending.id, pendingPatternId: pending.id, pendingPatternName: pending.name });
+    for (const label of saved.casePatterns) { label.labelHash = 'e'.repeat(64); label.pendingOptions = [pending]; }
+    return { ok: true }; // Deliberately not a state: only a fresh GET is authoritative.
+  });
+  const s = h.saved(); s.cases = s.cases.slice(2, 4); s.caseStates = s.caseStates.filter(v => s.cases.some(c => c.id === v.caseId)); s.suggestions = [];
+  for (const [i, c] of s.cases.entries()) { c.displayNumber = 21 + i; c.split = null; c.source.agentId = 'role-family-gpt'; c.preclassification = { kind: 'new', confidence: 'high', reason: 'Check constraints' }; }
+  s.casePatterns = s.cases.map(c => ({ caseId: c.id, confirmed: false, labelHash: 'd'.repeat(64), options: [], pendingOptions: [] }));
+  await h.panel.load(); h.window.location.hash = '#bc-21'; h.window.dispatchEvent(new h.window.Event('hashchange')); await tick();
+  const host = () => h.root.querySelector('[data-bc-detail] [data-pattern-label]');
+  host().querySelector('[data-pattern-name]').value = '先核验约束'; await h.click('[data-bc-detail] [data-pattern-confirm]'); await h.click('[data-bc-detail] [data-pattern-lock]');
+  assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.expectedRevision, 3);
+  const at = h.calls.findIndex(c => c.method === 'POST'); assert.equal(h.calls[at + 1].url, '/api/wikiskill'); assert.notEqual(h.calls[at + 1].method, 'POST');
+  await h.click('[data-bc-row="c4"]'); await h.click('[data-bc-detail] [data-pattern-confirm]'); await h.click('[data-bc-detail] [data-pattern-lock]');
+  const second = h.posts()[1]; assert.equal(second.body.expectedRevision, 4); assert.equal(second.body.labelHash, 'e'.repeat(64)); assert.deepEqual(clone(second.body.pendingPattern), { id: 'pending-1' });
+  assert.equal(h.confirms.length, 0);
+});
+
 test('assertion editor saves manual changes as new versions, offers eligible models only and freezes the saved hash explicitly', async t => {
   const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
   const h = setup(t, (url, options, saved) => {
