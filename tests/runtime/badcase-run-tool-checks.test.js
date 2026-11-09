@@ -147,11 +147,11 @@ test('closed literal parsing rejects ambiguous flags, shell composition and malf
     assert.equal(result.final.status, 'invalid'); assert.equal(result.final.reason, 'arguments_unparseable');
   }
 });
-test('an explicitly literal variable marker is not expanded; interpolated and escaped syntax never hides an invocation', () => {
+test('an explicitly literal variable marker is not expanded; target-named unsupported syntax is invalid', () => {
   const literal = 'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason \'$not_a_variable\'';
   assert.equal(evaluate(message([call('bash', { command: literal })]), { questions: [], toolCheck: check() }).final.status, 'pass');
   for (const command of [
-    'node "$CAFF_CHAT_TOOLS_PATH" "suggest-$kind" --reason short',
+    'node "$CAFF_CHAT_TOOLS_PATH" "suggest-$kind" --reason suggest-goal',
     'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason "short" | node -e \'require(process.env.CAFF_CHAT_TOOLS_PATH)\'',
   ]) assert.equal(evaluate(message([call('bash', { command })]), { questions: [], toolCheck: check({ mode: 'forbid' }) }).final.status, 'invalid');
 });
@@ -172,10 +172,56 @@ test('any CAFF subcommand can be the target, including send-public; its stdin fo
   const heredoc = call('bash', { command: 'cat <<\'PUBLIC_EOF\' | node "$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin\nresult\nPUBLIC_EOF' });
   assert.equal(evaluate(message([heredoc]), config).final.status, 'invalid');
 });
-test('opaque bash scripts cannot prove a target was not called in forbid mode', () => {
-  for (const command of ['node -e \'process.stdout.write("opaque")\'', 'python /unread/script.py', 'echo simple']) {
-    const result = evaluate(message([call('bash', { command })]), { questions: [], toolCheck: check({ mode: 'forbid' }) });
-    assert.equal(result.final.status, 'invalid'); assert.equal(result.final.reason, 'arguments_unparseable');
+// These are only inspected, never run. No command-name/read-only allowlist:
+// absence of the literal caff-chat target makes any bash shape unrelated.
+const unrelated = [
+  ['npm test', call('bash', { command: 'npm test' })],
+  ['search pipeline', call('bash', { command: "rg -n 'foo' server | head -20" })],
+  ['git status', call('bash', { command: 'git status --short' })],
+  ['cat package', call('bash', { command: 'cat package.json' })],
+  ['cd compound', call('bash', { command: 'cd x && npm test' })],
+  ['multiline', call('bash', { command: 'npm test\ngit status --short' })],
+  ['opaque node', call('bash', { command: 'node -e \'process.stdout.write("opaque")\'' })],
+  ['external script', call('bash', { command: 'python /unread/script.py' })],
+  ['echo', call('bash', { command: 'echo simple' })],
+  ['interpolated name without literal target', call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" "suggest-$kind" --reason short' })],
+  ['other bridge file', call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" update-goal --file x.json' })],
+  ['other bridge file mentions target', call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" update-goal --file suggest-goal.json' })],
+  ['other bridge stdin mentions target', call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" update-goal --content-stdin --reason suggest-goal' })],
+  ['other bridge dynamic value mentions target', call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" update-goal --reason "$suggest-goal"' })],
+  ['native read', call('read', { path: 'package.json' })],
+  ['native edit', call('edit', { path: 'unwritten', edits: [] })],
+];
+for (const [label, otherCall] of unrelated) {
+  test(`forbid allows normal continuation: ${label}`, () => {
+    const toolCheck = check({ mode: 'forbid', rules: [{ parameter: 'action', kind: 'forbidden-values', values: ['pause'] }] });
+    const result = evaluate(message([otherCall]), { questions: [], toolCheck });
+    assert.equal(result.prepared.tool.status, 'pass');
+    assert.deepEqual(result.final, { status: 'pass', reason: null }); assert.equal(result.judgeCalls, 0);
+  });
+  test(`on-call leaves unrelated continuation unreached: ${label}`, () => {
+    const result = evaluate(message([otherCall]), { questions: [], toolCheck: check() });
+    assert.equal(result.prepared.tool.status, 'unreached');
+    assert.deepEqual(result.final, { status: 'invalid', reason: 'no_check_reached' }); assert.equal(result.judgeCalls, 0);
+    // Plain text mixed with tools is still not a reply.
+    assert.equal(evaluate(message([text('not a reply'), otherCall]), { questions, toolCheck: check() }).judgeCalls, 0);
+  });
+  test(`on-call can judge a separate public reply beside unrelated continuation: ${label}`, () => {
+    for (const replyStatus of ['pass', 'fail']) {
+      const result = evaluate(message([otherCall, send('result')]), { questions, toolCheck: check() }, replyStatus);
+      assert.equal(result.prepared.tool.status, 'unreached'); assert.equal(result.prepared.reply, 'result');
+      assert.equal(result.final.status, replyStatus); assert.equal(result.judgeCalls, 1);
+    }
+  });
+}
+for (const [label, calls] of [
+  // Same target-name search shape as real #21 step 10; data, not an invocation.
+  ['target-name search', [call('bash', { command: "rg -n 'suggest-goal|update-goal|send-public' lib | head -20" })]],
+  ['real #23 step45 heredoc', fixtures.find(f => f.case === 23 && f.step === 45).toolCalls.map(c => call(c.name, c.arguments))],
+]) test(`a target name in unparseable text stays invalid in both modes: ${label}`, () => {
+  for (const mode of ['on-call', 'forbid']) {
+    const result = evaluate(message([...calls, send('result')]), { questions, toolCheck: check({ mode }) });
+    assert.deepEqual(result.final, { status: 'invalid', reason: 'arguments_unparseable' }); assert.equal(result.judgeCalls, 0);
   }
 });
 test('each rule is black-and-white in both modes, with every target invocation checked', () => {

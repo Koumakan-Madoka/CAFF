@@ -1,5 +1,5 @@
 // Deliberately small shell grammar: inspect text only. Never spawn/read/expand.
-// Unsupported syntax is unknown, not a negative match for the target tool.
+// Target-named unsupported syntax is unknown; unrelated commands need no argument validation.
 import type { WikiToolCheck } from './wiki-tool-check';
 import { publicMessage } from './wiki-run-replay';
 export type WikiParsedToolCall = { kind: 'other' } | { kind: 'unknown' }
@@ -46,12 +46,24 @@ function jsonDisplayOnly(script: string): boolean {
   return match[4].split(',').every(value => field.test(value));
 }
 function parseBash(command: string, target: WikiToolCheck['target']): WikiParsedToolCall {
+  // D3: only target-call arguments require parsing. Do not invalidate normal
+  // continuation (compounds/pipelines/scripts included) or expand hidden names.
+  if (!command.includes(target.name)) return other;
   // The historical public-reply grammar already understands its quoted heredoc.
   if (target.name !== 'send-public' && publicMessage({ name: 'bash', arguments: { command } }) !== null) return other;
   if (!command.trim() || command.length > 1024 * 1024 || command.includes('\0')) return unknown;
   const tokens = words(command.trim());
   if (!tokens || !tokens.length) return unknown;
   const pipe = tokens.findIndex(t => t.pipe), head = pipe < 0 ? tokens : tokens.slice(0, pipe);
+  const nodeBridge = head[0]?.text === 'node' && bridgePath(head[1]?.text);
+  if (!nodeBridge) return unknown;
+  if (head.length < 3 || head[0].dynamic || head[2].dynamic || head[2].pipe
+    || head[1].dynamic && !['"$CAFF_CHAT_TOOLS_PATH"', '$CAFF_CHAT_TOOLS_PATH'].includes(head[1].raw)) return unknown;
+  const name = head[2].text;
+  if (!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(name)) return unknown;
+  // Recognized other bridge subcommands are unrelated even with file/stdin or
+  // dynamic argument values. Validate parameters and output tails only below.
+  if (name !== target.name) return other;
   if (pipe >= 0) {
     // Production #23/#24 pipe the inline result to a literal JSON display script.
     // Inspect the inline invocation, never run or interpret the display script.
@@ -59,14 +71,6 @@ function parseBash(command: string, target: WikiToolCheck['target']): WikiParsed
     if (tail.length !== 3 || tail[0].text !== 'node' || tail[1].text !== '-e' || tail.some(t => t.pipe || t.dynamic)
       || !/^['"]/.test(tail[2].raw) || !jsonDisplayOnly(tail[2].text)) return unknown;
   }
-  const nodeBridge = head[0]?.text === 'node' && bridgePath(head[1]?.text);
-  // A bash script outside the supported bridge grammar cannot establish the
-  // absence of a target call (e.g. node -e can build/spawn it dynamically).
-  if (!nodeBridge) return unknown;
-  if (head.length < 3 || head[0].dynamic || head[2].dynamic || head[2].pipe
-    || head[1].dynamic && !['"$CAFF_CHAT_TOOLS_PATH"', '$CAFF_CHAT_TOOLS_PATH'].includes(head[1].raw)) return unknown;
-  const name = head[2].text;
-  if (!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(name)) return unknown;
   const parameters: Record<string, unknown> = Object.create(null);
   for (let i = 3; i < head.length; i += 2) {
     const flag = head[i], value = head[i + 1];
@@ -74,7 +78,7 @@ function parseBash(command: string, target: WikiToolCheck['target']): WikiParsed
       || value.text.startsWith('--') || /(?:^--|-)(?:stdin|file)(?:-|$)/.test(flag.text) || Object.hasOwn(parameters, flag.text.slice(2))) return unknown;
     parameters[flag.text.slice(2)] = value.text;
   }
-  return name === target.name ? { kind: 'target', parameters } : other;
+  return { kind: 'target', parameters };
 }
 export function parseWikiToolCall(call: any, target: WikiToolCheck['target']): WikiParsedToolCall {
   if (!call || typeof call.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(call.name)
