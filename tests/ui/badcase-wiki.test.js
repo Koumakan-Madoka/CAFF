@@ -526,12 +526,37 @@ test('Badcase request action reaches the guarded case API once, disables during 
   h.saved().cases[0].traceBundle = { hash: 'a'.repeat(64), stepCount: 1 };
   h.saved().cases[0].dehydrationRecommendation = { eligible: true };
   await h.panel.load(); await h.click('[data-tab="badcases"]'); assert.equal(h.posts().length, 0);
-  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); button.click();
-  assert.equal(h.posts().length, 1); assert.equal(button.disabled, true);
+  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); assert.equal(h.posts().length, 0);
+  const lock = h.root.querySelector('[data-dehydration-request-lock="c1"]'); lock.click(); lock.click();
+  assert.equal(h.posts().length, 1); assert.equal(lock.disabled, true);
   assert.equal(h.posts()[0].url, '/api/wikiskill/cases/c1/dehydration/recommend');
   assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, traceHash: 'a'.repeat(64) });
   release(); await tick(); await tick(); assert.ok(h.root.querySelector('[data-dehydration-confirm="c1"]'));
   assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.posts().length, 1);
+});
+test('scene cut writes are followed by a full GET; post snapshots cannot declare frozen, and failed rereads lock the panel', async t => {
+  for (const failedRead of [false, true]) {
+    let sent = false;
+    const h = setup(t, (url, options, saved) => {
+      if (options.method === 'POST' && url === '/api/wikiskill/dehydration-confirm') {
+        sent = true; saved.revision++; saved.dehydrations[0].decision = { kind: 'single', cutStep: 29, level: 'run', hash: 'd'.repeat(64) };
+        return { ...clone(saved), dehydrations: [] }; // Deliberately incomplete POST snapshot; only GET is authoritative.
+      }
+      if (url === '/api/wikiskill' && sent && failedRead) return Promise.reject(Error('read failed'));
+    });
+    const saved = h.saved(), shape = require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items.find(f => f.case === 22 && f.step === 29);
+    Object.assign(saved.cases[0], { kind: 'marked-badcase', role: 'role-family-gpt', sealedCheckpointId: 'scene-22', traceBundle: { hash: 'a'.repeat(64), stepCount: 31 } });
+    saved.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 29, body: JSON.stringify(shape.toolCalls) }, { step: 31, body: 'marked reply' }] } },
+      recommendation: { schemaVersion: 2, kindSuggestion: 'single', cutStepSuggestion: 29, evidenceVerified: true, answers: { reason: 'Before bad call', evidence: 'bash' } } }];
+    await h.panel.load(); await h.click('[data-tab="badcases"]'); await h.click('[data-dehydration-confirm]'); assert.equal(h.posts().length, 0);
+    const start = h.calls.length; await h.click('[data-dehydration-lock]');
+    assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, caseId: 'c1', traceHash: 'a'.repeat(64), recommendationHash: 'c'.repeat(64), kind: 'single', cutStep: 29 });
+    assert.equal(h.calls.slice(start).filter(c => c.url === '/api/wikiskill' && c.method !== 'POST').length, 1);
+    assert.equal(h.confirms.length, 0, 'cut consent must not use browser dialogs');
+    if (failedRead) assert.ok([...h.root.querySelectorAll('[data-dehydration-lock],[data-dehydration-confirm]')].every(b => b.disabled));
+    else { assert.equal(h.root.querySelector('[data-dehydration-lock]'), null); assert.match(h.root.querySelector('[data-dehydration]').textContent, /已冻结.*切点检查报告.*trace/s); }
+    assert.equal(h.posts().length, 1); assert.equal(saved.cases[0].split, 'train');
+  }
 });
 test('deleted evidence disappears from knowledge counts/search while the frozen guideline and deletion audit remain', async t => {
   const h = setup(t), s = h.saved(); s.cases = s.cases.filter(c => c.id !== 'c1'); s.caseStates = s.caseStates.filter(c => c.caseId !== 'c1');

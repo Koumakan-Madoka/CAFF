@@ -407,19 +407,23 @@ test('failed reads never fall back to excerpts and allow an explicit retry', asy
   failing = false; trace.querySelector('[data-trace-retry]').click(); await tick(); await tick();
   assert.match(trace.textContent, /full model text/); assert.equal(h.calls.length, 2);
 });
-test('recommendation is read-only until an explicit user confirmation, then binds IDs and hashes; declined confirmations never write', t => {
-  const sent = [], prompts = []; let accept = false;
-  const h = setup(t, null, { onConfirmDecision: body => sent.push(body), confirm: message => { prompts.push(message); return accept; } });
+test('recommendation uses inline consent bound to the selected kind, cut and hashes, with cancel and readonly guards', t => {
+  const sent = [];
+  const h = setup(t, null, { onConfirmDecision: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
   const r = { caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 1, body: '<script>literal</script> decision' }, { step: 2, body: 'public reply' }] } },
     recommendation: { schemaVersion: 2, kindSuggestion: 'single', evidenceVerified: true, cutStepSuggestion: 1, cutSource: 'deepseek', answers: { kind: '单步型', reason: '<script>reason</script>', evidence: '<script>literal</script>' } } };
   h.data.dehydrations = [r]; h.panel.render(h.data);
   assert.equal(h.calls.length, 0); assert.equal(sent.length, 0); assert.match(h.root.querySelector('[data-actor="you"]').textContent, /请确认能否脱水/);
-  const host = h.root.querySelector('[data-dehydration="c1"]'); assert.equal(host.querySelector('script'), null); assert.match(host.textContent, /DeepSeek 建议/); assert.match(host.textContent, /程序已核对为该步卡片原文的子串/); assert.doesNotMatch(host.textContent, /90.0%|概率/);
-  host.querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0); accept = true;
-  host.querySelector('[data-dehydration-cut]').value = '2'; host.querySelector('[data-dehydration-confirm]').click();
-  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: r.traceHash, recommendationHash: r.hash, kind: 'single', cutStep: 2 }); assert.match(prompts.at(-1), /#1.*第 2 步/);
-  host.querySelector('[data-dehydration-kind]').value = 'throughout'; host.querySelector('[data-dehydration-confirm]').click(); assert.equal(sent[1].cutStep, null);
-  h.panel.setWritable(false); assert.equal(host.querySelector('[data-dehydration-confirm]').disabled, true);
+  const host = () => h.root.querySelector('[data-dehydration="c1"]'); assert.equal(host().querySelector('script'), null); assert.match(host().textContent, /DeepSeek 建议/); assert.match(host().textContent, /程序已核对为该步卡片原文的子串/); assert.doesNotMatch(host().textContent, /90.0%|概率/);
+  host().querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0);
+  assert.match(host().querySelector('[data-dehydration-consent]').textContent, /#1.*第 1 步/);
+  host().querySelector('[data-dehydration-cancel]').click(); assert.equal(host().querySelector('[data-dehydration-consent]'), null);
+  const cut = host().querySelector('[data-dehydration-cut]'); cut.value = '2'; cut.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  host().querySelector('[data-dehydration-confirm]').click(); host().querySelector('[data-dehydration-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: r.traceHash, recommendationHash: r.hash, kind: 'single', cutStep: 2 });
+  const kind = host().querySelector('[data-dehydration-kind]'); kind.value = 'throughout'; kind.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  host().querySelector('[data-dehydration-confirm]').click(); host().querySelector('[data-dehydration-lock]').click(); assert.equal(sent[1].cutStep, null);
+  h.panel.setWritable(false); assert.equal(host().querySelector('[data-dehydration-lock]').disabled, true);
   r.decision = { kind: 'throughout', level: 'reference', cutStep: null, hash: 'd'.repeat(64) }; h.panel.render(h.data);
   assert.equal(h.root.querySelector('[data-dehydration-confirm]'), null); assert.equal(h.root.querySelector('[data-case-id="c1"]').closest('[data-actor]').dataset.actor, 'reference');
   assert.match(h.root.textContent, /已冻结：贯穿型.*只作参考/); assert.equal(h.calls.length, 0);
@@ -553,24 +557,29 @@ test('new checkpoint metadata is shown separately from legacy missing fields and
   assert.match(h.root.querySelector('[data-case-id="c2"]').textContent, /现场部分记录/);
   assert.equal(h.calls.length, 0);
 });
-test('sealed scenes show trace-only guidance and never offer recommendation even with stale eligibility', t => {
-  const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => true });
-  h.data.cases[1].dehydrationRecommendation = { eligible: true }; // stale server projection cannot reopen the action
-  h.panel.render(h.data); h.panel.focus(19); const card = h.root.querySelector('[data-case-id="c2"]');
-  assert.equal(card.querySelector('[data-dehydration-recommend]'), null);
-  assert.match(card.textContent, /有现场，走 trace 级/); assert.doesNotMatch(card.textContent, /可另选脱水/);
-  assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+test('sealed scenes offer eligible report cut recommendation without changing trace identity or starting a replay', t => {
+  const sent = [], h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
+  h.data.cases[1].dehydrationRecommendation = { eligible: true };
+  h.panel.render(h.data); h.panel.focus(19); const card = () => h.root.querySelector('[data-case-id="c2"]');
+  assert.ok(card().querySelector('[data-dehydration-recommend]')); assert.match(card().textContent, /有现场，走 trace 级/);
+  card().querySelector('[data-dehydration-recommend]').click(); assert.equal(sent.length, 0);
+  assert.match(card().querySelector('[data-dehydration-consent]').textContent, /只.*报告.*trace.*组别不变/s);
+  card().querySelector('[data-dehydration-request-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ caseId: 'c2', traceHash: 'b'.repeat(64) }]);
+  assert.equal(card().querySelector('[data-start-replay]'), null); assert.equal(h.calls.length, 0);
 });
 test('request button is explicit, eligibility-bound, read-only when disabled and never sends automatically', t => {
-  const sent = []; let accept = false;
-  const h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => accept });
+  const sent = [];
+  const h = setup(t, null, { onRequestRecommendation: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
   h.data.cases[0].dehydrationRecommendation = { eligible: true };
   h.panel.render(h.data);
   const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); assert.ok(button); assert.equal(button.textContent, '请求推荐');
   assert.equal(h.root.querySelector('[data-dehydration-recommend="c3"]'), null); assert.equal(h.root.querySelector('[data-dehydration-recommend="c4"]'), null);
-  assert.equal(sent.length, 0); button.click(); assert.equal(sent.length, 0); accept = true; button.click();
+  assert.equal(sent.length, 0); button.click(); assert.equal(sent.length, 0);
+  h.root.querySelector('[data-dehydration-cancel]').click(); assert.equal(h.root.querySelector('[data-dehydration-request-lock]'), null);
+  h.root.querySelector('[data-dehydration-recommend]').click(); h.root.querySelector('[data-dehydration-request-lock]').click();
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { caseId: 'c1', traceHash: 'a'.repeat(64) });
-  h.panel.setWritable(false); assert.equal(button.disabled, true); button.click(); assert.equal(sent.length, 1);
+  h.panel.setWritable(false); const lock = h.root.querySelector('[data-dehydration-request-lock]'); assert.equal(lock.disabled, true); lock.click(); assert.equal(sent.length, 1);
   h.data.cases[0].dehydrationRecommendation = { eligible: false }; h.panel.render(h.data);
   assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.calls.length, 0);
 });
@@ -591,6 +600,7 @@ test('one failed parse offers fallback confirmation OR one manual retry and reta
   h.data.dehydrations = [first]; h.panel.render(h.data);
   assert.match(h.root.textContent, /本次输出无法解析/); assert.match(h.root.textContent, /默认切在发消息那一步/);
   assert.ok(h.root.querySelector('[data-dehydration-confirm]')); h.root.querySelector('[data-dehydration-recommend]').click();
+  assert.equal(sent.length, 0); h.root.querySelector('[data-dehydration-request-lock]').click();
   assert.equal(sent[0].retryOf, first.hash); assert.equal(sent.length, 1);
   h.data.dehydrations.push({ ...first, hash: 'd'.repeat(64), retryOf: first.hash });
   h.data.cases[0].dehydrationRecommendation = { eligible: false }; h.panel.render(h.data);
@@ -697,6 +707,97 @@ test('layout styles are scoped, wide, responsive, and keep tall detail scrollabl
   assert.match(css, /\.bc-row\s*\{[^}]*color:\s*var\(--text\)/, 'management primary-button colors must not bleach row titles');
   assert.match(css, /\.bc-rows\s*\{[^}]*grid-auto-rows:\s*max-content/, 'bounded list must not shrink rows until mini progress overlaps');
   assert.match(fs.readFileSync(path.resolve(__dirname, '../../public/wikiskill.css'), 'utf8'), /max-width:\s*1680px/);
+});
+function sceneRunPage(t, { n = 22, questions, fetcher, callbacks = {} } = {}) {
+  const h = setup(t, fetcher, { confirm: () => { throw Error('no browser dialog'); }, ...callbacks });
+  const cut = { 22: 29, 23: 44, 24: 42 }[n], shape = require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items.find(f => f.case === n && f.step === cut);
+  const c = { ...h.data.cases[1], n, role: 'role-family-gpt', sealedCheckpointId: 'scene-' + n, dehydrationRecommendation: { eligible: true }, traceBundle: { ...h.data.cases[1].traceBundle, stepCount: cut + 2, markedStep: cut + 2 } };
+  const r = { caseId: c.id, traceHash: c.traceBundle.hash, hash: 'c'.repeat(64), request: { state: { steps: [{ step: cut, body: JSON.stringify(shape.toolCalls) }, { step: cut + 1, body: 'retry' }, { step: cut + 2, body: 'marked public reply' }] } },
+    recommendation: { schemaVersion: 2, kindSuggestion: 'single', cutStepSuggestion: cut, cutSource: 'deepseek', evidenceVerified: true, answers: { reason: 'Before the bad call.', evidence: shape.toolCalls[0].name } } };
+  const rubric = { caseId: c.id, version: 3, status: 'frozen', hash: 'f'.repeat(64), questions: questions || [{ id: 'trace', question: 'Trace action is correct.', evidence: 'trace' }, { id: 'files', question: 'The file has the result.', evidence: 'files' }, { id: 'reply', question: 'The reply is clear.', evidence: 'reply' }],
+    toolCheck: { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] } };
+  h.data.cases = [c]; h.data.dehydrations = [r]; h.data.rubrics = [rubric];
+  h.data.pipelineStates = [{ caseId: c.id, level: 'trace', assertion: { status: 'frozen', version: rubric.version, hash: rubric.hash, questions: rubric.questions }, replay: { status: 'pending' }, original: { valid: 0, unscored: 0, invalid: 0, errors: 0, reproduced: false }, inLibrary: false }];
+  h.panel.render(h.data); h.panel.focus(n);
+  return { ...h, c, r, rubric, cut, host: () => h.root.querySelector('[data-dehydration]'), card: () => h.root.querySelector('[data-case-id]') };
+}
+for (const n of [22, 23, 24]) test(`scene #${n} confirms a pre-marked cut in-panel; fields, full GET and hashes invalidate consent`, t => {
+  const sent = [], h = sceneRunPage(t, { n, callbacks: { onConfirmDecision: body => sent.push(body) } });
+  const oldGroups = JSON.stringify([h.c.split, h.data.initialSplitProposal, h.c.traceBundle]);
+  h.host().querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0);
+  assert.match(h.host().querySelector('[data-dehydration-consent]').textContent, new RegExp('第 ' + h.cut + ' 步之前'));
+  assert.match(h.host().querySelector('[data-dehydration-consent]').textContent, /trace.*组别不变.*不作采纳依据/s);
+  const stale = h.host().querySelector('[data-dehydration-lock]'), field = h.host().querySelector('[data-dehydration-cut]');
+  field.value = String(h.cut + 1); field.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  assert.equal(h.host().querySelector('[data-dehydration-consent]'), null); stale.click(); assert.equal(sent.length, 0);
+  h.host().querySelector('[data-dehydration-confirm]').click(); h.panel.render(h.data); assert.equal(h.host().querySelector('[data-dehydration-lock]'), null);
+  h.host().querySelector('[data-dehydration-confirm]').click(); h.r.hash = 'e'.repeat(64); h.panel.render(h.data); assert.equal(h.host().querySelector('[data-dehydration-lock]'), null);
+  h.host().querySelector('[data-dehydration-confirm]').click(); h.panel.setWritable(false);
+  assert.equal(h.host().querySelector('[data-dehydration-cut]').disabled, true); assert.equal(h.host().querySelector('[data-dehydration-kind]').disabled, true);
+  assert.equal(h.host().querySelector('[data-dehydration-lock]').disabled, true); h.panel.setWritable(true); h.host().querySelector('[data-dehydration-lock]').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{ caseId: h.c.id, traceHash: h.c.traceBundle.hash, recommendationHash: h.r.hash, kind: 'single', cutStep: h.cut }]);
+  assert.equal(JSON.stringify([h.c.split, h.data.initialSplitProposal, h.c.traceBundle]), oldGroups); assert.equal(h.calls.length, 0);
+  h.r.decision = { hash: 'd'.repeat(64), kind: 'single', level: 'run', cutStep: h.cut }; h.panel.render(h.data);
+  assert.match(h.card().querySelector('.bc-meta').textContent, /trace 级/); assert.match(h.host().querySelector('.pill.ok').textContent, /切点检查报告.*trace.*组别不变/);
+  assert.equal(h.host().querySelector('[data-dehydration-confirm],[data-dehydration-recommend]'), null);
+});
+test('recommendation consent is hash-bound, refresh-invalidated and unavailable for non-GPT or missing trace', t => {
+  const sent = [], h = sceneRunPage(t, { callbacks: { onRequestRecommendation: body => sent.push(body) } }); h.data.dehydrations = []; h.panel.render(h.data);
+  h.host().querySelector('[data-dehydration-recommend]').click(); assert.equal(sent.length, 0);
+  h.panel.render(h.data); assert.equal(h.host().querySelector('[data-dehydration-request-lock]'), null);
+  h.host().querySelector('[data-dehydration-recommend]').click(); h.panel.setWritable(false); assert.equal(h.host().querySelector('[data-dehydration-request-lock]').disabled, true);
+  h.panel.setWritable(true); h.host().querySelector('[data-dehydration-request-lock]').click(); assert.equal(sent.length, 1);
+  h.c.source.agentId = 'role-family-deepseek'; h.panel.render(h.data); assert.equal(h.root.querySelector('[data-dehydration-recommend]'), null);
+  h.c.source.agentId = 'role-family-gpt'; h.c.traceBundle = null; h.panel.render(h.data); assert.equal(h.root.querySelector('[data-dehydration-recommend]'), null);
+});
+function addSceneReports(h) {
+  h.r.decision = { hash: 'd'.repeat(64), kind: 'single', level: 'run', cutStep: h.cut };
+  h.data.runReplays = ['pass', 'fail', 'invalid', 'error', 'reserved'].map((status, i) => ({ id: String(i + 1).repeat(64), caseId: h.c.id, traceHash: h.c.traceBundle.hash, decisionHash: h.r.decision.hash,
+    rubricHash: h.rubric.hash, sceneCheckpointId: h.c.sealedCheckpointId, reportOnly: true, variant: { kind: 'original' }, status, reason: status === 'invalid' ? 'arguments_unparseable' : null, modelCalls: 1, toolExecutions: 0 }));
+  h.c.runChecks = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').projectWikiRunReportCounts(h.data, h.data.runReplays)[0];
+  h.panel.render(h.data);
+}
+test('scene report counts use only current cut and latest frozen version, disclose skipped trace/files questions, never enter raw baseline counts', t => {
+  const h = sceneRunPage(t); addSceneReports(h);
+  let panel = h.root.querySelector('[data-run-report]'); assert.ok(panel);
+  assert.match(panel.textContent, /统计的是 v3/); assert.match(panel.textContent, /通过 1.*失败 1.*无效 1.*错误 1.*未知 1/s);
+  assert.match(panel.textContent, /参数无法解析.*1/); assert.match(panel.textContent, /不作采纳依据/);
+  assert.match(panel.textContent, /trace.*Trace action is correct.*未判到.*files.*The file has the result.*未判到/s);
+  assert.match(panel.textContent, /工具调用检查只用于切点上的 report，不用于 trace 评测/);
+  assert.equal(panel.querySelectorAll('[data-run-details]').length, 5);
+  assert.equal(h.root.querySelector('[data-run-panel],[data-run-totals]'), null); assert.doesNotMatch(h.card().textContent, /原版无有效输出/);
+  assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /GPT 且有封存现场/);
+  h.data.rubrics.push({ ...h.rubric, status: 'draft', version: 4, hash: '9'.repeat(64) }); h.panel.render(h.data); assert.match(h.root.querySelector('[data-run-report]').textContent, /统计的是 v3/);
+  h.data.rubrics.at(-1).status = 'frozen'; h.panel.render(h.data); panel = h.root.querySelector('[data-run-report]');
+  assert.doesNotMatch(panel.textContent, /通过 1|统计的是 v3/); assert.equal(panel.querySelector('[data-run-details]'), null, 'never relabel old scores as v4 even if a stale counts projection was retained');
+  h.c.runChecks = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').projectWikiRunReportCounts(h.data, h.data.runReplays)[0]; h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-run-report]').textContent, /统计的是 v4.*通过 0.*失败 0/s);
+  assert.equal(h.calls.length, 0);
+});
+test('trace tool-only incompatibility explains trace questions are missing, not that tool checks must use reply evidence', t => {
+  const h = sceneRunPage(t, { questions: [] }); h.data.pipelineStates[0].assertion.status = 'incompatible'; h.panel.render(h.data);
+  assert.match(h.card().querySelector('[data-assertion-slot]').textContent, /trace 级.*至少.*问题/);
+  assert.doesNotMatch(h.card().querySelector('[data-assertion-slot]').textContent, /run 级只能以回复为依据/);
+});
+test('actual store-frozen scene decision and rubric render without invented reportOnly decision fields', t => {
+  const real = require('../helpers/wiki-scene-run.cjs')(t), h = setup(t), state = real.store.read();
+  assert.equal(real.decision.reportOnly, undefined);
+  const c = { ...real.item(), n: 22 }; state.cases = [c]; c.runChecks = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').projectWikiRunReportCounts(state, [])[0];
+  h.panel.render(state); h.panel.focus(22);
+  assert.match(h.root.querySelector('[data-dehydration] .pill.ok').textContent, /切点检查报告.*trace 级身份和组别不变/);
+  assert.match(h.root.querySelector('[data-run-report]').textContent, /统计的是 v1.*通过 0.*失败 0.*无效 0/s);
+  assert.equal(h.root.querySelector('[data-dehydration-confirm],[data-dehydration-recommend],[data-run-panel]'), null); assert.equal(h.calls.length, 0);
+});
+for (const reply of ['unconfigured', 'unreached', 'pass', 'fail', 'error']) test(`report detail displays ${reply} reply check with the bound version, never invents absent reply questions`, async t => {
+  let packet;
+  const h = sceneRunPage(t, { questions: reply === 'unconfigured' ? [{ id: 'trace', question: '<script>Trace only</script>', evidence: 'trace' }] : undefined, fetcher: () => packet }); addSceneReports(h);
+  packet = { reservation: { request: { metadata: { report: { rubricHash: h.rubric.hash } } } }, result: { report: { rubricHash: h.rubric.hash, checks: { reply, tool: { status: 'pass', reason: null } } }, message: { content: [{ type: 'text', text: '<b>raw output</b>' }] } } };
+  const d = h.root.querySelector('[data-run-report] [data-run-details]'); assert.ok(d); d.open = true; d.dispatchEvent(new h.window.Event('toggle')); await tick(); await tick();
+  const status = d.querySelector('[data-run-check-status]'); assert.ok(status);
+  assert.match(status.textContent, /工具调用检查：通过/);
+  assert.match(status.textContent, new RegExp({ unconfigured: '本版本没有回复依据的问题', unreached: '回复检查：未判到', pass: '回复检查：通过', fail: '回复检查：失败', error: '回复检查：技术错误' }[reply]));
+  if (reply === 'unconfigured') assert.doesNotMatch(d.textContent, /未配置回复检查/);
+  assert.match(d.textContent, /<b>raw output<\/b>/); assert.equal(d.querySelector('script, pre b'), null); assert.equal(h.calls.length, 1);
 });
 test('stale packet responses after a data refresh cannot replace current evidence', async t => {
   const pending = []; const h = setup(t, () => new Promise(r => { pending.push(r); })); await h.expand();
