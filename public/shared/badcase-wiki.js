@@ -78,7 +78,7 @@
     }
     const pill = (map, status) => { const [label, tone] = map[status] || [status, '']; return `<span class="pill ${tone}">${esc(label)}</span>`; };
     const catChip = replay => { const [label, cls] = CATEGORY[replay.category] || [replay.category, '']; return `<span class="chip cat ${cls}">${esc(label)}</span>`; };
-    let D = null, versionId = '', generation = 0, pending = false, writable = false, toastTimer, progressTimer, progressPending = false, progressError = false;
+    let D = null, versionId = '', followLatestVersion = true, generation = 0, pending = false, writable = false, toastTimer, progressTimer, progressPending = false, progressError = false;
     const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '', comparisonId: '' };
     const VIEWS = ['badcases', 'wiki', 'cases', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
@@ -86,6 +86,10 @@
     let wikiCategoryConsent = null;
     const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
     const latestVersion = () => D?.versions.at(-1) || null;
+    function selectVersion(id) {
+      versionId = D?.versions.some(v => v.id === id) ? id : latestVersion()?.id || '';
+      followLatestVersion = versionId === (latestVersion()?.id || '');
+    }
     const entries = () => currentVersion()?.entries || [];
     const approvedEntries = () => (latestVersion()?.entries || []).filter(e => e.status === 'approved');
     const experienceTips = () => [...new Map((D?.experiences || []).map(e => [e.rootId, e])).values()];
@@ -246,7 +250,20 @@
     }
     /* Cases */
     function caseMatch(c, ts) { if (!ts.length) return true; const replay = replayBySource.get(c.id); const hay = [c.actual, c.expected, c.source.conversationTitle || '', replay?.task || '', `#${c.n}`].join(' ').toLowerCase(); return ts.every(t => hay.includes(t)); }
-    function inGroup(c, group) { const s = caseState(c); if (group === 'all') return true; if (group === 'inbox') return ['pending', 'suggested', 'pending-preclassification'].includes(s.status); if (group === 'holdout') return ['gate', 'test'].includes(c.split); if (group === 'unfit') return s.status === group; return c.split === 'train' && (s.memberships || []).some(m => m.entryId === group); }
+    function casePatternIds(c) {
+      const s = caseState(c);
+      if (c.split === 'train') return (s.memberships || []).map(m => m.entryId);
+      if (!['gate', 'test'].includes(c.split)) return [];
+      // Held-out labels are ownership, never learning memberships. Legacy cases
+      // may have no preclassification and an empty holdout caseState.
+      const label = (D.casePatterns || []).find(l => l.caseId === c.id && l.confirmed);
+      if (label) return label.entryId ? [label.entryId] : [];
+      const confirmed = (D.classifications || []).find(r => r.caseId === c.id && ['manual', 'model-confirmed'].includes(r.source)
+        && typeof r.confirmedAt === 'string' && Number.isFinite(Date.parse(r.confirmedAt)));
+      if (confirmed) return confirmed.entryId ? [confirmed.entryId] : [];
+      return s.status === 'classification-confirmed' ? (s.memberships || []).map(m => m.entryId) : [];
+    }
+    function inGroup(c, group) { const s = caseState(c); if (group === 'all') return true; if (c.split === null) return group === 'inbox'; if (group === 'inbox') return ['pending', 'suggested', 'pending-preclassification'].includes(s.status); if (group === 'holdout') return ['gate', 'test'].includes(c.split); if (group === 'unfit') return s.status === group; return casePatternIds(c).includes(group); }
     const STATE_CHIP = { 'pending-allocation': '<span class="chip pending">标签已确认 · 待分配</span>', 'pending-preclassification': '<span class="chip pending">待预分类</span>', 'classification-pending': '<span class="chip pending">归类待确认 · 不参与归纳</span>', 'classification-confirmed': '<span class="chip ok">归类已确认 · 不参与归纳</span>', pending: '<span class="chip pending">待归纳</span>', suggested: '<span class="chip pending">待归纳 · 有建议</span>', unfit: '<span class="chip warn">未能归类</span>' };
     function preclassificationLine(c) {
       const p = c.preclassification; if (!p) return '';
@@ -273,7 +290,7 @@
       return s.memberships.map(m => m.source === 'manual' ? `手动调整 · ${fmt(m.at)}` : m.source === 'model-confirmed' ? `模型建议经确认 · ${fmt(m.at)}` : `${latestVersion()?.id || ''} 模型归纳，随模式审核通过`).join('；');
     }
     function manualControls(c) {
-      const s = caseState(c); if (pagePattern(c) || ['holdout', 'pending-preclassification', 'pending-allocation'].includes(s.status)) return '';
+      const s = caseState(c); if (c.split === null || pagePattern(c) || ['holdout', 'pending-preclassification', 'pending-allocation'].includes(s.status)) return '';
       const selected = s.memberships?.[0]?.entryId || '';
       return `<div class="manual-controls"><select data-manual-entry aria-label="选择归属模式"><option value="">选择已通过模式</option>${approvedEntries().map(e => `<option value="${esc(e.id)}" ${selected === e.id ? 'selected' : ''}>${esc(e.title)}</option>`).join('')}</select><button type="button" class="btn small" data-manual-assign>${selected ? '改归属' : '手动归入'}</button>${s.memberships?.length || c.split !== 'train' ? '<button type="button" class="btn small ghost" data-manual-remove>清为未归类</button>' : ''}</div>`;
     }
@@ -299,11 +316,11 @@
     function caseCard(c, ts) {
       const replay = replayBySource.get(c.id), s = caseState(c), suggestion = suggestionFor(c), owner = s.status === 'assigned' ? s.memberships.map(m => entryChip(m.entryId)).join('') : s.status === 'holdout' ? `<span class="chip holdout">${SPLIT[c.split]} · 不参与归纳</span>` : `${STATE_CHIP[s.status] || ''}${s.status === 'classification-confirmed' ? (s.memberships.length ? s.memberships.map(m => entryChip(m.entryId)).join('') : `<span class="chip">${pagePattern(c)?.pendingPatternId ? `待归纳新模式「${esc(pagePattern(c).pendingPatternName)}」` : '不归入任何模式'}</span>`) : ''}`;
       return `<article class="case" id="c-${c.n}"><div class="case-head"><span class="num">#${c.n}</span><h4>${hl(c.actual, ts)}</h4></div><p class="case-exp"><span class="lbl">期望</span>${hl(c.expected, ts)}</p>${preclassificationLine(c)}${suggestionLine(c)}<div class="chips">${owner}<span class="chip">${displaySet(c)}</span><span class="chip">来自 ${hl(c.source.conversationTitle || '未命名房间', ts)}</span>${replay ? catChip(replay) : ''}</div>
-        <div class="row-actions">${suggestion && ['assign', 'none'].includes(suggestion.kind) ? `<button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">${suggestion.kind === 'none' ? '确认未归类' : '确认归入'}</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button>` : ''}${suggestion?.kind === 'new' ? entryChip(suggestion.entryId) : ''}</div>
-        ${rubricPanel(c)}<details class="more"><summary>详情</summary><dl class="kv">${replay ? `<div><dt>回放任务</dt><dd>“${hl(replay.task, ts)}”</dd></div>` : ''}<div><dt>归属来源</dt><dd>${esc(membershipSource(c))}</dd></div><div><dt>标记时间</dt><dd>${fmt(c.createdAt)}</dd></div><div><dt>来源消息</dt><dd class="mono">${esc(c.source.messageId || '未记录')}</dd></div><div><dt>用例 ID</dt><dd class="mono">${esc(c.id)}</dd></div>${replay ? `<div><dt>固定提交</dt><dd class="mono">${esc(replay.fixture.commit)}</dd></div><div><dt>检查点</dt><dd class="mono">${esc(replay.request.association.checkpointId)}</dd></div>` : ''}</dl>${manualControls(c)}${c.message || c.traceExcerpt ? `<details class="more"><summary>来源回复与轨迹摘录</summary><pre class="case-original">${esc(`来源回复${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`)}</pre></details>` : ''}</details></article>`;
+        <div class="row-actions">${c.split !== null && suggestion && ['assign', 'none'].includes(suggestion.kind) ? `<button type="button" class="btn small primary" data-confirm-suggestion="${esc(suggestion.id)}">${suggestion.kind === 'none' ? '确认未归类' : '确认归入'}</button><button type="button" class="btn small" data-reject-suggestion="${esc(suggestion.id)}">不是这里</button>` : ''}${c.split !== null && suggestion?.kind === 'new' ? entryChip(suggestion.entryId) : ''}</div>
+        ${c.split === null ? `<p class="hint">请到 <a href="#bc-${c.n}" data-go="bc-${c.n}">Badcase 页</a> 处理标签和分组；此处只查看。</p>` : ''}${rubricPanel(c)}<details class="more"><summary>详情</summary><dl class="kv">${replay ? `<div><dt>回放任务</dt><dd>“${hl(replay.task, ts)}”</dd></div>` : ''}<div><dt>归属来源</dt><dd>${esc(membershipSource(c))}</dd></div><div><dt>标记时间</dt><dd>${fmt(c.createdAt)}</dd></div><div><dt>来源消息</dt><dd class="mono">${esc(c.source.messageId || '未记录')}</dd></div><div><dt>用例 ID</dt><dd class="mono">${esc(c.id)}</dd></div>${replay ? `<div><dt>固定提交</dt><dd class="mono">${esc(replay.fixture.commit)}</dd></div><div><dt>检查点</dt><dd class="mono">${esc(replay.request.association.checkpointId)}</dd></div>` : ''}</dl>${manualControls(c)}${c.message || c.traceExcerpt ? `<details class="more"><summary>来源回复与轨迹摘录</summary><pre class="case-original">${esc(`来源回复${c.messageTruncated ? '（截断）' : ''}：\n${c.message}\n\n轨迹${c.traceTruncated ? '（截断）' : ''}（${c.traceState}）：\n${c.traceExcerpt}`)}</pre></details>` : ''}</details></article>`;
     }
     function renderCases() {
-      $('#cases-group').innerHTML = [['all', '全部'], ['inbox', '待归纳'], ...approvedEntries().map(e => [e.id, `模式 ${e.n || ''} · ${e.title}`]), ['holdout', '门槛/测试 · 不参与归纳'], ['unfit', '未能归类']].map(([value, label]) => `<option value="${esc(value)}" ${state.casesGroup === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
+      $('#cases-group').innerHTML = [['all', '全部'], ['inbox', '待处理 / 待归纳'], ...approvedEntries().map(e => [e.id, `模式 ${e.n || ''} · ${e.title}`]), ['holdout', '门槛/测试 · 不参与归纳'], ['unfit', '未能归类']].map(([value, label]) => `<option value="${esc(value)}" ${state.casesGroup === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
       $('#cases-split').value = state.casesSplit; $('#cases-replay').checked = state.casesReplay;
       $('#cases-mode').innerHTML = [['group', '按模式分组'], ['list', '列表']].map(([key, label]) => `<button type="button" role="radio" data-cases-mode="${key}" aria-checked="${state.casesMode === key}">${label}</button>`).join('');
       const ts = terms(state.casesQ), visible = D.cases.filter(c => caseMatch(c, ts) && inGroup(c, state.casesGroup) && (state.casesSplit === 'all' || c.split === state.casesSplit || state.casesSplit === 'unallocated' && c.split === null || state.casesSplit === 'gate' && c.evaluationStage === 'gate') && (!state.casesReplay || replayBySource.has(c.id)));
@@ -314,9 +331,9 @@
       if (state.casesMode === 'list') html = visible.length ? `<div class="case-grid">${visible.map(c => caseCard(c, ts)).join('')}</div>` : '<p class="muted-note">没有符合条件的用例。</p>';
       else {
         const groups = /** @type {any[]} */ ([]);
-        groups.push({ key: 'inbox', title: '待预分类 / 待归纳', action: true, keep: true, note: '新标记没有组别；模型预分类只提议标签。在 Badcase 页确认标签后，系统按模式提议分组，你确认后才冻结。门槛/测试标签不加入归纳成员。', items: visible.filter(c => inGroup(c, 'inbox')) });
-        for (const e of approvedEntries()) groups.push({ key: e.id, title: `模式 ${e.n || ''} · ${e.title}`, link: e.id, items: visible.filter(c => inGroup(c, e.id)) });
-        groups.push({ key: 'holdout', title: '门槛/测试 · 不参与归纳', note: '新门槛和测试用例只确认或调整归类，不参与归纳、也不改模式内容。原16条保留既有13训练/3测试；本轮门槛中原有训练题另作标注，不假称未见数据。', items: visible.filter(c => inGroup(c, 'holdout')) });
+        groups.push({ key: 'inbox', title: '待处理 / 待归纳', action: true, keep: true, note: '包括待预分类、标签待确认、标签已确认但待分组的用例，以及训练组待归纳的用例。标签和分组统一在 Badcase 页确认；模型预分类只提议标签，组别确认后才冻结。只有符合原有条件的训练用例参与模型归纳，这里的展示条数不等于可归纳条数。', items: visible.filter(c => inGroup(c, 'inbox')) });
+        for (const e of approvedEntries()) groups.push({ key: e.id, title: `模式 ${e.n || ''} · ${e.title}`, link: e.id, note: '本模式的训练成员，以及已确认归属的门槛和测试用例；只有训练成员参与归纳。', items: visible.filter(c => inGroup(c, e.id)) });
+        groups.push({ key: 'holdout', title: '门槛/测试 · 不参与归纳', note: `${state.casesGroup === 'holdout' ? '当前筛选列出全部门槛和测试用例，包括已归属模式的用例。' : '这里只列出尚未归属正式模式的门槛和测试用例；已归属的用例列在对应模式下，不重复列出。'}门槛和测试不参与归纳，也不改模式内容。原16条保留既有13训练/3测试；本轮门槛中原有训练题另作标注，不假称未见数据。`, items: visible.filter(c => inGroup(c, 'holdout') && (state.casesGroup === 'holdout' || !approvedEntries().some(e => inGroup(c, e.id)))) });
         groups.push({ key: 'unfit', title: '未能归类', keep: true, note: '归纳过、但不属于任何现有模式的用例。你可以随时手动归入。', items: visible.filter(c => inGroup(c, 'unfit')) });
         const visibleGroups = groups.filter(group => (state.casesGroup === 'all' || state.casesGroup === group.key) && (group.items.length || (group.keep && !filtered)));
         html = visibleGroups.length ? visibleGroups.map(group => `<section class="group"><div class="group-head"><h3>${esc(group.title)}</h3><span class="gcount">${group.items.length} 条</span>${group.link ? `<a href="#${esc(group.link)}" data-entry="${esc(group.link)}">打开模式页</a>` : ''}${group.action ? `<button type="button" class="btn small" data-induct ${!rawPending().length || pending || !writable ? 'disabled' : ''}>${preclassificationPending().length ? '预分类并提议类别' : '用模型归纳新用例'}</button>` : ''}</div>${group.note ? `<p class="group-note">${esc(group.note)}</p>` : ''}${group.items.length ? `<div class="case-grid">${group.items.map(c => caseCard(c, ts)).join('')}</div>` : ''}</section>`).join('') : '<p class="muted-note">没有符合条件的用例。</p>';
@@ -490,7 +507,7 @@
         const c = D.cases.find(c => c.id === caseId), r = c && latestRubric(c);
         if (!c || r && (r.version > edit.baseVersion || r.status === 'frozen') && sameRubricEdit(edit, r)) rubricEdits.delete(caseId);
       }
-      if (!D.versions.some(v => v.id === versionId)) versionId = D.versions.at(-1)?.id || '';
+      if (followLatestVersion || !D.versions.some(v => v.id === versionId)) selectVersion(latestVersion()?.id || '');
       derive(); render();
     }
     function controls() {
@@ -600,7 +617,7 @@
       if (el.dataset.casesMode) { state.casesMode = el.dataset.casesMode; renderCases(); return; }
       if (el.dataset.group) { event.preventDefault(); Object.assign(state, { casesGroup: el.dataset.group, casesQ: '', casesSplit: 'all', casesReplay: false }); $('#cases-q').value = ''; go('cases'); return; }
       if (el.dataset.case) { event.preventDefault(); go('case-' + el.dataset.case); return; }
-      if (el.dataset.entry) { event.preventDefault(); if (el.dataset.version) versionId = el.dataset.version; state.entryId = el.dataset.entry; derive(); go(el.dataset.entry); if (window.matchMedia?.('(max-width: 860px)').matches) $('#wiki-page').scrollIntoView({ block: 'start' }); return; }
+      if (el.dataset.entry) { event.preventDefault(); if (el.dataset.version) selectVersion(el.dataset.version); state.entryId = el.dataset.entry; derive(); go(el.dataset.entry); if (window.matchMedia?.('(max-width: 860px)').matches) $('#wiki-page').scrollIntoView({ block: 'start' }); return; }
       if (el.dataset.target) { event.preventDefault(); state.targetId = el.dataset.target; if (state.view === 'targets' && !el.dataset.go) { renderTargets(); controls(); return; } go('targets'); return; }
       if (el.dataset.go) { event.preventDefault(); go(el.dataset.go); return; }
       if (el.hasAttribute('data-induct')) { void mutate('/api/wikiskill/induct', {}, '预分类或归纳完成，建议已保存；请确认或调整归属。'); return; }
@@ -635,7 +652,7 @@
     root.addEventListener('change', event => {
       const el = event.target;
       if (el.hasAttribute('data-rubric-evidence') || el.hasAttribute('data-rubric-model')) updateRubricField(el);
-      if (el.id === 'wiki-version') { versionId = el.value; state.entryId = ''; derive(); renderWiki(); controls(); }
+      if (el.id === 'wiki-version') { selectVersion(el.value); state.entryId = ''; derive(); render(); }
       if (el.id === 'cases-group') { state.casesGroup = el.value; renderCases(); }
       if (el.id === 'cases-split') { state.casesSplit = el.value; renderCases(); }
       if (el.id === 'cases-replay') { state.casesReplay = el.checked; renderCases(); }

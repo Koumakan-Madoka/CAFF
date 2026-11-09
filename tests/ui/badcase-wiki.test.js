@@ -82,6 +82,135 @@ function setup(t, handler) {
     click: async selector => { const element = root.querySelector(selector); assert.ok(element, selector); element.click(); await tick(); await tick(); } };
 }
 
+function unallocatedCasesFixture(t) {
+  const h = setup(t), s = h.saved(), sample = clone(s.cases[0]);
+  s.cases = [{ ...clone(sample), displayNumber: 1 }, ...[21, 22].map(n => ({ ...clone(sample), id: 'unallocated-' + n, displayNumber: n,
+    kind: 'marked-badcase', role: 'role-family-gpt', split: null, preclassification: { kind: 'assign', entryId: 'entry-1', reason: 'Suggested only' } }))];
+  s.versions[0].entries[0].caseIds = []; s.versions[0].caseIds = [];
+  s.caseStates = [{ caseId: 'c1', status: 'pending', memberships: [] }, { caseId: 'unallocated-21', status: 'classification-pending', memberships: [] },
+    { caseId: 'unallocated-22', status: 'pending-allocation', memberships: [] }];
+  s.casePatterns = s.cases.slice(1).map(c => ({ caseId: c.id, confirmed: c.displayNumber === 22, source: c.displayNumber === 22 ? 'badcase-page' : null,
+    entryId: c.displayNumber === 22 ? 'entry-1' : null, labelHash: 'a'.repeat(64), options: [{ entryId: 'entry-1', title: approvedEntry.title }], pendingOptions: [] }));
+  s.suggestions = s.cases.map(c => ({ id: 'suggest-' + c.id, caseId: c.id, kind: 'assign', entryId: 'entry-1', status: 'pending', reason: 'Only a suggestion' }));
+  s.replayCases = []; s.candidates = [];
+  return h;
+}
+
+test('all split-null cases appear once in the processing group and its dropdown, without inflating induction counts', async t => {
+  const h = unallocatedCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const numbers = () => [...h.root.querySelectorAll('#cases-body .case-head > .num')].map(el => Number(el.textContent.slice(1)));
+  assert.deepEqual(numbers(), [1, 21, 22]); assert.equal(new Set(numbers()).size, numbers().length);
+  const group = h.root.querySelector('#cases-body > .group'); assert.match(group.querySelector('h3').textContent, /待处理.*待归纳/);
+  assert.match(group.querySelector('.group-note').textContent, /标签待确认.*待分组/);
+  assert.match(h.root.querySelector('#cases-summary').textContent, /待预分类 0 条。待归纳 1 条/);
+  assert.equal(group.querySelector('[data-induct]').disabled, false, 'the existing single pending training case is still inductable');
+  const select = h.root.querySelector('#cases-group'); select.value = 'inbox'; select.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  assert.deepEqual(numbers(), [1, 21, 22]);
+  const split = h.root.querySelector('#cases-split'); split.value = 'unallocated'; split.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+  assert.deepEqual(numbers(), [21, 22]); assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
+test('unallocated cards in list and group views offer only a Badcase label/grouping link, never legacy membership or suggestion actions', async t => {
+  const h = unallocatedCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  await h.click('[data-cases-mode="list"]');
+  const check = () => {
+    for (const n of [21, 22]) {
+      const card = h.root.querySelector('#c-' + n); assert.ok(card);
+      assert.equal(card.querySelector('[data-manual-entry],[data-manual-assign],[data-manual-remove],[data-confirm-suggestion],[data-reject-suggestion]'), null);
+      assert.equal(card.querySelector('a[data-go="bc-' + n + '"]').getAttribute('href'), '#bc-' + n);
+      assert.match(card.textContent, /Badcase.*标签.*分组/);
+    }
+    assert.ok(h.root.querySelector('#c-1 [data-manual-assign]'), 'existing training controls are unchanged');
+    assert.ok(h.root.querySelector('#c-1 [data-confirm-suggestion]'), 'training suggestions are unchanged');
+  };
+  check(); await h.click('[data-cases-mode="group"]'); check();
+  await h.click('#c-21 a[data-go="bc-21"]'); assert.equal(h.window.location.hash, '#bc-21');
+  assert.equal(h.root.querySelector('#view-badcases').hidden, false);
+  assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
+function patternCasesFixture(t) {
+  const h = setup(t), s = h.saved(), sample = clone(s.cases[0]);
+  const marked = (n, split) => ({ ...clone(sample), id: 'marked-' + n, kind: 'marked-badcase', role: 'role-family-gpt', displayNumber: n, split,
+    preclassification: { kind: 'assign', entryId: 'entry-1', reason: 'Only a suggestion' } });
+  const legacy = (n, split) => ({ ...clone(sample), id: 'legacy-' + n, role: 'GPT', displayNumber: n, split });
+  s.cases = [marked(22, 'train'), marked(23, 'gate'), marked(24, 'test'), legacy(1, 'gate'), legacy(4, 'test'), legacy(10, 'test'), legacy(14, 'test'), marked(25, 'gate'), marked(26, 'gate')];
+  delete s.cases.at(-1).preclassification;
+  s.versions[0].entries[0].caseIds = ['marked-22']; s.versions[0].caseIds = ['marked-22'];
+  s.casePatterns = s.cases.filter(c => c.displayNumber !== 26).map(c => ({ caseId: c.id, confirmed: c.displayNumber !== 25, source: 'badcase-page',
+    entryId: [14, 25].includes(c.displayNumber) ? null : 'entry-1' }));
+  s.classifications = [{ caseId: 'marked-26', entryId: 'entry-1', source: 'manual', confirmedAt: '2026-11-08T00:00:00Z' }];
+  s.caseStates = s.cases.map(c => ({ caseId: c.id, status: c.split === 'train' ? 'assigned' : c.displayNumber === 25 ? 'classification-pending' : 'holdout',
+    memberships: c.split === 'train' ? [{ entryId: 'entry-1', source: 'model-confirmed' }] : [], reason: '' }));
+  s.replayCases = []; s.suggestions = []; s.candidates = [];
+  const numbers = () => [...h.root.querySelectorAll('#cases-body .case > .case-head > .num')].map(el => Number(el.textContent.slice(1)));
+  const select = (id, value) => { const el = h.root.querySelector(id); el.value = value; el.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+  return { ...h, numbers, select };
+}
+
+test('pattern filter includes confirmed train/gate/test and legacy page labels; collection filters only narrow that membership', async t => {
+  const h = patternCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  h.select('#cases-group', 'entry-1'); assert.deepEqual(h.numbers(), [22, 23, 24, 1, 4, 10, 26]);
+  for (const [split, expected] of [['train', [22]], ['gate', [23, 1, 26]], ['test', [24, 4, 10]], ['all', [22, 23, 24, 1, 4, 10, 26]]]) {
+    h.select('#cases-split', split); assert.deepEqual(h.numbers(), expected);
+  }
+  await h.click('[data-cases-mode="list"]'); assert.deepEqual(h.numbers(), [22, 23, 24, 1, 4, 10, 26]);
+  assert.equal(h.root.querySelector('#c-25'), null, 'unconfirmed preclassification is not membership');
+  for (const n of [22, 23, 24, 1, 4, 10]) assert.equal(h.root.querySelector('#c-' + n + ' [data-manual-assign]'), null, 'locked page label cannot be reassigned');
+  assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
+test('pattern groups include holdouts once, leave only unowned holdouts in the residual group, but holdout dropdown lists all', async t => {
+  const h = patternCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const groups = [...h.root.querySelectorAll('#cases-body > .group')];
+  const pattern = groups.find(g => g.querySelector('h3').textContent.startsWith('模式'));
+  const residual = groups.find(g => g.querySelector('h3').textContent === '门槛/测试 · 不参与归纳');
+  const nums = group => [...group.querySelectorAll('.case-head > .num')].map(el => Number(el.textContent.slice(1)));
+  assert.deepEqual(nums(pattern), [22, 23, 24, 1, 4, 10, 26]); assert.deepEqual(nums(residual), [14, 25]);
+  const shown = h.numbers(); assert.equal(shown.length, h.saved().cases.length); assert.equal(new Set(shown).size, shown.length);
+  assert.match(pattern.querySelector('.group-note').textContent, /训练.*门槛.*测试.*只有训练.*归纳/);
+  for (const [n, split] of [[23, '门槛'], [24, '测试'], [1, '门槛'], [4, '测试'], [10, '测试']]) assert.match(h.root.querySelector('#c-' + n + ' .chips').textContent, new RegExp(split + '.*不参与归纳'));
+  h.select('#cases-group', 'holdout'); assert.deepEqual(h.numbers(), [23, 24, 1, 4, 10, 14, 25, 26]);
+  assert.equal(new Set(h.numbers()).size, h.numbers().length);
+  h.select('#cases-split', 'test'); assert.deepEqual(h.numbers(), [24, 4, 10, 14]);
+  assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
+});
+
+function appendWikiVersion(s, id) {
+  const previous = s.versions.at(-1), n = s.versions.length + 1;
+  s.versions.push({ ...clone(previous), id, entries: [...clone(previous.entries), { ...clone(approvedEntry), id: 'entry-extra-' + n, title: '新模式 ' + id, caseIds: [] }] }); s.revision++;
+}
+const chooseVersion = (h, value) => { const select = h.root.querySelector('#wiki-version'); select.value = value; select.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+
+test('knowledge follows newly read versions by default and updates the mode count without reloading the page', async t => {
+  const h = setup(t); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-3');
+  appendWikiVersion(h.saved(), 'wiki-4'); await h.panel.load();
+  assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-4'); assert.equal(h.root.querySelector('#cnt-wiki').textContent, '2 条模式');
+  assert.match(h.root.querySelector('#wiki-list').textContent, /新模式 wiki-4/);
+  appendWikiVersion(h.saved(), 'wiki-5'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-5');
+  assert.equal(h.posts().length, 0);
+});
+
+test('explicit old-version selection survives refresh; choosing latest resumes following, including after a pinned version disappears', async t => {
+  const h = setup(t); appendWikiVersion(h.saved(), 'wiki-4'); await h.panel.load(); chooseVersion(h, 'wiki-3');
+  assert.equal(h.root.querySelector('#cnt-wiki').textContent, '1 条模式');
+  appendWikiVersion(h.saved(), 'wiki-5'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-3');
+  chooseVersion(h, 'wiki-5'); appendWikiVersion(h.saved(), 'wiki-6'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-6');
+  chooseVersion(h, 'wiki-3'); h.saved().versions.shift(); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-6');
+  appendWikiVersion(h.saved(), 'wiki-7'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-7');
+  assert.equal(h.posts().length, 0);
+});
+
+test('data-version links pin historical versions and resume following when linking to the current latest, just like the picker', async t => {
+  const h = setup(t); appendWikiVersion(h.saved(), 'wiki-4'); await h.panel.load(); await h.click('[data-tab="targets"]');
+  await h.click('.src-link[data-version="wiki-3"]'); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-3');
+  appendWikiVersion(h.saved(), 'wiki-5'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-3');
+  h.saved().candidates[0].versionId = 'wiki-5'; await h.panel.load(); await h.click('[data-tab="targets"]'); await h.click('.src-link[data-version="wiki-5"]');
+  assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-5');
+  appendWikiVersion(h.saved(), 'wiki-6'); await h.panel.load(); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-6');
+  assert.equal(h.posts().length, 0);
+});
+
 test('page-labelled holdouts leave knowledge inbox and expose resolved names without any legacy assign actions', async t => {
   const h = setup(t), s = h.saved();
   s.cases[3].split = 'gate'; s.cases[3].preclassification = { kind: 'assign', entryId: 'entry-1', reason: 'Suggested' };
@@ -166,6 +295,8 @@ test('category draft rejection re-GETs before regenerating, and approval posts o
   assert.equal(h.posts()[2].body.entryId, 'draft-next'); assert.equal(h.posts()[2].body.expectedRevision, 5); assert.equal(h.posts()[2].body.patch.guideline, '先检查修改内容。');
   assert.equal(h.posts()[2].body.patch.title, undefined); assert.equal(h.posts()[2].body.patch.scope, undefined); assert.equal(h.confirms.length, 0);
   for (const [i, call] of h.calls.entries()) if (call.method === 'POST') assert.equal(h.calls[i + 1].url, '/api/wikiskill');
+  await h.click('[data-tab="wiki"]'); assert.equal(h.root.querySelector('#wiki-version').value, 'wiki-5');
+  assert.ok(h.root.querySelector('#wiki-list [data-entry="draft-next"]'), 'write followed by full GET must advance the knowledge view');
 });
 
 test('failed category rejection never regenerates or retries and leaves all writes disabled until explicit refresh', async t => {
