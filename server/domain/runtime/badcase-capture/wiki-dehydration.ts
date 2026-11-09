@@ -12,12 +12,11 @@ const visible = (message: any): string => typeof message?.content === 'string' ?
   : (Array.isArray(message?.content) ? message.content : []).filter((b: any) => b.type === 'text').map((b: any) => String(b.text || '')).join('\n');
 
 // Never accept a caller's row ordinal / n / displayNumber as case identity.
-export function dehydrationAvailability(item: any, bundle: any, includeScene = false) {
+export function dehydrationAvailability(item: any, bundle: any) {
   const caseNumber = wikiGoalCaseNumber(item?.id);
   const no = (reason: string) => ({ eligible: false, reason, caseNumber });
   if (item?.source?.agentId !== 'role-family-gpt') return no('not_gpt');
   if ([4, 10, 14].includes(caseNumber!)) return no('historical_source_only');
-  if (item?.sealedCheckpointId && !includeScene) return no('trace_default');
   if (!bundle) return no('trace_missing');
   // Include pre-fix frozen packets which promoted the explicit archive-failure
   // placeholder to a nonempty systemPrompt. Reject them without rewriting hashes.
@@ -36,7 +35,7 @@ function assertBound(item: any, bundle: any) {
   if (!bundle || !sameTraceSource(item?.source, bundle.source)) throw fail('wiki_trace_association_mismatch');
   if (bundle.kind !== 'wikiskill-trace-bundle' || bundle.schemaVersion !== 1
     || !/^[a-f0-9]{64}$/.test(item?.traceBundle?.hash || '') || hash(bundle) !== item.traceBundle.hash) throw fail('wiki_trace_invalid');
-  if (!dehydrationAvailability(item, bundle, true).eligible) throw fail('wiki_dehydration_ineligible');
+  if (!dehydrationAvailability(item, bundle).eligible) throw fail('wiki_dehydration_ineligible');
 }
 // Select only frozen turn cause, never the current Goal, candidates or results.
 // Fresh CAFF prompts carry history; resumed prompts carry only the new-message delta.

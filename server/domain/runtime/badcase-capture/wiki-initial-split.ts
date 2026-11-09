@@ -43,7 +43,10 @@ export function planWikiInitialSplit(state: any, accounting: any[]) {
     .sort((a, b) => a.caseNumber - b.caseNumber || a.caseId.localeCompare(b.caseId));
   const rows = (state.cases as any[]).map((c: any) => {
     const label: any = labels.get(c.id);
-    const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash)?.decision;
+    // A scene's new run cut is report-only: do not bind it (or its run
+    // evidence) into grouping consent. Historical trace decisions stay exact.
+    const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
+      && (!c.sealedCheckpointId || r.decision?.level !== 'run'))?.decision;
     const originals = accounting.filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === decision?.hash
       && r.variant?.kind === 'original' && !r.excludedReason).sort((a, b) => a.id.localeCompare(b.id));
     const valid = originals.some(r => r.baselineStatus === 'valid_output' && r.caseEligibleForGateAndScreen === true);
