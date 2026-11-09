@@ -18,8 +18,8 @@ function validateWikiScoring(value, { runChecks = false } = {}) {
   wikiRubricText(value.task, 32768); wikiRubricText(value.expected, 8192);
   return structuredClone(value);
 }
-function wikiScoringSummary(value) {
-  value = validateWikiScoring(value);
+function wikiScoringSummary(value, options) {
+  value = validateWikiScoring(value, options);
   return { kind: 'wiki-score-v2', configHash: wikiValueHash(value), rubricId: value.rubric.id, rubricVersion: value.rubric.version,
     rubricHash: value.rubric.hash, binding: value.binding, inputHash: wikiValueHash({ task: value.task, expected: value.expected }) };
 }

@@ -70,6 +70,27 @@ test('new run plan also binds per-case judges without changing the experiment de
   const p = h.plan(); assert.equal(p.kind, 'wiki-experiment-plan-v3'); assert.deepEqual(api().validateWikiExperimentPlan(p), p);
   assert.ok(p.cases.every(c => c.judge.rubricHash === h.catalog.find(x => x.id === c.caseId).rubric.hash));
 });
+for (const reply of [false, true]) test(`v3 independent tool check plan (${reply ? 'dual' : 'tool only'}) binds rubric hash and only binds a judge for reply assertions`, t => {
+  const h = runFixture(t), { createWikiRubric } = require(base + 'wiki-rubric');
+  h.definition.kind = 'wiki-experiment-v2';
+  for (const c of h.definition.cases) c.judge = structuredClone(h.definition.judge); delete h.definition.judge;
+  const toolCheck = { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] };
+  h.single.rubric = { ...createWikiRubric({ ...h.single.rubric, actual: h.single.actual, expected: h.single.expected, questions: reply ? h.single.rubric.questions : [], scoringModel: reply ? h.single.rubric.scoringModel : null, toolCheck }), status: 'frozen', confirmedAt: h.single.rubric.confirmedAt, confirmationRecord: 'Synthetic tool check approval' };
+  if (!reply) delete h.definition.cases.find(c => c.caseId === 'single').judge;
+  const plan = h.plan(), selected = plan.cases.find(c => c.caseId === 'single');
+  assert.equal(plan.kind, 'wiki-experiment-plan-v3'); assert.equal(selected.rubricHash, h.single.rubric.hash);
+  assert.equal(selected.judge === null, !reply); assert.deepEqual(api().validateWikiExperimentPlan(plan), plan);
+  api().assertWikiExperimentPlan(plan, h.definition, h.catalog);
+  assert.deepEqual(api().decideWikiExperimentGate(plan, mixedResults()), api().decideWikiExperimentGate(runFixture(t).plan(), mixedResults()));
+  const changed = structuredClone(h.single.rubric.toolCheck); changed.rules[0].max = 999;
+  h.single.rubric = { ...createWikiRubric({ ...h.single.rubric, actual: h.single.actual, expected: h.single.expected, toolCheck: changed }), status: 'frozen', confirmedAt: h.single.rubric.confirmedAt, confirmationRecord: 'New approval' };
+  assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), { code: 'wiki_experiment_changed' });
+});
+test('trace-only plans reject tool checks instead of silently ignoring them', t => {
+  const h = fixture(t), c = h.catalog[0];
+  c.rubric = { ...require(base + 'wiki-rubric').createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic approval' };
+  assert.throws(h.plan, { code: 'wiki_tool_check_run_only' });
+});
 test('run bindings reject malformed/extra fields, scene mismatch and all bound-input drift', t => {
   for (const key of ['traceBundleHash', 'dehydrationHash', 'requestHash']) {
     const h = runFixture(t), plan = h.plan(); h.single.execution[key] = hash('changed');

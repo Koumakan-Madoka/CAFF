@@ -22,7 +22,7 @@ function prepareProductionRun({config,store,source,item,record,candidate,scoring
  const execution={level:'run',traceBundleHash:source.traceBundle.hash,dehydrationHash:decision.hash,requestHash:originalRequestHash};
  const scoring=scoringPlan.forRun(source,item,pageDehydrationCause(bundle).text);
  const summary={kind:'wikiskill-run-comparison-v1',execution,originalRequestHash,candidateRequestHash,
-  commonInputHash:wikiValueHash({originalRequestHash,candidateRequestHash}),scoring:wikiScoringSummary(scoring)};
+  commonInputHash:wikiValueHash({originalRequestHash,candidateRequestHash}),scoring:wikiScoringSummary(scoring,{runChecks:true})};
  scoringPlan.recordRun(source,execution,scoring);
  return {...record,supported:true,execution,comparison:summary,comparisonConfig:{kind:summary.kind,
   globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree,caseId:source.id,toolset:structuredClone(toolset),candidate:replacement,
