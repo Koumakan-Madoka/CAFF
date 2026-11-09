@@ -65,6 +65,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     evaluation_wsl_host_required: 503, evaluation_wsl_backend_invalid: 503, wiki_execution_record_invalid: 503,
     wiki_rubric_invalid: 422, wiki_rubric_assertion_required: 422, wiki_rubric_model_invalid: 422, wiki_rubric_files_unavailable: 422, wiki_rubric_run_evidence_invalid: 422,
     wiki_rubric_not_found: 404, wiki_rubric_frozen: 409, wiki_rubric_hash_changed: 409, wiki_rubric_source_changed: 409,
+    wiki_tool_check_invalid: 422, wiki_rubric_checks_required: 422,
     wiki_judge_not_eligible: 409, wiki_judge_catalog_invalid: 503,
     wiki_rubric_drafting_unavailable: 503, wiki_rubric_model_output_invalid: 422, wiki_rubric_request_failed: 503,
     evaluation_batch_task_unavailable: 409,
@@ -95,7 +96,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         review: ['confirmed', 'versionId', 'entryId', 'expectedRevision', 'patch', 'decision'],
         'comparison-review': ['confirmed', 'comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation'],
         experience: ['confirmed', 'experienceId', 'expectedRevision', 'decision', 'patch'],
-        rubric: ['confirmed', 'caseId', 'questions', 'scoringModel', 'expectedRevision'],
+        rubric: ['confirmed', 'caseId', 'questions', 'scoringModel', 'toolCheck', 'expectedRevision'],
         'draft-rubric': ['confirmed', 'caseId', 'expectedRevision'],
         'confirm-rubric': ['confirmed', 'rubricId', 'hash', 'expectedRevision'],
         'dehydration-confirm': ['confirmed', 'caseId', 'traceHash', 'recommendationHash', 'kind', 'cutStep', 'expectedRevision'],
@@ -124,14 +125,15 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         if (match[1] === 'confirm-rubric') {
           const rubric = state.rubrics?.find((r: any) => r.id === input.rubricId);
           if (!rubric) throw Object.assign(Error(), { code: 'wiki_rubric_not_found' });
-          assertWikiEligibleModel(rubric.scoringModel, eligibleJudges);
+          if (rubric.questions.length) assertWikiEligibleModel(rubric.scoringModel, eligibleJudges);
           store.confirmRubric({ rubricId: input.rubricId, hash: input.hash,
-            confirmationRecord: 'WikiSkill 页面明确确认断言全文及所选打分模型（同 OS 用户管理边界）。' }, input.expectedRevision);
+            confirmationRecord: 'WikiSkill 页面明确确认回复检查、工具调用检查全文及所选打分模型（同 OS 用户管理边界）。' }, input.expectedRevision);
         } else {
           if (!state.cases.some((c: any) => c.id === input.caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
           if (match[1] === 'rubric') {
             if (input.scoringModel != null) assertWikiEligibleModel(input.scoringModel, eligibleJudges);
-            store.saveRubricDraft({ caseId: input.caseId, questions: input.questions, scoringModel: input.scoringModel ?? null, model: WIKI_RUBRIC_MODEL }, input.expectedRevision);
+            store.saveRubricDraft({ caseId: input.caseId, questions: input.questions, scoringModel: input.scoringModel ?? null, model: WIKI_RUBRIC_MODEL,
+              ...(Object.hasOwn(input, 'toolCheck') ? { toolCheck: input.toolCheck } : {}) }, input.expectedRevision);
           } else {
             if (typeof options.runRubricDraft !== 'function') throw Object.assign(Error(), { code: 'wiki_rubric_drafting_unavailable' });
             await options.runRubricDraft({ store, caseId: input.caseId, expectedRevision: input.expectedRevision, scope });

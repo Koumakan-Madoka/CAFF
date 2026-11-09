@@ -82,7 +82,7 @@
     const state = { view: 'wiki', entryId: '', wikiQ: '', wikiStatus: 'all', casesQ: '', casesGroup: 'all', casesSplit: 'all', casesReplay: false, casesMode: 'group', focusCase: null, targetId: '', comparisonId: '' };
     const VIEWS = ['badcases', 'wiki', 'cases', 'targets', 'impact'];
     let caseById = new Map(), caseByN = new Map(), stateByCase = new Map(), entryById = new Map(), replayBySource = new Map(), targetById = new Map();
-    const rubricEdits = new Map();
+    const rubricEdits = new Map(), rubricConsents = new Map();
     let wikiCategoryConsent = null;
     const currentVersion = () => D?.versions.find(v => v.id === versionId) || D?.versions.at(-1) || null;
     const latestVersion = () => D?.versions.at(-1) || null;
@@ -297,21 +297,58 @@
     const rubricsFor = c => (D.rubrics || []).filter(r => r.caseId === c.id).slice().sort((a, b) => a.version - b.version);
     const eligibleJudges = () => D.eligibleJudges || [];
     const latestRubric = c => rubricsFor(c).at(-1);
-    const sameRubricEdit = (edit, rubric) => !!rubric && edit.questions.length === rubric.questions.length && edit.questions.every((q, i) => ['id', 'question', 'evidence'].every(key => q[key] === rubric.questions[i][key])) && (edit.scoringModel?.backend || null) === (rubric.scoringModel?.backend || null) && (edit.scoringModel?.model || null) === (rubric.scoringModel?.model || null);
+    const toolSignature = t => JSON.stringify(t ? [t.method, t.target.kind, t.target.name, t.mode, t.rules.map(r => [r.parameter, r.kind, r.kind === 'max-chars' ? r.max : r.values])] : null);
+    const sameRubricEdit = (edit, rubric) => !!rubric && edit.questions.length === rubric.questions.length && edit.questions.every((q, i) => ['id', 'question', 'evidence'].every(key => q[key] === rubric.questions[i][key])) && (edit.scoringModel?.backend || null) === (rubric.scoringModel?.backend || null) && (edit.scoringModel?.model || null) === (rubric.scoringModel?.model || null) && toolSignature(edit.toolCheck) === toolSignature(rubric.toolCheck);
     function rubricEdit(c) {
       const r = latestRubric(c);
-      return rubricEdits.get(c.id) || { baseVersion: r?.version || 0, questions: (r?.questions || [{ id: 'q1', question: '', evidence: 'reply' }]).map(q => ({ ...q })), scoringModel: r?.scoringModel ? { ...r.scoringModel } : null };
+      return rubricEdits.get(c.id) || { baseVersion: r?.version || 0, questions: (r?.questions || [{ id: 'q1', question: '', evidence: 'reply' }]).map(q => ({ ...q })), scoringModel: r?.scoringModel ? { ...r.scoringModel } : null, toolCheck: r?.toolCheck ? JSON.parse(JSON.stringify(r.toolCheck)) : null };
     }
     function ensureRubricEdit(c) { if (!rubricEdits.has(c.id)) rubricEdits.set(c.id, rubricEdit(c)); return rubricEdits.get(c.id); }
     const modelEligible = model => !!model && eligibleJudges().some(j => j.backend === model.backend && j.model === model.model);
-    function rubricVersion(r) {
-      return `<div class="rubric-version"><p><b>v${esc(r.version)} · ${r.status === 'frozen' ? '已冻结' : '未确认草稿'}</b> · ${esc(r.scoringModel?.model || '尚未选打分模型')}</p><ol>${r.questions.map(q => `<li>${esc(q.question)} <span class="hint">依据：${esc({ reply: '公开回复', trace: '轨迹', files: '文件' }[q.evidence])}</span></li>`).join('')}</ol><p class="mono">hash ${esc(r.hash)}</p>${r.status === 'frozen' ? `<p class="hint">${esc(fmt(r.confirmedAt))} · ${esc(r.confirmationRecord)}</p>` : ''}</div>`;
+    const defaultToolRule = () => ({ parameter: 'reason', kind: 'max-chars', max: 1000 });
+    const defaultToolCheck = () => ({ method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [defaultToolRule()] });
+    function toolError(t) {
+      if (!t) return '';
+      const name = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+      if (t.method !== 'code' || !['caff-chat', 'native'].includes(t.target.kind) || !name.test(t.target.name) || !['on-call', 'forbid'].includes(t.mode)) return '请先修正目标工具名称或检查模式。';
+      if (!t.rules.length || t.rules.length > 32) return '请先修正规则数量（1–32条）。';
+      for (const r of t.rules) {
+        if (!name.test(r.parameter)) return '请先修正规则的参数名称（不带 --）。';
+        if (r.kind === 'max-chars') { if (!Number.isSafeInteger(r.max) || r.max < 0 || r.max > 1048576) return '请先修正字符数上限（0–1048576的整数）。'; }
+        else if (!['allowed-values', 'forbidden-values'].includes(r.kind) || !r.values?.length || r.values.length > 128 || new Set(r.values).size !== r.values.length || r.values.some(v => v !== v.trim() || v.includes('\0') || new TextEncoder().encode(v).length > 4096)) return '请先修正取值（最多128行，不重复、不带首尾空白）。';
+      }
+      return new TextEncoder().encode(JSON.stringify(t)).length > 32768 ? '请先修正工具检查：内容超过32KiB。' : '';
     }
+    function toolPreview(t) {
+      if (!t) return '未配置工具调用检查。';
+      const error = toolError(t); if (error) return error;
+      const rules = t.rules.map(r => `${r.parameter} ${r.kind === 'max-chars' ? `去首尾空白后不超过 ${r.max} 字符（UTF-16）` : `${r.kind === 'allowed-values' ? '只能取' : '不得取'} ${r.values.map(v => JSON.stringify(v)).join('、')}`}`).join('；');
+      return `${t.mode === 'on-call' ? '调用时参数要对' : '不该这样调用'}：${t.target.name}，${rules}。${t.mode === 'on-call' ? '未调用目标工具时此项没判到；多次调用必须每次合规。' : '有效输出中调用目标工具且违规则失败，否则通过。'}目标参数无法解析时无效；只解析，不执行工具。`;
+    }
+    function reportScope(c, questions) {
+      if (!c.sealedCheckpointId) return '';
+      const skipped = questions.filter(q => q.evidence !== 'reply');
+      return `<div class="hint" data-report-skipped><p>工具调用检查只用于切点上的 report，不用于 trace 评测；用例仍为 trace 级，组别不变。</p>${!questions.some(q => q.evidence === 'reply') ? '<p>本版本没有回复依据的问题。</p>' : ''}${skipped.length ? `<p>report 不判以下问题（没判到，不计通过或失败）：</p><ul>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)}（${esc(q.evidence)}）</li>`).join('')}</ul>` : ''}</div>`;
+    }
+    function rubricVersion(r) {
+      return `<div class="rubric-version"><p><b>v${esc(r.version)} · ${r.status === 'frozen' ? '已冻结' : '未确认草稿'}</b> · ${esc(r.questions.length ? r.scoringModel?.model || '尚未选打分模型' : '无需 AI 裁判')}</p><div class="rubric-checks"><section><h4>回复检查 / AI 断言</h4>${r.questions.length ? `<ol>${r.questions.map(q => `<li>${esc(q.question)} <span class="hint">依据：${esc({ reply: '公开回复', trace: '轨迹', files: '文件' }[q.evidence])}</span></li>`).join('')}</ol>` : '<p class="hint">本版本没有回复依据的问题，也没有其他 AI 断言。</p>'}</section><section><h4>工具调用检查 · 代码判断</h4><p>${esc(toolPreview(r.toolCheck))}</p></section></div><p class="mono">hash ${esc(r.hash)}</p>${r.status === 'frozen' ? `<p class="hint">${esc(fmt(r.confirmedAt))} · ${esc(r.confirmationRecord)}</p>` : ''}</div>`;
+    }
+    function toolEditor(edit) {
+      const t = edit.toolCheck;
+      return `<section data-tool-check><h4>工具调用检查 · 代码判断（可选）</h4><label class="check"><input type="checkbox" data-tool-enabled ${t ? 'checked' : ''}> 配置工具调用检查</label>${t ? `<div class="tool-fields"><label>目标类型<select data-tool-kind><option value="caff-chat" ${t.target.kind === 'caff-chat' ? 'selected' : ''}>CAFF 聊天工具子命令</option><option value="native" ${t.target.kind === 'native' ? 'selected' : ''}>原生工具</option></select></label><label>目标工具名<input data-tool-name value="${esc(t.target.name)}" maxlength="128"></label><label>检查模式<select data-tool-mode><option value="on-call" ${t.mode === 'on-call' ? 'selected' : ''}>调用时参数要对</option><option value="forbid" ${t.mode === 'forbid' ? 'selected' : ''}>不该这样调用</option></select></label>${t.rules.map((r, i) => `<div class="tool-rule" data-tool-rule="${i}"><label>参数名（不带 --）<input data-tool-parameter value="${esc(r.parameter)}" maxlength="128"></label><label>参数规则<select data-tool-rule-kind>${[['max-chars', '字符数上限'], ['allowed-values', '允许的取值'], ['forbidden-values', '禁止的取值']].map(([v, label]) => `<option value="${v}" ${r.kind === v ? 'selected' : ''}>${label}</option>`).join('')}</select></label>${r.kind === 'max-chars' ? `<label>字符数上限<input type="number" min="0" max="1048576" step="1" data-tool-max value="${Number.isFinite(r.max) ? r.max : ''}"></label>` : `<label>取值（每行一个，空行表示空字符串）<textarea rows="3" data-tool-values>${esc(r.values.join('\n'))}</textarea></label>`}<button type="button" class="btn small ghost" data-remove-tool-rule="${i}">删除规则</button></div>`).join('')}<button type="button" class="btn small" data-add-tool-rule>添加参数规则</button></div>` : ''}<p class="muted-note" data-tool-preview role="status" aria-live="polite">${esc(toolPreview(t))}</p></section>`;
+    }
+    const rubricConsentKey = c => JSON.stringify([D.revision, latestRubric(c)?.hash, rubricEdit(c), eligibleJudges()]);
+    function rubricConsent(c) {
+      const consent = rubricConsents.get(c.id); if (!consent || consent.key !== rubricConsentKey(c)) return '';
+      const r = latestRubric(c);
+      return `<div class="muted-note"><b>${consent.action === 'freeze' ? `确认共同冻结本题 v${r.version} 的回复检查、工具调用检查及打分模型？` : consent.action === 'draft' ? '确认调用 DeepSeek 起草评分断言？将新增草稿，不自动选择模型、冻结或评测；本地未保存编辑仍保留。' : '确认放弃本地未保存的两种检查和模型编辑？已保存版本不删除。'}</b>${consent.action === 'freeze' ? rubricVersion(r) + reportScope(c, r.questions) : ''}<p>修改只能另存新版本，旧版本和结果不变，不启动回放。</p><div class="row-actions"><button type="button" class="btn small primary" data-rubric-lock>确认${consent.action === 'freeze' ? '冻结' : consent.action === 'draft' ? '起草' : '放弃编辑'}</button><button type="button" class="btn small" data-rubric-cancel>取消</button></div></div>`;
+    }
+    function clearRubricConsent(c) { rubricConsents.delete(c.id); root.querySelector(`[data-rubric-panel="${c.id}"] [data-rubric-consent]`)?.replaceChildren(); }
     function rubricPanel(c) {
       const all = rubricsFor(c), r = all.at(-1), editing = r?.status !== 'frozen' || rubricEdits.has(c.id), edit = rubricEdit(c), models = eligibleJudges();
       const evidenceOptions = [['reply', '公开回复'], ['trace', '轨迹']];
       if (replayBySource.get(c.id)?.rules?.kind === 'file-literals-v1') evidenceOptions.push(['files', '文件']);
-      return `<details class="rubric-panel" data-rubric-panel="${esc(c.id)}" ${r?.status === 'draft' || rubricEdits.has(c.id) ? 'open' : ''}><summary>评分断言 · ${r ? `v${esc(r.version)} ${r.status === 'frozen' ? '已冻结' : '草稿待确认'}` : '尚未起草'}</summary><p class="hint">每题1–4条陈述句，逐条判成立／不成立；硬断言另由代码检查。修改另存新版本，旧版本和结果不变，不启动评测。</p>${!editing ? `${rubricVersion(r)}<button type="button" class="btn small" data-edit-rubric>基于此版编辑</button>` : `<div class="rubric-editor">${rubricEdits.has(c.id) ? '<button type="button" class="btn small ghost" data-discard-rubric-edit>放弃未保存编辑，查看最新保存版本</button>' : ''}${edit.questions.map(q => `<div class="assertion-field" data-criterion="${esc(q.id)}"><label>断言 ${esc(q.id)}<textarea rows="3" data-rubric-question>${esc(q.question)}</textarea></label><div class="row-actions"><label>判断依据 <select data-rubric-evidence>${evidenceOptions.map(([key, label]) => `<option value="${key}" ${q.evidence === key ? 'selected' : ''}>${label}</option>`).join('')}</select></label><button type="button" class="btn small ghost" data-remove-assertion="${esc(q.id)}" ${edit.questions.length <= 1 ? 'disabled' : ''}>删除此条</button></div></div>`).join('')}<button type="button" class="btn small" data-add-assertion ${edit.questions.length >= 4 ? 'disabled' : ''}>添加断言</button><label class="field">本题打分模型（仅校准达标）<select data-rubric-model><option value="">请选择达标模型</option>${models.map(j => `<option value="${esc(j.backend)}" ${edit.scoringModel?.backend === j.backend && edit.scoringModel?.model === j.model ? 'selected' : ''}>${esc(j.model)}</option>`).join('')}</select></label>${!models.length ? '<p class="hint">尚无校准达标模型；仍可编辑草稿，不能冻结。由操作方配置校准冻结目录，不能在网页自行宣称达标。</p>' : '<p class="hint">所选裁判的校准范围以冻结记录为准，不代表每个任务领域均单独校准。</p>'}<div class="row-actions"><button type="button" class="btn small" data-save-rubric>保存为新草稿版本</button><button type="button" class="btn small primary" data-freeze-rubric aria-describedby="rubric-freeze-reason-${c.n}">确认并冻结已保存版本</button><span class="hint" id="rubric-freeze-reason-${c.n}" data-freeze-rubric-reason role="status" aria-live="polite" hidden></span></div><p class="hint">先保存修改和模型，再确认同一份全文／hash；未保存的修改不能冻结。</p>${r ? `<p class="mono">已保存 v${esc(r.version)} hash ${esc(r.hash)}</p>` : ''}</div>`}<div class="row-actions"><button type="button" class="btn small" data-draft-rubric>AI 一键起草</button></div><p class="hint">起草会调用 DeepSeek，只生成待确认草稿；输入为实际问题、期望表现及可读取的原触发消息，缺原消息则明确缺失，不以来源回复替代。</p>${all.length ? `<details class="rubric-history"><summary>已保存版本（${all.length}）</summary>${all.slice().reverse().map(rubricVersion).join('')}</details>` : ''}</details>`;
+      return `<details class="rubric-panel" data-rubric-panel="${esc(c.id)}" ${r?.status === 'draft' || rubricEdits.has(c.id) ? 'open' : ''}><summary>评分断言 · ${r ? `v${esc(r.version)} ${r.status === 'frozen' ? '已冻结' : '草稿待确认'}` : '尚未起草'}</summary><p class="hint">两种检查各自可选，也可同时配置；都不配可存草稿但不能判分。AI 断言最多4条陈述句，逐条判成立／不成立。两种检查一起进入 hash 并冻结，修改另存新版本，旧版本和结果不变，不启动评测。</p>${reportScope(c, editing ? edit.questions : r.questions)}${!editing ? `${rubricVersion(r)}<button type="button" class="btn small" data-edit-rubric>基于此版编辑</button>` : `<div class="rubric-editor"><button type="button" class="btn small ghost" data-discard-rubric-edit ${rubricEdits.has(c.id) ? '' : 'hidden'}>放弃未保存编辑，查看最新保存版本</button><div class="rubric-checks"><section data-reply-check><h4>回复检查 / AI 断言（可选）</h4><p class="hint">run 级只判公开回复；有现场的 trace 评测仍按每条断言的依据判分，report 只看回复依据。</p>${edit.questions.map(q => `<div class="assertion-field" data-criterion="${esc(q.id)}"><label>断言 ${esc(q.id)}<textarea rows="3" data-rubric-question>${esc(q.question)}</textarea></label><div class="row-actions"><label>判断依据 <select data-rubric-evidence>${evidenceOptions.map(([key, label]) => `<option value="${key}" ${q.evidence === key ? 'selected' : ''}>${label}</option>`).join('')}</select></label><button type="button" class="btn small ghost" data-remove-assertion="${esc(q.id)}">删除此条</button></div></div>`).join('') || '<p class="hint">未配置 AI 断言；只配工具调用检查时无需裁判。</p>'}<button type="button" class="btn small" data-add-assertion ${edit.questions.length >= 4 ? 'disabled' : ''}>添加断言</button><label class="field">本题打分模型（仅校准达标）<select data-rubric-model><option value="">请选择达标模型</option>${models.map(j => `<option value="${esc(j.backend)}" ${edit.scoringModel?.backend === j.backend && edit.scoringModel?.model === j.model ? 'selected' : ''}>${esc(j.model)}</option>`).join('')}</select></label>${!models.length ? '<p class="hint">尚无校准达标模型；含 AI 断言的版本只能编辑草稿，不能冻结。只配工具检查不受此限。由操作方配置校准冻结目录。</p>' : '<p class="hint">所选裁判的校准范围以冻结记录为准，不代表每个任务领域均单独校准。</p>'}</section>${toolEditor(edit)}</div><div class="row-actions"><button type="button" class="btn small" data-save-rubric>保存为新草稿版本</button><button type="button" class="btn small primary" data-freeze-rubric aria-describedby="rubric-freeze-reason-${c.n}">确认并冻结已保存版本</button><span class="hint" id="rubric-freeze-reason-${c.n}" data-freeze-rubric-reason role="status" aria-live="polite" hidden></span></div><p class="hint">先保存两种检查和模型，再确认同一份全文／hash；未保存的修改不能冻结。</p>${r ? `<p class="mono">已保存 v${esc(r.version)} hash ${esc(r.hash)}</p>` : ''}</div>`}<div class="row-actions"><button type="button" class="btn small" data-draft-rubric>AI 一键起草</button></div><p class="hint">起草会调用 DeepSeek，只生成待确认草稿；输入为实际问题、期望表现及可读取的原触发消息，缺原消息则明确缺失，不以来源回复替代。不会自动继承工具检查，请核对新版本。</p><div data-rubric-consent>${rubricConsent(c)}</div>${all.length ? `<details class="rubric-history"><summary>已保存版本（${all.length}）</summary>${all.slice().reverse().map(rubricVersion).join('')}</details>` : ''}</details>`;
     }
     function caseCard(c, ts) {
       const replay = replayBySource.get(c.id), s = caseState(c), suggestion = suggestionFor(c), owner = s.status === 'assigned' ? s.memberships.map(m => entryChip(m.entryId)).join('') : s.status === 'holdout' ? `<span class="chip holdout">${SPLIT[c.split]} · 不参与归纳</span>` : `${STATE_CHIP[s.status] || ''}${s.status === 'classification-confirmed' ? (s.memberships.length ? s.memberships.map(m => entryChip(m.entryId)).join('') : `<span class="chip">${pagePattern(c)?.pendingPatternId ? `待归纳新模式「${esc(pagePattern(c).pendingPatternName)}」` : '不归入任何模式'}</span>`) : ''}`;
@@ -502,6 +539,7 @@
     /* API and controls */
     function accept(data) {
       if (!data || data.scope !== 'global' || data.projectId !== undefined || data.schemaVersion !== 1 || !Number.isSafeInteger(data.revision) || !Array.isArray(data.cases) || !Array.isArray(data.versions)) throw Error('invalid_wiki_response');
+      rubricConsents.clear();
       D = data; writable = true;
       for (const [caseId, edit] of rubricEdits) {
         const c = D.cases.find(c => c.id === caseId), r = c && latestRubric(c);
@@ -522,29 +560,37 @@
         // A refresh clears D/maps before fetching, but old editor DOM can remain.
         // Lock that stale panel without reading rubric state (also on GET failure).
         if (!D || !c) {
-          panel.querySelectorAll('textarea,select,button').forEach(el => { el.disabled = true; });
+          panel.querySelectorAll('input,textarea,select,button').forEach(el => { el.disabled = true; });
           const reason = panel.querySelector('[data-freeze-rubric-reason]');
           if (reason) { reason.textContent = pending ? '正在读取，请稍候。' : '当前不可写；请刷新核对后再操作。'; reason.hidden = false; }
           return;
         }
         const r = latestRubric(c), edit = rubricEdit(c), locked = pending || !writable;
-        panel.querySelectorAll('textarea,select,[data-edit-rubric],[data-save-rubric],[data-draft-rubric],[data-discard-rubric-edit]').forEach(el => { el.disabled = locked; });
+        panel.querySelectorAll('input,textarea,select,button').forEach(el => { el.disabled = locked; });
+        const discard = panel.querySelector('[data-discard-rubric-edit]'); if (discard) discard.hidden = !rubricEdits.has(c.id);
         const add = panel.querySelector('[data-add-assertion]'); if (add) add.disabled = locked || edit.questions.length >= 4;
-        panel.querySelectorAll('[data-remove-assertion]').forEach(el => { el.disabled = locked || edit.questions.length <= 1; });
-        const freeze = panel.querySelector('[data-freeze-rubric]'); if (freeze) freeze.disabled = locked || r?.status !== 'draft' || !sameRubricEdit(edit, r) || !modelEligible(r?.scoringModel);
+        const addRule = panel.querySelector('[data-add-tool-rule]'); if (addRule) addRule.disabled = locked || edit.toolCheck.rules.length >= 32;
+        const freeze = panel.querySelector('[data-freeze-rubric]'); if (freeze) freeze.disabled = locked || !!rubricFreezeReason(c);
         const reason = panel.querySelector('[data-freeze-rubric-reason]');
         if (reason) {
           reason.textContent = pending ? '正在保存或提交，请稍候。' : !writable ? '当前不可写；请刷新核对后再操作。'
-            : !r ? '尚未保存草稿；请先保存断言和打分模型。' : r.status !== 'draft' ? '最新保存版本不是草稿；请另存新草稿版本。'
-            : !sameRubricEdit(edit, r) ? '有未保存的修改（含打分模型）；请先保存为新草稿版本。'
-            : !r.scoringModel ? '已保存草稿未选择打分模型；请选择达标模型并保存。'
-            : !modelEligible(r.scoringModel) ? '已保存的打分模型不在当前达标名单；请另选达标模型并保存。' : '';
+            : rubricFreezeReason(c);
           reason.hidden = !reason.textContent;
         }
       });
       $('#wsk-refresh').disabled = pending;
     }
+    function rubricFreezeReason(c) {
+      const r = latestRubric(c), edit = rubricEdit(c);
+      return !r ? '尚未保存草稿；请先保存检查和打分模型。' : r.status !== 'draft' ? '最新保存版本不是草稿；请另存新草稿版本。'
+        : !sameRubricEdit(edit, r) ? '有未保存的修改（含打分模型和工具检查）；请先保存为新草稿版本。'
+        : !r.questions.length && !r.toolCheck ? '没有配置任何检查，不能冻结或判分；请先配置并保存。'
+        : toolError(r.toolCheck) || (r.questions.length ? !r.scoringModel ? '已保存草稿未选择打分模型；请选择达标模型并保存。'
+          : !modelEligible(r.scoringModel) ? '已保存的打分模型不在当前达标名单；请另选达标模型并保存。' : '' : '');
+    }
+    function clearAllRubricConsents() { rubricConsents.clear(); $$('[data-rubric-consent]').forEach(el => el.replaceChildren()); }
     async function load() {
+      clearAllRubricConsents();
       const seq = ++generation; D = null; writable = false; pending = true; derive(); render(); controls();
       try { const data = await fetchJson('/api/wikiskill'); if (seq !== generation) return; accept(data); toast('已读取真实数据；页面刷新不会调用模型。'); }
       catch { if (seq === generation) toast('读取失败；未修改 Wiki。'); }
@@ -552,6 +598,7 @@
     }
     async function mutate(url, body, success) {
       if (pending || !writable) return;
+      clearAllRubricConsents();
       const seq = generation, expectedRevision = D.revision; pending = true; controls();
       try {
         await fetchJson(url, { method: 'POST', body: { confirmed: true, expectedRevision, ...body } }); if (seq !== generation) return;
@@ -582,30 +629,44 @@
       catch { toast('复制失败；请展开完整文本手动复制。'); }
     }
     root.addEventListener('click', event => {
-      const el = event.target.closest('[data-discard-rubric-edit],[data-edit-rubric],[data-save-rubric],[data-freeze-rubric],[data-draft-rubric],[data-add-assertion],[data-remove-assertion],[data-copy-candidate],[data-copy-baseline],[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-wiki-category-lock],[data-wiki-category-cancel],[data-confirm-candidate],[data-generate-candidate],[data-review-experience],[data-revise-experience]');
+      const el = event.target.closest('[data-rubric-lock],[data-rubric-cancel],[data-add-tool-rule],[data-remove-tool-rule],[data-discard-rubric-edit],[data-edit-rubric],[data-save-rubric],[data-freeze-rubric],[data-draft-rubric],[data-add-assertion],[data-remove-assertion],[data-copy-candidate],[data-copy-baseline],[data-tab],[data-go],[data-entry],[data-case],[data-group],[data-target],[data-q],[data-wiki-status],[data-cases-mode],[data-comparison],[data-induct],[data-confirm-suggestion],[data-reject-suggestion],[data-manual-assign],[data-manual-remove],[data-review],[data-wiki-category-lock],[data-wiki-category-cancel],[data-confirm-candidate],[data-generate-candidate],[data-review-experience],[data-revise-experience]');
       if (!el || el.disabled || !D) return;
       const rubricPanelElement = el.closest('[data-rubric-panel]');
       if (rubricPanelElement) {
         const c = caseById.get(rubricPanelElement.dataset.rubricPanel);
         if (pending || !writable) return;
-        if (el.hasAttribute('data-discard-rubric-edit')) { if (confirmAction('放弃本地未保存的断言和模型编辑，显示最新已保存版本？已保存版本不删除。')) { rubricEdits.delete(c.id); renderCases(); controls(); } return; }
+        if (el.hasAttribute('data-rubric-cancel')) { clearRubricConsent(c); return; }
+        if (el.hasAttribute('data-rubric-lock')) {
+          const consent = rubricConsents.get(c.id);
+          if (!consent || consent.key !== rubricConsentKey(c)) { clearRubricConsent(c); return; }
+          clearRubricConsent(c);
+          if (consent.action === 'discard') { rubricEdits.delete(c.id); renderCases(); controls(); }
+          if (consent.action === 'freeze' && !rubricFreezeReason(c)) { const r = latestRubric(c); void mutate('/api/wikiskill/confirm-rubric', { rubricId: r.id, hash: r.hash }, '两种检查及打分模型已共同冻结；未启动评测。'); }
+          if (consent.action === 'draft') void mutate('/api/wikiskill/draft-rubric', { caseId: c.id }, 'AI 草稿已保存；请核对全文和工具检查，选择达标模型后再冻结。');
+          return;
+        }
+        if (el.hasAttribute('data-discard-rubric-edit') || el.hasAttribute('data-freeze-rubric') || el.hasAttribute('data-draft-rubric')) {
+          const action = el.hasAttribute('data-freeze-rubric') ? 'freeze' : el.hasAttribute('data-draft-rubric') ? 'draft' : 'discard';
+          if (action === 'freeze' && rubricFreezeReason(c)) return;
+          rubricConsents.set(c.id, { action, key: rubricConsentKey(c) });
+          rubricPanelElement.querySelector('[data-rubric-consent]').innerHTML = rubricConsent(c); controls(); return;
+        }
+        clearRubricConsent(c);
+        if (el.hasAttribute('data-add-tool-rule') || el.hasAttribute('data-remove-tool-rule')) {
+          const edit = ensureRubricEdit(c); if (!edit.toolCheck) return;
+          if (el.hasAttribute('data-add-tool-rule') && edit.toolCheck.rules.length < 32) edit.toolCheck.rules.push(defaultToolRule());
+          if (el.hasAttribute('data-remove-tool-rule')) edit.toolCheck.rules.splice(Number(el.dataset.removeToolRule), 1);
+          renderCases(); controls(); return;
+        }
         if (el.hasAttribute('data-edit-rubric')) { ensureRubricEdit(c); renderCases(); controls(); return; }
         if (el.hasAttribute('data-add-assertion')) { const edit = ensureRubricEdit(c); if (edit.questions.length < 4) { let n = 1; while (edit.questions.some(q => q.id === 'q' + n)) n++; edit.questions.push({ id: 'q' + n, question: '', evidence: 'reply' }); } renderCases(); controls(); return; }
-        if (el.hasAttribute('data-remove-assertion')) { const edit = ensureRubricEdit(c); if (edit.questions.length > 1) edit.questions = edit.questions.filter(q => q.id !== el.dataset.removeAssertion); renderCases(); controls(); return; }
+        if (el.hasAttribute('data-remove-assertion')) { const edit = ensureRubricEdit(c); if (edit.questions.length) edit.questions = edit.questions.filter(q => q.id !== el.dataset.removeAssertion); renderCases(); controls(); return; }
         if (el.hasAttribute('data-save-rubric')) {
           const edit = rubricEdit(c);
           if (edit.questions.some(q => !q.question.trim() || /[?？]/.test(q.question))) { toast('每条断言须为非空陈述句，不使用问号。'); return; }
           if (edit.scoringModel && !modelEligible(edit.scoringModel)) { toast('此模型当前未在达标目录中，请另选达标模型或清空选择保存草稿。'); return; }
-          void mutate('/api/wikiskill/rubric', { caseId: c.id, questions: edit.questions, scoringModel: edit.scoringModel }, '新草稿版本已保存；尚未确认冻结。'); return;
-        }
-        if (el.hasAttribute('data-freeze-rubric')) {
-          const r = latestRubric(c); if (r?.status !== 'draft' || !sameRubricEdit(rubricEdit(c), r) || !modelEligible(r.scoringModel)) return;
-          if (!confirmAction(`确认冻结本题 v${r.version} 的全部断言及打分模型 ${r.scoringModel.model}？\n${r.questions.map(q => q.question).join('\n')}\nhash ${r.hash}\n后续修改另存新版本，不改旧结果，不启动评测。`)) return;
-          void mutate('/api/wikiskill/confirm-rubric', { rubricId: r.id, hash: r.hash }, '断言及打分模型已共同冻结；未启动评测。'); return;
-        }
-        if (el.hasAttribute('data-draft-rubric')) {
-          if (!confirmAction('调用 DeepSeek 起草本题1–4条评分断言？将新增待确认草稿，旧版本保留，不会自动选模型、冻结或评测。未保存的编辑仍保留，保存或放弃后才显示新草稿。')) return;
-          void mutate('/api/wikiskill/draft-rubric', { caseId: c.id }, 'AI 草稿已保存；请核对全文、修改并选择达标模型后再冻结。'); return;
+          const error = toolError(edit.toolCheck); if (error) { toast(error); return; }
+          void mutate('/api/wikiskill/rubric', { caseId: c.id, questions: edit.questions, scoringModel: edit.scoringModel, toolCheck: edit.toolCheck }, '新草稿版本已保存；尚未确认冻结。'); return;
         }
       }
       if (el.dataset.copyCandidate) { const c = D.candidates.find(c => c.id === el.dataset.copyCandidate); if (c) void copyPromptText(c.candidateText); return; }
@@ -640,18 +701,37 @@
     function updateRubricField(el) {
       const panel = el.closest('[data-rubric-panel]'); if (!panel || pending || !writable) return;
       const c = caseById.get(panel.dataset.rubricPanel), edit = ensureRubricEdit(c), id = el.closest('[data-criterion]')?.dataset.criterion;
+      clearRubricConsent(c);
+      if (el.hasAttribute('data-tool-enabled')) { edit.toolCheck = el.checked ? defaultToolCheck() : null; renderCases(); controls(); return; }
+      const t = edit.toolCheck, rule = t?.rules[Number(el.closest('[data-tool-rule]')?.dataset.toolRule)];
+      if (t) {
+        if (el.hasAttribute('data-tool-kind')) t.target.kind = el.value;
+        if (el.hasAttribute('data-tool-name')) t.target.name = el.value;
+        if (el.hasAttribute('data-tool-mode')) t.mode = el.value;
+        if (rule) {
+          if (el.hasAttribute('data-tool-parameter')) rule.parameter = el.value;
+          if (el.hasAttribute('data-tool-max')) rule.max = el.value === '' ? NaN : Number(el.value);
+          if (el.hasAttribute('data-tool-values')) rule.values = el.value.split('\n');
+          if (el.hasAttribute('data-tool-rule-kind')) {
+            t.rules[Number(el.closest('[data-tool-rule]').dataset.toolRule)] = { parameter: rule.parameter, kind: el.value, ...(el.value === 'max-chars' ? { max: 1000 } : { values: ['pause'] }) };
+            renderCases(); controls(); return;
+          }
+        }
+      }
+      const preview = panel.querySelector('[data-tool-preview]'); if (preview) preview.textContent = toolPreview(t);
       if (el.hasAttribute('data-rubric-question')) edit.questions.find(q => q.id === id).question = el.value;
       if (el.hasAttribute('data-rubric-evidence')) edit.questions.find(q => q.id === id).evidence = el.value;
       if (el.hasAttribute('data-rubric-model')) { const j = eligibleJudges().find(j => j.backend === el.value); edit.scoringModel = j ? { backend: j.backend, model: j.model } : null; }
+      const scope = panel.querySelector('[data-report-skipped]'); if (scope) scope.outerHTML = reportScope(c, edit.questions);
       controls();
     }
     root.addEventListener('input', event => {
       if (event.target.closest('#wiki-page .edit-form')) { wikiCategoryConsent = null; $('#wiki-page [data-wiki-category-consent]')?.remove(); }
-      if (event.target.hasAttribute('data-rubric-question')) updateRubricField(event.target);
+      if (event.target.matches('[data-rubric-question],[data-tool-name],[data-tool-parameter],[data-tool-max],[data-tool-values]')) updateRubricField(event.target);
     });
     root.addEventListener('change', event => {
       const el = event.target;
-      if (el.hasAttribute('data-rubric-evidence') || el.hasAttribute('data-rubric-model')) updateRubricField(el);
+      if (el.matches('[data-rubric-evidence],[data-rubric-model],[data-tool-enabled],[data-tool-kind],[data-tool-mode],[data-tool-rule-kind]')) { updateRubricField(el); if (el.hasAttribute('data-rubric-evidence')) { renderCases(); controls(); } }
       if (el.id === 'wiki-version') { selectVersion(el.value); state.entryId = ''; derive(); render(); }
       if (el.id === 'cases-group') { state.casesGroup = el.value; renderCases(); }
       if (el.id === 'cases-split') { state.casesSplit = el.value; renderCases(); }
