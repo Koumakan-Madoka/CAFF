@@ -52,7 +52,7 @@ export function buildWikiRunRequest({ item, bundle, decision, toolset, candidate
     metadata: { ...prefix.metadata, decisionHash, toolset: { ...structuredClone(versions), definitionsHash: wikiRunHash(definitions) },
       policy: { modelCalls: 1, toolExecutions: 0, retries: 0, prefixConsistencyChecked: false } } };
 }
-function publicMessage(call: any): string | null {
+export function publicMessage(call: any): string | null {
   if (call.name !== 'bash' || typeof call.arguments?.command !== 'string') return null;
   const command = call.arguments.command.trim();
   const node = String.raw`node\s+(?:"\$CAFF_CHAT_TOOLS_PATH"|'\$CAFF_CHAT_TOOLS_PATH'|\$CAFF_CHAT_TOOLS_PATH|\.?\/?build/lib/agent-chat-tools\.js)\s+send-public`;

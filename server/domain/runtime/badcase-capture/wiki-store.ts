@@ -161,8 +161,8 @@ function appendEvent(state: any, event: any) {
 function assertRubricRunEvidence(state: any, rubric: WikiRubric) {
   const source = state.cases.find((c: any) => c.id === rubric.caseId);
   const decision = (state.dehydrations || []).findLast((d: any) => d.caseId === rubric.caseId && d.traceHash === source?.traceBundle?.hash)?.decision;
-  // No-executor runs produce only a reply; they cannot supply execution/file
-  // evidence. Enforce for new freezes, never while reading old frozen records.
+  // AI assertions still see only the reply, never tool requests as execution/file
+  // evidence. The optional code check is separate. Enforce only on new freezes.
   if (!source?.sealedCheckpointId && decision?.level === 'run' && rubric.questions.some(q => q.evidence !== 'reply')) {
     throw fail('wiki_rubric_run_evidence_invalid');
   }
@@ -728,7 +728,8 @@ export function createWikiStore(options: any) {
     saveRubricDraft(input: any, expectedRevision: number) { return this.saveRubricDrafts([input], expectedRevision)[0]; },
     saveRubricDrafts(inputs: any[], expectedRevision: number) {
       if (!Array.isArray(inputs) || !inputs.length || inputs.length > 20) throw fail('wiki_rubric_invalid');
-      for (const input of inputs) shape(input, ['caseId', 'model', 'questions', ...(Object.hasOwn(input || {}, 'scoringModel') ? ['scoringModel'] : [])]);
+      for (const input of inputs) shape(input, ['caseId', 'model', 'questions', ...(Object.hasOwn(input || {}, 'scoringModel') ? ['scoringModel'] : []),
+        ...(Object.hasOwn(input || {}, 'toolCheck') ? ['toolCheck'] : [])]);
       if (new Set(inputs.map(input => input.caseId)).size !== inputs.length) throw fail('wiki_rubric_invalid');
       return change(state => {
         if (!Number.isSafeInteger(expectedRevision) || state.revision !== expectedRevision) throw fail('wiki_revision_conflict');
