@@ -33,13 +33,15 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  for(const selection of definition.cases){
   const source=state.cases.find(c=>c.id===selection.caseId),item=config.cases.find(c=>c.sourceCaseId===selection.caseId);
   const rubric=resolveFrozenWikiRubric(state,selection.caseId,item?.rubricHash);
-  if(!(source.kind==='marked-badcase'&&!source.sealedCheckpointId&&rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,eligibleJudges);
+  const run=source.kind==='marked-badcase'&&!source.sealedCheckpointId;
+  if(!run&&rubric.toolCheck&&!rubric.questions.length)throw fail('wiki_tool_check_run_only');
+  if(!(run&&rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,eligibleJudges);
  }
  function scoringFor(source,item,task,run=false){
   if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
   const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
   const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
-  if(rubric.toolCheck&&!run)throw fail('wiki_tool_check_run_only');
+  if(rubric.toolCheck&&!run&&!rubric.questions.length)throw fail('wiki_tool_check_run_only');
   return {kind:'wiki-score-v2',rubric,binding:run&&rubric.toolCheck&&!rubric.questions.length?null:bindWikiJudge(judge,rubric),task,expected:source.expected};
  }
  return {

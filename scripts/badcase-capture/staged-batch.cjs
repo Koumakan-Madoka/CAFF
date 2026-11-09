@@ -91,7 +91,8 @@ function formatStagedBatch(result) {
   if(result.experiment){
     lines.push('评分：硬断言＋AI 裁判；字面指标仅供参考','实验 '+result.experiment.planHash);
     for(const c of result.experiment.cases)lines.push('断言 '+c.caseId+' / '+c.rubricHash+(c.judge?'；裁判 '+c.judge.backend+' / '+c.judge.model
-      +' / modelHash '+c.judge.modelHash+' / promptHash '+c.judge.promptHash:'；仅工具检查，无需裁判'));
+      +' / modelHash '+c.judge.modelHash+' / promptHash '+c.judge.promptHash:'；仅工具检查，无需裁判')
+      +(c.execution?.level==='run'?'':'；工具调用检查不用于 trace 级'));
   }else lines.push('评分：字面规则');
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');

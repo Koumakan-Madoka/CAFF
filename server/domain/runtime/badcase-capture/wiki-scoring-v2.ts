@@ -83,13 +83,17 @@ function boundedText(text: string, maxBytes: number) {
   for (const char of text) { size += Buffer.byteLength(char); if (size > maxBytes) break; result += char; }
   return { text: result, truncated: true };
 }
-export function buildWikiJudgeInput(run: WikiScoringRun, rubric: WikiRubric): WikiJudgeInput {
+export function buildWikiJudgeInput(run: WikiScoringRun, rubric: WikiRubric, replyOnly = false): WikiJudgeInput {
   validateWikiRubric(rubric, true);
   safeText(run.task, 32768); safeText(run.expected, 8192); safeText(run.publicReply, 1024 * 1024);
   // Never spread run/rubric metadata: no variant, candidate guideline, other
   // results, version, case identifier, source label or hash enters the judge.
-  const input: WikiJudgeInput = { task: run.task, expected: run.expected, questions: structuredClone(rubric.questions), publicReply: run.publicReply };
-  const needs = new Set(rubric.questions.map(q => q.evidence));
+  // A scene's single-call report cannot observe trace/file evidence. Keep the
+  // full validated frozen rubric/hash for binding, scope only judge questions.
+  const questions = replyOnly ? rubric.questions.filter(q => q.evidence === 'reply') : rubric.questions;
+  if (!questions.length) throw fail('wiki_judge_evidence_missing');
+  const input: WikiJudgeInput = { task: run.task, expected: run.expected, questions: structuredClone(questions), publicReply: run.publicReply };
+  const needs = new Set(questions.map(q => q.evidence));
   if (needs.has('trace')) {
     safeText(run.traceSummary, 16 * 1024 * 1024);
     input.evidence = { traceSummary: boundedText(run.traceSummary, 65536) };
@@ -136,15 +140,15 @@ function parseJudgments(output: unknown, input: WikiJudgeInput): WikiCriterionJu
     return structuredClone(j);
   });
 }
-function aggregateVotes(rubric: WikiRubric, votes: WikiCriterionJudgment[][]): WikiScoreResult['judgments'] {
-  return rubric.questions.map((q, i) => {
+function aggregateVotes(questions: WikiRubricQuestion[], votes: WikiCriterionJudgment[][]): WikiScoreResult['judgments'] {
+  return questions.map((q, i) => {
     const verdict: WikiVerdict = votes.filter(row => row[i].verdict === 'satisfied').length >= 2 ? 'satisfied' : 'not-satisfied';
     return { criterionId: q.id, verdict, majority: true };
   });
 }
 export async function scoreWikiRun(options: {
   rubric: WikiRubric; binding: WikiJudgeBinding; run: WikiScoringRun; hardAssertions: WikiHardAssertion[];
-  referenceMetrics?: WikiScoreResult['referenceMetrics'];
+  referenceMetrics?: WikiScoreResult['referenceMetrics']; replyOnly?: true;
 }, judge: WikiJudgeAdapter): Promise<WikiScoreResult> {
   const rubric = validateWikiRubric(options.rubric, true), binding = structuredClone(options.binding);
   checkBinding(binding, judge, rubric);
@@ -172,7 +176,7 @@ export async function scoreWikiRun(options: {
   if (hardAssertions.some(c => c.status === 'fail')) return finish('fail', 'hard_assertion_failed');
   if (hardAssertions.some(c => c.status === 'error')) return finish('error', 'hard_evidence_missing');
   let input: WikiJudgeInput;
-  try { input = buildWikiJudgeInput(run, rubric); }
+  try { input = buildWikiJudgeInput(run, rubric, options.replyOnly); }
   catch { return finish('error', 'judge_evidence_unavailable'); }
   for (let vote = 0; vote < 3; vote++) {
     let judgments: WikiCriterionJudgment[] | undefined;
@@ -191,7 +195,7 @@ export async function scoreWikiRun(options: {
     }
     result.votes.push(judgments!);
   }
-  result.judgments = aggregateVotes(rubric, result.votes);
+  result.judgments = aggregateVotes(input.questions, result.votes);
   if (result.judgments.some(j => j.verdict === 'not-satisfied')) return finish('fail', 'rubric_not_satisfied');
   return finish('pass', null);
 }

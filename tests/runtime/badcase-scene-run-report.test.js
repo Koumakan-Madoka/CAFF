@@ -13,8 +13,9 @@ function kernel(h, fault) {
  let modelCalls = 0, judgeCalls = 0;
  const judge = { configuration: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: 'c'.repeat(64) }, async evaluate(input) {
   judgeCalls++; assert.deepEqual(Object.keys(input).sort(), ['expected', 'publicReply', 'questions', 'task']); assert.equal(input.publicReply, 'Clear result.');
+  assert.ok(input.questions.every(q => q.evidence === 'reply'), 'scene report never sends trace/files questions to the judge');
   if (fault === 'backend') throw Error('PRIVATE JUDGE FAILURE'); if (fault === 'parse') return 'not-json';
-  return { judgments: input.questions.map(q => ({ criterionId: q.id, verdict: 'satisfied', reason: 'Synthetic clear answer', evidence: [{ source: 'reply', text: 'Clear result.' }] })) };
+  return { judgments: input.questions.map(q => ({ criterionId: q.id, verdict: fault === 'reject' ? 'not-satisfied' : 'satisfied', reason: 'Synthetic clear answer', evidence: [{ source: 'reply', text: 'Clear result.' }] })) };
  } };
  return { runs, request, get modelCalls() { return modelCalls; }, get judgeCalls() { return judgeCalls; }, run(content, iteration = 1, overrides = {}) {
   return api().replayWikiRunReport({ store: h.store, runs, caseId: h.c.id, toolset: h.toolset, rubricHash: h.rubric.hash, approvedRequestHash: api().wikiRunHash(request),
@@ -32,6 +33,73 @@ async function get(h) {
  const res = { writeHead(status) { assert.equal(status, 200); }, end(bytes) { value = JSON.parse(bytes); } };
  await controller({ req, res, pathname: '/api/wikiskill' }); return value;
 }
+function freezeQuestions(h, questions) {
+ const draft = h.store.saveRubricDraft({ caseId: h.c.id, model: 'deepseek/deepseek-v4-flash', questions,
+  scoringModel: questions.length ? { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } : null,
+  ...(h.rubric.toolCheck ? { toolCheck: h.rubric.toolCheck } : {}) }, h.store.read().revision);
+ h.rubric = h.store.confirmRubric({ rubricId: draft.id, hash: draft.hash, confirmationRecord: 'Shared trace and report rubric' }, h.store.read().revision);
+}
+const mixedQuestions = [
+ { id: 'trace', question: 'The trace shows the right action.', evidence: 'trace' },
+ { id: 'reply', question: 'The reply is clear.', evidence: 'reply' },
+];
+test('one scene rubric serves trace and report without rewriting its full hash or fabricating votes for unreached evidence', async t => {
+ const h = setup(t), old = JSON.stringify(h.rubric); freezeQuestions(h, mixedQuestions);
+ const before = h.store.read(), f = kernel(h), row = await f.run([...blocks(22, 30), send]);
+ assert.equal(row.outcome.status, 'pass'); assert.equal(f.modelCalls, 1); assert.equal(f.judgeCalls, 3);
+ assert.equal(row.report.rubricHash, h.rubric.hash); assert.equal(row.report.assessment.rubricHash, h.rubric.hash);
+ assert.equal(row.report.binding.rubricHash, h.rubric.hash);
+ assert.deepEqual(row.report.assessment.judgments.map(q => q.criterionId), ['reply']);
+ assert.ok(row.report.assessment.votes.every(v => v.length === 1 && v[0].criterionId === 'reply'));
+ const view = await get(h); assert.equal(view.pipelineStates[0].assertion.status, 'frozen'); assert.equal(view.pipelineStates[0].assertion.hash, h.rubric.hash);
+ assert.deepEqual(view.pipelineStates[0].assertion.questions, mixedQuestions); assert.equal(view.cases[0].runChecks.passed, 1);
+ assert.deepEqual(h.store.read(), before); assert.equal(JSON.stringify(before.rubrics[0]), old);
+});
+for (const [content, status] of [[blocks(22, 30), 'pass'], [[...blocks(22, 29), send], 'fail'], [blocks(23, 45), 'invalid']]) test(`scene trace-only questions are unreached; real tool shape is ${status} with zero judge calls`, async t => {
+ const h = setup(t); freezeQuestions(h, mixedQuestions.filter(q => q.evidence !== 'reply'));
+ const f = kernel(h), row = await f.run(content, 1, { judge: undefined });
+ assert.equal(row.outcome.status, status);
+ assert.equal(f.modelCalls, 1); assert.equal(f.judgeCalls, 0); assert.equal(row.report.binding, null); assert.equal(row.report.assessment, undefined);
+ assert.equal(row.report.checks.reply, 'unconfigured');
+});
+for (const [fault, status, judges] of [['reject', 'fail', 3], ['parse', 'error', 2], ['backend', 'error', 2]]) test(`scene mixed rubric ${fault} affects only reached reply questions and keeps technical errors separate`, async t => {
+ const h = setup(t); freezeQuestions(h, mixedQuestions); const f = kernel(h, fault), row = await f.run([...blocks(22, 30), send]);
+ assert.equal(row.outcome.status, status); assert.equal(f.modelCalls, 1); assert.equal(f.judgeCalls, judges);
+ assert.ok(row.report.assessment.votes.every(v => v.every(q => q.criterionId === 'reply')));
+ assert.equal(row.report.assessment.rubricHash, h.rubric.hash);
+});
+test('scene report scorer also ignores file-evidence questions, retaining the full binding/hash rather than creating a second version', async t => {
+ const h = setup(t, { reply: true }), { createWikiRubric } = require(base + 'wiki-rubric');
+ // The core can receive a frozen file-evidence rubric from a file-capable trace
+ // executor; this fixture does not fake availability in WikiStore.
+ const rubric = { ...createWikiRubric({ ...h.rubric, actual: h.c.actual, expected: h.c.expected, questions: [...mixedQuestions,
+  { id: 'files', question: 'The file contains the result.', evidence: 'files' }] }), status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: h.rubric.confirmationRecord };
+ const judge = { configuration: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', settings: {}, promptHash: 'c'.repeat(64) }, async evaluate(input) {
+  assert.deepEqual(input.questions.map(q => q.id), ['reply']); assert.equal(input.evidence, undefined);
+  return { judgments: [{ criterionId: 'reply', verdict: 'satisfied', reason: 'Synthetic', evidence: [{ source: 'reply', text: 'Clear result.' }] }] };
+ } };
+ const binding = require(base + 'wiki-scoring-v2').bindWikiJudge(judge.configuration, rubric), before = JSON.stringify(rubric);
+ const result = await require(base + 'wiki-run-check-scoring').scoreWikiRunChecks({ message: { role: 'assistant', stopReason: 'toolUse', content: [...blocks(22, 30), send] }, rubric, binding, task: 'Synthetic task', expected: h.c.expected, sceneReport: true }, judge);
+ assert.equal(result.checks.status, 'pass'); assert.equal(result.assessment.rubricHash, rubric.hash); assert.equal(JSON.stringify(rubric), before);
+});
+test('scene trace-only rubric without tool check rejects before client, judge or durable reservation', async t => {
+ const h = setup(t, { reply: true, tool: false, evidence: 'trace' }), f = kernel(h);
+ await assert.rejects(f.run([send], 1, { judge: undefined }), { code: 'wiki_rubric_run_evidence_invalid' });
+ assert.equal(f.modelCalls, 0); assert.equal(f.judgeCalls, 0); assert.equal(f.runs.list().length, 0);
+});
+test('scene mixed rubric remains invalid when neither the target tool nor a configured reply is reached', async t => {
+ const h = setup(t); freezeQuestions(h, mixedQuestions.filter(q => q.evidence !== 'reply'));
+ const f = kernel(h), row = await f.run([send]); assert.equal(row.outcome.status, 'invalid'); assert.equal(row.outcome.reason, 'no_check_reached'); assert.equal(f.judgeCalls, 0);
+});
+test('non-scene formal replay still refuses non-reply evidence before model calls, even with tool checks', async t => {
+ const h = setup(t, { reply: true, evidence: 'trace' }), f = kernel(h); let model = 0;
+ // Deliberately project the same frozen inputs as no-scene to test the formal guard, not scene restoration.
+ const store = { ...h.store, read: () => ({ ...h.store.read(), cases: [{ ...h.item(), sealedCheckpointId: null }] }) };
+ await assert.rejects(api().replayWikiRun({ store, runs: f.runs, caseId: h.c.id, toolset: h.toolset, rubricHash: h.rubric.hash },
+  { client: { async complete() { model++; } } }), { code: 'wiki_rubric_run_evidence_invalid' }); assert.equal(model, 0);
+ await assert.rejects(api().replayWikiRunReport({ store, runs: f.runs, caseId: h.c.id, toolset: h.toolset, rubricHash: h.rubric.hash },
+  { confirmed: true, client: { async complete() { model++; } } }), { code: 'wiki_rubric_run_evidence_invalid' }); assert.equal(model, 0);
+});
 test('scene diagnostic cuts run once, freeze original output/checks and GET counts without touching trace identity, groups or gate data', async t => {
  const h = setup(t), f = kernel(h), before = h.store.read(), bytes = JSON.stringify(h.store.readCaseTrace(h.c.id));
  assert.throws(() => api().buildWikiRunRequest({ item: h.item(), bundle: h.bundle, decision: h.decision, toolset: h.toolset }), { code: 'wiki_run_scene_unsupported' });
@@ -84,6 +152,7 @@ test('report counts bind current frozen rubric and distinguish a reserved unknow
 test('report approval and reply-only evidence guards reject before any model or judge call; report candidates are forbidden', async t => {
  const h = setup(t), f = kernel(h); await assert.rejects(f.run(blocks(22, 30), 1, { confirmed: false }), { code: 'wiki_run_confirmation_required' }); assert.equal(f.modelCalls, 0);
  assert.throws(() => api().buildWikiRunRequest({ item: h.item(), bundle: h.bundle, decision: h.decision, toolset: h.toolset, reportOnly: true, rubricHash: h.rubric.hash, candidate: {} }), { code: 'wiki_run_report_invalid' });
- const other = setup(t, { reply: true, evidence: 'trace' }), g = kernel(other);
+ const other = setup(t, { reply: true, tool: false, evidence: 'trace' }), g = kernel(other);
  await assert.rejects(g.run([send]), { code: 'wiki_rubric_run_evidence_invalid' }); assert.equal(g.modelCalls, 0); assert.equal(g.judgeCalls, 0);
+ assert.equal(g.runs.list().length, 0, 'no reservation for a report without any reachable check');
 });

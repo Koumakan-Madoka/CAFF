@@ -24,6 +24,19 @@ function fixture(evidence = 'reply') {
 function file(content = 'active') { const bytes = Buffer.from(content); return { path: 'status.txt', state: 'file', base64: bytes.toString('base64'), size: bytes.length, sha256: hash(content) }; }
 const fileRules = { kind: 'file-literals-v1', files: [{ path: 'status.txt', contains: ['active'], notContains: ['confirmationRequired'] }] };
 const readRules = { kind: 'read-only-files-v1', readPaths: ['a.txt'], absentPaths: ['absent.txt'], requiredReplyFragments: ['a legacy lexical fragment'] };
+test('trace scoring only sees questions and is identical with or without a co-frozen tool check, even if the tool rule would fail', async () => {
+  const h = fixture('trace'), before = JSON.stringify(h.rubric), { createWikiRubric } = require(base + 'wiki-rubric'), { bindWikiJudge } = require(base + 'wiki-scoring-v2');
+  const ordinary = await h.score(), seen = structuredClone(h.seen); h.seen.length = 0;
+  const rubric = { ...createWikiRubric({ ...h.rubric, actual: 'Unclear', expected: 'Clear result',
+    toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'allowed-values', values: ['never-matches'] }] } }),
+    status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: h.rubric.confirmationRecord };
+  const scoring = { ...h.scoring, rubric, binding: bindWikiJudge(h.judge.configuration, rubric), kind: 'wiki-score-v2' };
+  assert.equal(api().validateWikiScoring(scoring).rubric.hash, rubric.hash);
+  assert.equal(api().wikiScoringSummary(scoring).rubricHash, rubric.hash);
+  const withTool = await h.score(h.publicRules, { scoring }); assert.equal(withTool.status, 'pass'); assert.deepEqual(h.seen, seen);
+  const semantic = ({ rubricHash, binding, ...r }) => ({ ...r, binding: { ...binding, rubricHash: 'same-version-content' } });
+  assert.deepEqual(semantic(withTool), semantic(ordinary)); assert.equal(JSON.stringify(h.rubric), before);
+});
 test('executor receipt bridge treats public literal failures as reference metrics, not pass/fail', async () => {
   const h = fixture(), before = structuredClone(h.publicRules), r = await h.score();
   assert.equal(r.status, 'pass'); assert.equal(h.seen.length, 3); assert.equal(r.referenceMetrics.conclusionInLead, false);

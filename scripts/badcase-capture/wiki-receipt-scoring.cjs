@@ -11,7 +11,7 @@ function validateWikiScoring(value, { runChecks = false } = {}) {
   wikiExactKeys(value, ['kind', 'rubric', 'binding', 'task', 'expected']);
   if (value.kind !== 'wiki-score-v2') throw fail('wiki_scoring_config_required');
   validateWikiRubric(value.rubric, true);
-  if (value.rubric.toolCheck && !runChecks) throw fail('wiki_tool_check_run_only');
+  if (value.rubric.toolCheck && !runChecks && !value.rubric.questions.length) throw fail('wiki_tool_check_run_only');
   if (runChecks && value.rubric.toolCheck && !value.rubric.questions.length) {
     if (value.binding !== null) throw fail('wiki_scoring_config_required');
   } else validateWikiJudgeBinding(value.binding, value.rubric);

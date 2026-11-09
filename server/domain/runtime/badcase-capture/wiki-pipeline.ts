@@ -50,7 +50,8 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const versions = (state.rubrics || []).filter((r: any) => r.caseId === c.id).sort((a: any, b: any) => b.version - a.version);
     const frozen = versions.find((r: any) => r.status === 'frozen');
     const stale = frozen && frozen.sourceHash !== wikiRubricSourceHash(c.actual, c.expected);
-    const incompatible = level === 'run' && frozen?.questions.some((q: any) => q.evidence !== 'reply');
+    const incompatible = level === 'run' && frozen?.questions.some((q: any) => q.evidence !== 'reply')
+      || level === 'trace' && frozen && !frozen.questions.length;
     const assertion = { status: !frozen ? 'missing' : stale ? 'stale' : incompatible ? 'incompatible' : 'frozen',
       version: frozen?.version ?? null, hash: frozen?.hash ?? null, model: frozen?.scoringModel?.model ?? null,
       questions: structuredClone(frozen?.questions || []), draftVersion: versions.find((r: any) => r.status === 'draft')?.version ?? null };

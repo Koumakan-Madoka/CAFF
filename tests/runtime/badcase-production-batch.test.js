@@ -625,10 +625,10 @@ function v2Execution(h,settings={}){
    options.onEvent({event:'run_start',variant,iteration:i});options.onEvent({event:'model_call',variant,iteration:i,model:PROFILE});
    const failed=settings.improve!==false&&config.request.association.checkpointId==='cp-0'&&variant==='original';
    const assessment=await require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').scoreWikiRun({rubric:config.scoring.rubric,binding:config.scoring.binding,
-    run:{task:config.scoring.task,expected:config.scoring.expected,completed:true,replySource:'public',publicReply:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'},hardAssertions:config.rules.kind==='file-literals-v1'?[{id:'files',status:'pass'}]:[],referenceMetrics:{noForbiddenTerms:false}},
+    run:{task:config.scoring.task,expected:config.scoring.expected,completed:true,replySource:'public',publicReply:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE',traceSummary:'SYNTHETIC TRACE EVIDENCE'},hardAssertions:config.rules.kind==='file-literals-v1'?[{id:'files',status:'pass'}]:[],referenceMetrics:{noForbiddenTerms:false}},
     {configuration:options.judge.configuration,evaluate:async()=>{
      if(settings.judgeAllDown||settings.judgeFault&&config.request.association.checkpointId==='cp-0'&&variant==='original'&&i===1){if(settings.judgeFault==='backend')throw Error('PRIVATE-JUDGE-DETAIL');return 'not-json';}
-     return {judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.insufficient||failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.insufficient?[]:[{source:'reply',text:'RESULT.'}]}))};
+     return {judgments:config.scoring.rubric.questions.map((q,n)=>({criterionId:q.id,verdict:settings.insufficient||failed&&n===0?'not-satisfied':'satisfied',reason:'Synthetic reasoning',evidence:settings.insufficient?[]:[q.evidence==='trace'?{source:'trace',text:'SYNTHETIC TRACE EVIDENCE'}:{source:'reply',text:'RESULT.'}]}))};
     }});
    const row={variant,iteration:i,status:assessment.status,...(assessment.reason?{reason:assessment.reason}:{}),assessment,replySource:'public',cleaned:true,finalText:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE'};
    runs.push(row);options.onEvent({event:'run',...row});
@@ -638,6 +638,34 @@ function v2Execution(h,settings={}){
  };
  return f;
 }
+test('scene trace planning rejects a latest tool-only rubric before judge selection or execution',t=>{
+ const h=scoringV2Fixture(t,{perCaseModels:true}),c=h.marks[0];
+ const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',questions:[],scoringModel:null,
+  toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
+ h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Tool-only scene report'},h.store.read().revision);
+ h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=draft.hash;delete h.definition.cases.find(r=>r.caseId===c.id).judge;
+ assert.throws(h.plan,{code:'wiki_tool_check_run_only'});
+});
+test('scene gate/test trace v2 plans and immutable receipts accept one mixed rubric; tool check stays out of trace judgments',async t=>{
+ const h=scoringV2Fixture(t,{perCaseModels:true});
+ for(const c of h.marks.slice(0,2)){
+  const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',scoringModel:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'},
+   questions:[{id:'trace',question:'The trace shows the right action.',evidence:'trace'},{id:'reply',question:'The reply is clear.',evidence:'reply'}],
+   toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
+  const frozen=h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Mixed scene checks'},h.store.read().revision);
+  h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=frozen.hash;
+ }
+ const before=h.store.read(),p=h.pin();assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v2');
+ const f=v2Execution(h),r=await f.run();assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ assert.deepEqual(store.read()[0],saved);assert.deepEqual(h.store.read(),before);
+ for(const c of saved.cases.filter(c=>h.marks.slice(0,2).some(m=>m.id===c.sourceCaseId))){
+  assert.ok(c.rubric.toolCheck);assert.ok(c.runs.every(row=>row.checks===undefined&&row.assessment.rubricHash===c.rubric.hash));
+  assert.deepEqual(c.runs[0].assessment.judgments.map(q=>q.criterionId),['trace','reply']);
+ }
+ const text=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved);
+ for(const c of h.marks.slice(0,2))assert.match(text.split('\n').find(line=>line.startsWith('断言 '+c.id)),/工具调用检查不用于 trace 级/);
+});
 test('v2 immutable publication retains criterion votes/citations/reference metrics, not full replies, and rejects forged judgments',async t=>{
  const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
  const saved=store.save(r);assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);

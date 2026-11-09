@@ -88,7 +88,7 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     ensure(rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected));
     if (perCase) ensure(rubric.kind === 'wiki-rubric-v2');
     if (source.execution && rubric.questions.some(q => q.evidence !== 'reply')) throw fail('wiki_rubric_run_evidence_invalid');
-    if (rubric.toolCheck && !source.execution) throw fail('wiki_tool_check_run_only');
+    if (rubric.toolCheck && !source.execution && !rubric.questions.length) throw fail('wiki_tool_check_run_only');
     const { judge: selectedJudge, ...partition } = selection;
     const codeOnly = !!source.execution && !!rubric.toolCheck && !rubric.questions.length;
     if (codeOnly && perCase) ensure(selectedJudge == null);

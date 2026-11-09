@@ -60,7 +60,7 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
         && raw.comparison.originalRequestHash === (selection.execution as any).requestHash);
       digest(raw.comparison.candidateRequestHash);
       check(raw.comparison.commonInputHash === wikiValueHash({ originalRequestHash: raw.comparison.originalRequestHash, candidateRequestHash: raw.comparison.candidateRequestHash }));
-    } else check(raw.execution === undefined && !rubric.toolCheck);
+    } else check(raw.execution === undefined && rubric.questions.length > 0);
     check(raw.comparison && c.comparison);
     const scoring = projectWikiScoringSummary(raw.comparison.scoring, rubric, selection.judge); check(scoring.inputHash === selection.inputHash);
     const comparison = { ...(run ? { kind: raw.comparison.kind, execution: structuredClone(raw.execution),

@@ -86,9 +86,11 @@ for (const reply of [false, true]) test(`v3 independent tool check plan (${reply
   h.single.rubric = { ...createWikiRubric({ ...h.single.rubric, actual: h.single.actual, expected: h.single.expected, toolCheck: changed }), status: 'frozen', confirmedAt: h.single.rubric.confirmedAt, confirmationRecord: 'New approval' };
   assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), { code: 'wiki_experiment_changed' });
 });
-test('trace-only plans reject tool checks instead of silently ignoring them', t => {
+test('trace-only plans ignore a co-frozen tool check when questions exist, but still reject tool-only rubrics', t => {
   const h = fixture(t), c = h.catalog[0];
   c.rubric = { ...require(base + 'wiki-rubric').createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic approval' };
+  const plan = h.plan(); assert.equal(plan.kind, 'wiki-experiment-plan-v1'); assert.equal(plan.cases[0].rubricHash, c.rubric.hash);
+  c.rubric = { ...require(base + 'wiki-rubric').createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, questions: [], scoringModel: null }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic tool-only approval' };
   assert.throws(h.plan, { code: 'wiki_tool_check_run_only' });
 });
 test('run bindings reject malformed/extra fields, scene mismatch and all bound-input drift', t => {

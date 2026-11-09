@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { buildDehydrationPrefix, pageDehydrationCause } from './wiki-dehydration';
 import { redactTraceKnownValues } from './wiki-trace';
 import { prepareWikiRunChecks, finishWikiRunChecks } from './wiki-run-checks';
-import { scoreWikiRunChecks } from './wiki-run-check-scoring';
+import { scoreWikiRunChecks, wikiSceneReportChecks } from './wiki-run-check-scoring';
 import { bindWikiJudge } from './wiki-scoring-v2';
 import { verifyWikiRunWireRequest } from './wiki-run-wire';
 import { locateGlobalPromptTarget } from '../../../../lib/agent-prompt-targets';
@@ -85,14 +85,17 @@ export async function replayWikiRun(input: any, options: any) {
   // Opt-in only: legacy callers keep their exact request/result packet shape.
   // The frozen rubric hash is result evidence, never part of the model input.
   const rubric = input.rubricHash === undefined ? null : store.getFrozenRubric(caseId, input.rubricHash);
-  if (rubric && (!rubric.toolCheck && !input.reportOnly || rubric.questions.some((q: any) => q.evidence !== 'reply'))) throw fail('wiki_rubric_run_evidence_invalid');
+  const sceneReport = input.reportOnly === true && !!item.sealedCheckpointId;
+  const observed = rubric && sceneReport ? wikiSceneReportChecks(rubric) : rubric;
+  if (rubric && (!rubric.toolCheck && !input.reportOnly || !sceneReport && rubric.questions.some((q: any) => q.evidence !== 'reply')
+    || input.reportOnly && !observed.toolCheck && !observed.questions.length)) throw fail('wiki_rubric_run_evidence_invalid');
   const bundle = store.readCaseTrace(caseId);
   let reportBinding = null, reportTask = '';
   if (input.reportOnly) {
     if (options?.confirmed !== true) throw fail('wiki_run_confirmation_required');
     if (!rubric) throw fail('wiki_run_report_invalid');
     reportTask = pageDehydrationCause(bundle).text;
-    if (rubric.questions.length) {
+    if (observed.questions.length) {
       if (typeof options.judge?.evaluate !== 'function') throw fail('wiki_judge_adapter_required');
       reportBinding = bindWikiJudge(options.judge.configuration, rubric);
     }
@@ -114,7 +117,7 @@ export async function replayWikiRun(input: any, options: any) {
     const message = redactTraceKnownValues(response.message, options.knownKeyValues || []).value;
     let outcome = classifyWikiRunOutput(message), checks;
     if (rubric) {
-      const prepared = prepareWikiRunChecks(message, rubric), final = finishWikiRunChecks(prepared);
+      const prepared = prepareWikiRunChecks(message, observed), final = finishWikiRunChecks(prepared);
       checks = { rubricHash: rubric.hash, prepared };
       // 'reached' still means a reply awaits judging, not a pass. Code-only
       // pass/fail is already decisive; unknown syntax remains invalid.
@@ -136,7 +139,8 @@ export async function replayWikiRun(input: any, options: any) {
       result.outcome = { status: 'error', reason: result.wireRequest ? 'wiki_run_wire_request_mismatch' : 'wiki_run_wire_request_missing', reply: result.outcome.reply };
     } else if (result.message && result.outcome.status !== 'error') {
       try {
-        const scored = await scoreWikiRunChecks({ message: result.message, rubric, binding: reportBinding, task: reportTask, expected: item.expected }, options.judge);
+        const scored = await scoreWikiRunChecks({ message: result.message, rubric, binding: reportBinding, task: reportTask, expected: item.expected,
+          ...(sceneReport ? { sceneReport: true } : {}) }, options.judge);
         Object.assign(result.report, scored);
         result.outcome = { status: scored.checks.status, reason: scored.checks.reason, reply: result.checks.prepared.reply };
       } catch (e: any) {
