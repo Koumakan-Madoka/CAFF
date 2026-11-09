@@ -393,7 +393,7 @@
         ${(r.decisionHistory || []).map(old => `<details data-decision-history><summary>历史确认 · 已被用户改判，不计入</summary><pre class="tl-req">${esc(json(old))}</pre></details>`).join('')}
         ${d?.reason ? `<p>用户改判原因：${esc(d.reason)}</p>` : ''}
         ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${reportCut(c) ? '切点检查报告 · trace 级身份和组别不变' : d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p><p>确认来源：${d.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户在 Badcase 页确认'}${d.confirmation?.reference ? ` · ${esc(d.confirmation.reference)}` : ''}${d.kind !== rec.kindSuggestion || d.kind === 'single' && d.cutStep !== rec.cutStepSuggestion ? ' · 用户改判（原推荐保留在上方）' : ''}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${f.kind === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
-        <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${Number(f.cutStep) === s.step ? 'selected' : ''}>第 ${s.step} 步之前 · ${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
+        <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${Number(f.cutStep) === s.step ? 'selected' : ''}>重新生成第 ${s.step} 步 · 原输出：${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
         <p class="hint">${reportNote(c)}确认后判断与切点永久冻结；切点可以早于被标记回复，此处不启动模型。</p><div data-cut-actions>${cutActions(c, r)}</div>`}</section>`;
     }
     function card(c, ts) {

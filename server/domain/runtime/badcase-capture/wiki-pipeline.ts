@@ -54,7 +54,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
       || level === 'trace' && frozen && !frozen.questions.length;
     const assertion = { status: !frozen ? 'missing' : stale ? 'stale' : incompatible ? 'incompatible' : 'frozen',
       version: frozen?.version ?? null, hash: frozen?.hash ?? null, model: frozen?.scoringModel?.model ?? null,
-      questions: structuredClone(frozen?.questions || []), draftVersion: versions.find((r: any) => r.status === 'draft')?.version ?? null };
+      questions: structuredClone(frozen?.questions || []), draftVersion: versions.find((r: any) => r.status === 'draft' && (!frozen || r.version > frozen.version))?.version ?? null };
     const replay = state.replayCases?.find((r: any) => r.sourceCaseId === c.id && r.request?.association?.checkpointId === c.sealedCheckpointId);
     const check = replayChecks.find((r: any) => r.caseId === c.id && r.level === level && (r.status !== 'supported'
       || level === 'trace' && replay && r.checkpointHash === replay.checkpointHash

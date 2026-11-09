@@ -724,6 +724,10 @@ function sceneRunPage(t, { n = 22, questions, fetcher, callbacks = {} } = {}) {
 for (const n of [22, 23, 24]) test(`scene #${n} confirms a pre-marked cut in-panel; fields, full GET and hashes invalidate consent`, t => {
   const sent = [], h = sceneRunPage(t, { n, callbacks: { onConfirmDecision: body => sent.push(body) } });
   const oldGroups = JSON.stringify([h.c.split, h.data.initialSplitProposal, h.c.traceBundle]);
+  const option = h.host().querySelector('[data-dehydration-cut] option:checked');
+  assert.equal(option.value, String(h.cut));
+  assert.equal(option.textContent, `重新生成第 ${h.cut} 步 · 原输出：${h.r.request.state.steps[0].body.slice(0, 120)}`);
+  assert.doesNotMatch(option.textContent, /步之前/);
   h.host().querySelector('[data-dehydration-confirm]').click(); assert.equal(sent.length, 0);
   assert.match(h.host().querySelector('[data-dehydration-consent]').textContent, new RegExp('第 ' + h.cut + ' 步之前'));
   assert.match(h.host().querySelector('[data-dehydration-consent]').textContent, /trace.*组别不变.*不作采纳依据/s);
