@@ -254,6 +254,7 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-widt
 .tool-fields { margin-top: 12px; }
 .tool-rule { border-top: 1px solid var(--border); padding-top: 10px; }
 .rubric-editor .check { display: flex; align-items: center; gap: 8px; }
+.rubric-editor input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; }
 .rubric-editor input:not([type="checkbox"]) { width: 100%; min-width: 0; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
 @media (max-width: 1000px) { .rubric-checks { grid-template-columns: 1fr; } }
 .assertion-field { border-bottom: 1px solid var(--border); padding-bottom: 10px; }

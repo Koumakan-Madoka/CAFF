@@ -26,7 +26,7 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-wiki-layout-'));
   const oldEnv = {};
   const isolated = { PI_CODING_AGENT_DIR: path.join(root, 'agent'), CAFF_WIKISKILL_DATA_DIR: path.join(root, 'wiki'), PI_SQLITE_PATH: path.join(root, 'chat.sqlite') };
-  for (const key of [...Object.keys(isolated), 'CAFF_BADCASE_CAPTURE_DIR', 'CAFF_WIKISKILL_JUDGES_CONFIG']) {
+  for (const key of [...Object.keys(isolated), 'CAFF_BADCASE_CAPTURE_DIR', 'CAFF_WIKISKILL_JUDGES_CONFIG', 'CAFF_BADCASE_WIKI_RUNTIME_CONFIG']) {
     oldEnv[key] = process.env[key]; delete process.env[key];
   }
   Object.assign(process.env, isolated);
@@ -112,6 +112,19 @@ test('WikiSkill uses the wide main area, retains sticky inner scrolling and cont
     for (const tab of ['wiki', 'cases', 'targets', 'impact']) {
       await page.locator(`[data-tab="${tab}"]`).click();
       await page.locator(`#view-${tab}`).waitFor({ state: 'visible' });
+      if (tab === 'cases') {
+        const editor = page.locator('#view-cases [data-rubric-panel]').first();
+        await editor.evaluate(el => { el.open = true; });
+        await editor.locator('[data-tool-enabled]').check();
+        const checks = await editor.evaluate(el => {
+          const box = e => e.getBoundingClientRect().toJSON(), toggle = el.querySelector('[data-tool-enabled]');
+          return { toggle: box(toggle), label: box(toggle.closest('label')), reply: box(el.querySelector('[data-reply-check]')), tool: box(el.querySelector('[data-tool-check]')), card: box(el.closest('.case')) };
+        });
+        assert.ok(checks.toggle.width >= 12 && checks.toggle.width <= 24, 'tool checkbox must not stretch across the editor: ' + JSON.stringify(checks));
+        assert.ok(checks.tool.left > checks.reply.left && checks.reply.width > 300 && checks.tool.width > 300, 'parallel editors get usable column widths');
+        assert.ok(checks.card.width >= metrics.inner.width - 30, 'expanded case editor spans the card grid');
+        if (evidence) await editor.screenshot({ animations: 'disabled', path: path.join(evidence, `${width}-dual-checks.png`) });
+      }
       const geometry = await page.locator(`#view-${tab}`).evaluate(view => {
         const shell = document.querySelector('.wsk-shell').getBoundingClientRect(), rect = view.getBoundingClientRect();
         return { width: rect.width, contained: rect.left >= shell.left - 1 && rect.right <= shell.right + 1,
