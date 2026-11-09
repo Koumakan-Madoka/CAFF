@@ -34,10 +34,11 @@ export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) 
   return normalized.map(row => {
     const originals = normalized.filter(r => !r.excludedReason && r.variant?.kind === 'original'
       && r.caseId === row.caseId && r.traceHash === row.traceHash && r.decisionHash === row.decisionHash);
-    const baselineStatus = originals.some(r => r.status === 'reached') ? 'valid_output'
+    const validOutput = (r: any) => ['reached', 'pass', 'fail'].includes(r.status);
+    const baselineStatus = originals.some(validOutput) ? 'valid_output'
       : originals.some(r => r.status === 'reserved') ? 'pending' : originals.length ? 'no_valid_output' : 'not_run';
     return { ...row, accountingPolicy: 'single-call-valid-output-v2',
-      eligibleForScoring: !row.excludedReason && row.status === 'reached', baselineStatus,
+      eligibleForScoring: !row.excludedReason && validOutput(row), baselineStatus,
       caseEligibleForGateAndScreen: !row.excludedReason && baselineStatus === 'valid_output' };
   });
 }

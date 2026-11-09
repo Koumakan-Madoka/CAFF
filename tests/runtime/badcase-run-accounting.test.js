@@ -14,6 +14,18 @@ test('legacy invalid runs are projected without changing immutable packets, hash
   assert.equal(current.resultHash, hash(result)); assert.deepEqual(runs.read(r.id).result, result); assert.deepEqual(fs.readFileSync(file), before);
   assert.deepEqual(project(project(list)), project(list));
 });
+for (const status of ['pass', 'fail']) test(`code-only ${status} is a valid original baseline; invalid never enters its denominator or rewrites packets`, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-code-baseline-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runs = createWikiRunStore({ globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') });
+  const request = { schemaVersion: 1, kind: 'wikiskill-run-request', variant: { kind: 'original' }, metadata: { caseId: 'c', traceHash: 'trace', decisionHash: 'decision' } };
+  const reservation = runs.reserve(request), result = runs.finish(reservation.id, { outcome: { status, reason: status === 'fail' ? 'tool_rule_failed' : null, reply: null }, message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command: 'not executed' } }] }, modelCalls: 1, toolExecutions: 0 });
+  const file = path.join(root, 'wiki/run-replays', reservation.id + '.result.json'), bytes = fs.readFileSync(file), [saved] = runs.list();
+  assert.equal(saved.status, status); assert.equal(saved.baselineStatus, 'valid_output'); assert.equal(saved.caseEligibleForGateAndScreen, true); assert.equal(saved.eligibleForScoring, true);
+  const projected = project([row('invalid', 'invalid'), row('code', status), row('candidate', status, { variant: { kind: 'candidate' } })]);
+  assert.equal(projected[0].eligibleForScoring, false); assert.ok(projected.every(r => r.baselineStatus === 'valid_output'));
+  assert.equal(project([row('candidate-only', status, { variant: { kind: 'candidate' } })])[0].baselineStatus, 'not_run');
+  assert.deepEqual(runs.read(reservation.id).result, result); assert.deepEqual(fs.readFileSync(file), bytes); assert.equal(saved.resultHash, hash(result));
+});
 test('baseline validity is scoped to exact case/trace/decision and excludes invalid attempts, errors, unknowns and user withdrawals', () => {
   const rows = [row('1', 'unreached', { countAsFailure: true }), row('2', 'reached', { variant: { kind: 'candidate', id: 'candidate' } }),
     row('3', 'reached', { caseId: 'other' }), row('4', 'reached', { traceHash: 'old-trace' }), row('5', 'reached', { decisionHash: 'old-decision' })];

@@ -15,7 +15,7 @@ function prepareProductionRun({config,store,source,item,record,candidate,scoring
  const input={item:source,bundle,decision,toolset};
  const original=buildWikiRunRequest(input);
  const originals=createWikiRunStore(config).list(source.id).filter(r=>r.traceHash===source.traceBundle.hash && r.decisionHash===decision.hash && r.variant?.kind==='original');
- if(!originals.some(r=>r.status==='reached' && r.caseEligibleForGateAndScreen))throw fail('wiki_run_baseline_required');
+ if(!originals.some(r=>['reached','pass','fail'].includes(r.status) && r.caseEligibleForGateAndScreen))throw fail('wiki_run_baseline_required');
  const replacement={id:candidate.id,targetId:candidate.targetId,baseText:candidate.baseText,baseHash:candidate.baseHash,replacement:candidate.candidateText};
  const changed=buildWikiRunRequest({...input,candidate:replacement});
  const originalRequestHash=wikiRunHash(original),candidateRequestHash=wikiRunHash(changed);

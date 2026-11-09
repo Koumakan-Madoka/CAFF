@@ -7,6 +7,7 @@ const {createWikiRunStore}=require(base+'wiki-run-store');
 const {buildWikiRunRequest,replayWikiRun,wikiRunHash}=require(base+'wiki-run-replay');
 const {pageDehydrationCause}=require(base+'wiki-dehydration');
 const {scoreWikiRun,isWikiJudgeTechnicalError}=require(base+'wiki-scoring-v2');
+const {scoreWikiRunChecks}=require(base+'wiki-run-check-scoring');
 const {wikiValueHash}=require(base+'wiki-rubric');
 const {redactTraceKnownValues}=require(base+'wiki-trace');
 const {validateWikiScoring,assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
@@ -31,9 +32,9 @@ async function runSingleCallComparison(config,options={}){
  if(config?.kind!=='wikiskill-run-comparison-v1'||config.modelProfile!=='openai-codex/gpt-6.1-sol'
   ||!/^[a-f0-9]{64}$/.test(options.experimentPlanHash||'')
   ||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(options.executionId||''))throw fail('wiki_run_confirmation_required');
- const fixed=structuredClone(config),scoring=validateWikiScoring(fixed.scoring),values=knownValues(fixed,options);
+ const fixed=structuredClone(config),scoring=validateWikiScoring(fixed.scoring,{runChecks:true}),values=knownValues(fixed,options);
  if(scoring.rubric.questions.some(q=>q.evidence!=='reply'))throw fail('wiki_rubric_run_evidence_invalid');
- assertWikiScoringJudge(scoring,options.judge);
+ assertWikiScoringJudge(scoring,options.judge,{runChecks:true});
  const store=createWikiStore(fixed),packets=createWikiRunStore(fixed),emit=options.onEvent||(()=>{});
  function verify(){
   const item=store.read().cases.find(c=>c.id===fixed.caseId),bundle=store.readCaseTrace(fixed.caseId),decision=store.getDehydration(fixed.caseId)?.decision;
@@ -44,7 +45,7 @@ async function runSingleCallComparison(config,options={}){
    if(wikiRunHash(request)!==fixed[variant+'RequestHash'])throw fail('wiki_run_stale');
    if(redactTraceKnownValues(request,values).count)throw fail('wiki_run_input_contains_known_key');
   }
-  assertWikiScoringJudge(scoring,options.judge);
+  assertWikiScoringJudge(scoring,options.judge,{runChecks:true});
  }
  verify();
  const runs=[],attempts={original:0,candidate:0},slots={original:0,candidate:0};
@@ -60,6 +61,7 @@ async function runSingleCallComparison(config,options={}){
   let packet;
   try{
    packet=await replayWikiRun({store,runs:packets,caseId:fixed.caseId,toolset:fixed.toolset,
+    ...(scoring.rubric.toolCheck?{rubricHash:scoring.rubric.hash}:{}),
     ...(variant==='candidate'?{candidate:fixed.candidate}:{}),approvedRequestHash:fixed[variant+'RequestHash'],
     attempt:{planHash:options.experimentPlanHash,executionId:options.executionId,iteration}},
    {knownKeyValues:values,client:{complete:async request=>{
@@ -84,6 +86,14 @@ async function runSingleCallComparison(config,options={}){
   const wireInvalid=packet.modelCalls===1&&!verifyWikiRunWireRequest(packets.read(packet.id).reservation.request,packet.wireRequest,values);
   if(wireInvalid){row.reason=packet.wireRequest?'wiki_run_wire_request_mismatch':'wiki_run_wire_request_missing';row.status='error';fatal=true;}
   else if(cleanupFailed||stateInvalid){row.reason=cleanupFailed?'wiki_run_client_cleanup_failed':'wiki_run_client_state_invalid';fatal=true;}
+  else if(scoring.rubric.toolCheck&&packet.message&&packet.outcome.status!=='error'){
+   try{
+    const result=await scoreWikiRunChecks({message:packet.message,rubric:scoring.rubric,binding:scoring.binding,task:scoring.task,expected:scoring.expected},options.judge);
+    row.checks=result.checks;if(result.assessment)row.assessment=result.assessment;
+    row.status=result.checks.status;delete row.reason;if(result.checks.reason)row.reason=result.checks.reason;
+    if(row.status==='error'&&!isWikiJudgeTechnicalError(row.assessment))fatal=true;
+   }catch(e){row.reason=safeCode(e?.code,'wiki_run_scoring_failed');fatal=true;}
+  }
   else if(packet.outcome.status==='reached'){
    try{
     row.assessment=await scoreWikiRun({rubric:scoring.rubric,binding:scoring.binding,hardAssertions:[],

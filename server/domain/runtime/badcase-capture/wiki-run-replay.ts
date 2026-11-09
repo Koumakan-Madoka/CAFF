@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import { buildDehydrationPrefix } from './wiki-dehydration';
 import { redactTraceKnownValues } from './wiki-trace';
+import { prepareWikiRunChecks, finishWikiRunChecks } from './wiki-run-checks';
 import { locateGlobalPromptTarget } from '../../../../lib/agent-prompt-targets';
 const fail = (code: string) => Object.assign(Error(code), { code });
 export const wikiRunHash = (v: any) => crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -75,6 +76,10 @@ export async function replayWikiRun(input: any, options: any) {
   const item = store.read().cases.find((c: any) => c.id === caseId);
   if (!item) throw fail('wiki_unknown_case');
   const decision = store.getDehydration(caseId)?.decision;
+  // Opt-in only: legacy callers keep their exact request/result packet shape.
+  // The frozen rubric hash is result evidence, never part of the model input.
+  const rubric = input.rubricHash === undefined ? null : store.getFrozenRubric(caseId, input.rubricHash);
+  if (rubric && (!rubric.toolCheck || rubric.questions.some((q: any) => q.evidence !== 'reply'))) throw fail('wiki_rubric_run_evidence_invalid');
   const request = buildWikiRunRequest({ item, bundle: store.readCaseTrace(caseId), decision, toolset, candidate });
   if (wikiRunHash(request) !== approvedRequestHash) throw fail('wiki_run_stale');
   if (typeof options?.client?.complete !== 'function') throw fail('wiki_run_client_required');
@@ -89,8 +94,18 @@ export async function replayWikiRun(input: any, options: any) {
     const response = await options.client.complete(structuredClone(request));
     if (response?.networkRequests !== 1 || !Number.isFinite(response.durationMs) || response.durationMs < 0) throw fail('wiki_run_client_invalid');
     const message = redactTraceKnownValues(response.message, options.knownKeyValues || []).value;
-    result = { message, outcome: classifyWikiRunOutput(message), modelCalls: 1, durationMs: response.durationMs,
-      wireRequest: response.wireRequest ? redactTraceKnownValues(response.wireRequest, options.knownKeyValues || []).value : null };
+    let outcome = classifyWikiRunOutput(message), checks;
+    if (rubric) {
+      const prepared = prepareWikiRunChecks(message, rubric), final = finishWikiRunChecks(prepared);
+      checks = { rubricHash: rubric.hash, prepared };
+      // 'reached' still means a reply awaits judging, not a pass. Code-only
+      // pass/fail is already decisive; unknown syntax remains invalid.
+      if (outcome.status !== 'error') outcome = { status: prepared.needsReplyJudge ? 'reached' : final.status,
+        reason: prepared.needsReplyJudge ? null : final.reason, reply: prepared.reply };
+    }
+    result = { message, outcome, modelCalls: 1, durationMs: response.durationMs,
+      wireRequest: response.wireRequest ? redactTraceKnownValues(response.wireRequest, options.knownKeyValues || []).value : null,
+      ...(checks ? { checks } : {}) };
   } catch {
     // No upstream prose, body, path or credentials in error evidence. Never retry.
     result = { message: null, outcome: { status: 'error', reason: 'model_request_failed', reply: null }, modelCalls: null, durationMs: null };

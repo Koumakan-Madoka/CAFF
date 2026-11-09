@@ -45,7 +45,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : decision?.level === 'run' ? 'run' : 'pending';
     const originals = level === 'run' ? runReplays.filter((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
       && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason) : [];
-    const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'reserved'].includes(r.status));
+    const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'pass', 'fail', 'reserved'].includes(r.status));
     const stopReason = wikiSourceFamily(c) !== 'GPT' ? 'report_only' : source ? 'legacy_source' : level === 'reference' ? 'reference_only' : invalidBaseline ? 'invalid_baseline' : null;
     const versions = (state.rubrics || []).filter((r: any) => r.caseId === c.id).sort((a: any, b: any) => b.version - a.version);
     const frozen = versions.find((r: any) => r.status === 'frozen');
@@ -73,7 +73,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const runs = match?.row.runs.filter((r: any) => r.variant === 'original') || [];
     const pass = runs.filter((r: any) => r.status === 'pass').length, fail = runs.filter((r: any) => r.status === 'fail').length;
     const original = { source: match ? 'comparison' : originals.length ? 'run-replay' : null, comparisonId: match?.batch.id ?? null,
-      valid: pass + fail, pass, fail, reproduced: fail > (pass + fail) / 2, outputs: level === 'run' ? originals.filter((r: any) => r.status === 'reached').length : pass + fail,
+      valid: pass + fail, pass, fail, reproduced: fail > (pass + fail) / 2, outputs: level === 'run' ? originals.filter((r: any) => ['reached', 'pass', 'fail'].includes(r.status)).length : pass + fail,
       unscored: match ? 0 : originals.filter((r: any) => r.status === 'reached').length,
       invalid: (match ? runs : originals).filter((r: any) => r.status === 'invalid').length,
       errors: (match ? runs : originals).filter((r: any) => r.status === 'error').length,
