@@ -6,7 +6,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson, sendTextDownload } from '../http/response';
 import { wikiTraceMarkdown } from '../domain/runtime/badcase-capture/wiki-trace-export';
 import { createWikiStore } from '../domain/runtime/badcase-capture/wiki-store';
-import { createWikiRunStore, projectWikiRunAccounting } from '../domain/runtime/badcase-capture/wiki-run-store';
+import { createWikiRunStore, projectWikiRunAccounting, projectWikiRunReportCounts } from '../domain/runtime/badcase-capture/wiki-run-store';
 import { wikiRunMarkdown } from '../domain/runtime/badcase-capture/wiki-run-export';
 import { listWikiTargets } from '../domain/runtime/badcase-capture/wiki-targets';
 import { collectWikiCandidateFiles } from '../domain/runtime/badcase-capture/wiki-candidate-files';
@@ -220,6 +220,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         else store.confirmGlobalCandidate({ ...input, files });
       }
       const state = store.read();
+      const runReplays = projectWikiRunAccounting(runs.list(), state.dehydrations);
+      const reportCounts = new Map(projectWikiRunReportCounts(state, runReplays).map((r: any) => [r.caseId, r]));
       const cases = wikiDisplayCases(state.cases).map((c: any) => {
         const previous = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id);
         let availability = pageRecommendationAvailability(c, previous);
@@ -229,9 +231,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
           try { availability = pageRecommendationAvailability(c, previous, store.readCaseTrace(c.id)); }
           catch { availability = { eligible: false }; }
         }
-        return { ...c, dehydrationRecommendation: availability };
+        return { ...c, dehydrationRecommendation: availability, runChecks: reportCounts.get(c.id) };
       });
-      const runReplays = projectWikiRunAccounting(runs.list(), state.dehydrations);
       const comparisons = createWikiComparisonStore(scope).read().map(wikiComparisonDisplay);
       const replayChecks = readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(scope));
       const pipelineStates = projectWikiPipelineStates({ state, comparisons, runReplays, replayChecks });

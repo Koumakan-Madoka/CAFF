@@ -48,7 +48,7 @@ export function planWikiInitialSplit(state: any, accounting: any[]) {
     const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
       && (!c.sealedCheckpointId || r.decision?.level !== 'run'))?.decision;
     const originals = accounting.filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === decision?.hash
-      && r.variant?.kind === 'original' && !r.excludedReason).sort((a, b) => a.id.localeCompare(b.id));
+      && r.variant?.kind === 'original' && !r.excludedReason && !r.reportOnly).sort((a, b) => a.id.localeCompare(b.id));
     const valid = originals.some(r => r.baselineStatus === 'valid_output' && r.caseEligibleForGateAndScreen === true);
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : 'run';
     const reason = wikiSourceFamily(c) !== 'GPT' ? 'non_gpt_report_only'

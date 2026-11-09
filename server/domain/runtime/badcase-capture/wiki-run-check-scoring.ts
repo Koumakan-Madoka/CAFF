@@ -18,7 +18,7 @@ export function finishWikiRunCheckAssessment(prepared: WikiPreparedRunChecks, ru
 }
 export async function scoreWikiRunChecks(input: { message: any; rubric: WikiRubric; binding: WikiJudgeBinding | null; task: string; expected: string }, judge?: WikiJudgeAdapter) {
   const rubric = validateWikiRubric(input.rubric, true);
-  if (!rubric.toolCheck || rubric.questions.some(q => q.evidence !== 'reply')) throw Object.assign(Error('wiki_rubric_run_evidence_invalid'), { code: 'wiki_rubric_run_evidence_invalid' });
+  if (rubric.questions.some(q => q.evidence !== 'reply')) throw Object.assign(Error('wiki_rubric_run_evidence_invalid'), { code: 'wiki_rubric_run_evidence_invalid' });
   const prepared = prepareWikiRunChecks(input.message, rubric);
   const assessment = prepared.needsReplyJudge ? await scoreWikiRun({ rubric, binding: input.binding!, hardAssertions: [],
     run: { completed: true, replySource: 'public', publicReply: prepared.reply!, task: input.task, expected: input.expected } }, judge!) : undefined;

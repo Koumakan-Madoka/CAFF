@@ -44,7 +44,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const source = [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!);
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : decision?.level === 'run' ? 'run' : 'pending';
     const originals = level === 'run' ? runReplays.filter((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
-      && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason) : [];
+      && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason && !r.reportOnly) : [];
     const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'pass', 'fail', 'reserved'].includes(r.status));
     const stopReason = wikiSourceFamily(c) !== 'GPT' ? 'report_only' : source ? 'legacy_source' : level === 'reference' ? 'reference_only' : invalidBaseline ? 'invalid_baseline' : null;
     const versions = (state.rubrics || []).filter((r: any) => r.caseId === c.id).sort((a: any, b: any) => b.version - a.version);
