@@ -151,6 +151,28 @@ test('failed mailbox exec while the container is still running remains a hard re
   const wrapped = relayDockerTransport(run, async () => assert.fail(), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 });
   await assert.rejects(wrapped(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/); assert.equal(killed, true);
 });
+test('external precheck cancellation stops the pinned container between model calls and joins attach', async () => {
+  const controller = new AbortController(), id = 'a'.repeat(64); let finish, killed = false, reads = 0, joined = false;
+  const run = async args => {
+    if (args[0] === 'start') return new Promise(resolve => { finish = () => { joined = true; resolve({ code: 137, stdout: '', stderr: '' }); }; });
+    if (args[0] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Id: id, State: { Running: !killed } }]), stderr: '' };
+    if (args[0] === 'kill') { assert.equal(args[1], id); killed = true; finish(); return { code: 0, stdout: '', stderr: '' }; }
+    assert.equal(args[0], 'exec'); reads++;
+    if (reads === 1) controller.abort();
+    // The pre-fix relay must terminate too, so a red test never leaves a worker.
+    if (reads === 3) setImmediate(finish);
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const relay = relayDockerTransport(run, async () => assert.fail('no model send'), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 }, controller.signal);
+  await assert.rejects(relay(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/);
+  assert.equal(killed, true); assert.equal(joined, true); assert.equal(reads, 1);
+});
+test('an already aborted relay cannot attach a worker', async () => {
+  const controller = new AbortController(); controller.abort(); let starts = 0;
+  const run = async args => { if (args[0] === 'start') starts++; return { code: 0, stdout: '', stderr: '' }; };
+  const relay = relayDockerTransport(run, async () => assert.fail(), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 }, controller.signal);
+  await assert.rejects(relay(['start', '-a', '-i', 'a'.repeat(64)], { timeoutMs: 1000 })); assert.equal(starts, 0);
+});
 test('a transient host send error retains only its fixed code after stopping and joining the owned worker', async () => {
   const id='a'.repeat(64);let finish,killed=false;
   const run=async args=>{

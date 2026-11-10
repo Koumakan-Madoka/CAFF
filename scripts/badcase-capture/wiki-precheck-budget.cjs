@@ -45,10 +45,14 @@ function createPrecheckBudget(value, dependencies = {}) {
     try { dependencies.onEvent?.(structuredClone({ ...event, approvalHash: expected })); }
     catch { stop('evidence_write_failed'); throw fail('wiki_precheck_evidence_write_failed'); }
   }
-  function check() {
+  function check(checkCap = true) {
     if (reason) return false;
     if (closed) stop('closed');
     else if (now() - started >= limits.maxDurationMs) stop('time_limit');
+    // Once a measured response is complete, deliver it before enforcing the
+    // request cap at the NEXT exchange/attempt boundary. Aborting here would
+    // kill a trace worker before it could parse its final approved response.
+    else if (checkCap && !busy && requests.length >= limits.maxRequests) stop('request_limit');
     else {
       try { stat(fixed.stopFile); stop('operator_stop'); }
       catch (e) { if (e.code !== 'ENOENT') stop('stop_check_failed'); }
@@ -57,12 +61,13 @@ function createPrecheckBudget(value, dependencies = {}) {
   }
   const interrupt = () => stop('operator_interrupted');
   events.on('SIGINT', interrupt);
-  const timer = repeat(check, 100); timer.unref?.();
+  // Poll STOP/time while a worker consumes the last response; the request cap
+  // itself belongs to an explicit next-exchange/attempt check, not this timer.
+  const timer = repeat(() => check(false), 100); timer.unref?.();
   function tokenStops() {
     if (totals.input + totals.cacheRead + totals.cacheWrite >= limits.maxInputTokens) stop('input_token_limit');
     else if (totals.output >= limits.maxOutputTokens) stop('output_token_limit');
     else if (totals.totalTokens >= limits.maxTotalTokens) stop('total_token_limit');
-    else if (requests.length >= limits.maxRequests) stop('request_limit');
   }
   return {
     check,

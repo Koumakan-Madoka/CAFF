@@ -48,6 +48,13 @@ function fixture(t, { expired = false, providerStatus = 200 } = {}) {
   };
   return { config, options, state, input, access, authFile, originalAuth, expire: () => { now += 600000; } };
 }
+test('native comparison forwards an optional precheck signal to its verified launcher', async t => {
+  const f = fixture(t), controller = new AbortController(), execute = f.options.executeCodex;
+  const r = await runComparison(f.config, { ...f.options, signal: controller.signal, executeCodex: async (image, files, options) => {
+    assert.equal(options.signal, controller.signal); return execute(image, files, options);
+  } });
+  assert.equal(r.completed, true); assert.equal(f.state.nativeRuns, 4);
+});
 test('Codex plan is credential/Docker-free, config is explicit and summary pins only public model settings', async t => {
   const f = fixture(t); fs.unlinkSync(f.authFile);
   const plan = prepareComparison(f.config, f.options); assert.equal(plan.supported, true);

@@ -6,13 +6,16 @@ const good = r => r && r.code === 0 && !r.failure && r.stderr === '';
 const ENV = ['/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin', '/usr/local/bin/node', '-e'];
 const READ = `const fs=require('node:fs');try{const p='/work/model-relay/request.json',s=fs.lstatSync(p,{bigint:true});if(!s.isFile()||s.size>8388736n)throw Error();const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const t=fs.fstatSync(fd,{bigint:true});if(t.ino!==s.ino||t.dev!==s.dev||t.size!==s.size)throw Error();const b=Buffer.alloc(Number(s.size)+1);let n=0,k;while(n<b.length&&(k=fs.readSync(fd,b,n,b.length-n,n)))n+=k;if(n!==Number(s.size))throw Error();process.stdout.write(b.subarray(0,n));}finally{fs.closeSync(fd)}}catch(e){if(e.code!=='ENOENT')process.exitCode=70}`;
 const WRITE = `const fs=require('node:fs');let n=0,a=[];process.stdin.on('data',b=>{n+=b.length;if(n>8388736)process.exit(70);a.push(b)});process.stdin.on('end',()=>{try{fs.writeFileSync('/work/model-relay/response.tmp',Buffer.concat(a),{flag:'wx',mode:0o600});fs.renameSync('/work/model-relay/response.tmp','/work/model-relay/response.json')}catch{process.exitCode=70}})`;
-function relayDockerTransport(runDocker, send, limits) {
+function relayDockerTransport(runDocker, send, limits, signal) {
   assert.equal(typeof runDocker, 'function'); assert.equal(typeof send, 'function');
   for (const k of ['maxRequests', 'maxRequestBytes', 'maxResponseBytes']) assert.ok(Number.isSafeInteger(limits[k]) && limits[k] > 0);
   assert.ok(limits.maxRequests <= 1000 && limits.maxRequestBytes <= 4194304 && limits.maxResponseBytes <= 4194304);
   const cap = { ...limits }; let used = false;
   return async (args, options = {}) => {
     if (args[0] !== 'start') return runDocker(args, options);
+    // Cleanup/inspect calls above remain available after cancellation. Never
+    // attach a new worker, and never propagate an arbitrary abort reason.
+    if (signal?.aborted) throw Error('container_model_relay_failed');
     assert.equal(used, false); used = true;
     assert.deepEqual(args.slice(0, 3), ['start', '-a', '-i']); assert.equal(args.length, 4);
     const id = args[3]; assert.match(id, /^[a-f0-9]{64}$/);
@@ -28,11 +31,13 @@ function relayDockerTransport(runDocker, send, limits) {
     };
     try {
       while (!ended) {
+        if (signal?.aborted) throw Error('container_model_relay_failed');
         assert.ok(performance.now() - started < options.timeoutMs, 'relay_deadline');
         const c = await inspect(); if (ended) break;
         if (!c.State.Running) { await new Promise(r => setTimeout(r, 20)); continue; }
         const read = await runDocker(['exec', id, ...ENV, READ], { timeoutMs: 2000, maxOutput: cap.maxRequestBytes * 2 + 128 });
         if (ended) break;
+        if (signal?.aborted) throw Error('container_model_relay_failed');
         if (!good(read)) {
           // The worker may stop after inspect but before exec, while its attach
           // process is still closing (notably across WSL). Recheck this exact
@@ -55,6 +60,7 @@ function relayDockerTransport(runDocker, send, limits) {
             // send belongs to the original durable approval/request coordinator.
             // No egress bypass, automatic retry, or container-selected destination.
             const response = await send(body);
+            if (signal?.aborted) throw Error('container_model_relay_failed');
             assert.ok(!ended && performance.now() - started < options.timeoutMs, 'relay_late_response');
             assert.ok(Buffer.isBuffer(response) && response.length > 0 && response.length <= cap.maxResponseBytes);
             const written = await runDocker(['exec', '-i', id, ...ENV, WRITE], { timeoutMs: 2000,

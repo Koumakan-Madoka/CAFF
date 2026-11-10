@@ -84,12 +84,13 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 ### 原版预检受信命令（M3 接线中：run／现场切点报告）
 
-`run-wiki-original-precheck.cjs` 是付费原版预检的受信入口，与上节**不调用模型**的回放检查缓存不同。当前切片已连接无现场 run 和现场的 `replayWikiRunReport`；trace 适配器、页面投影和入库门禁尚待后续切片，不能据此称 M3 完成。没有 HTTP／页面启动入口；运行命令不代表获得生产数据或真实模型额度授权。每次付费执行前仍须由规划者向用户确认额度。
+`run-wiki-original-precheck.cjs` 是付费原版预检的受信入口，与上节**不调用模型**的回放检查缓存不同。当前切片已连接无现场 run 和现场的 `replayWikiRunReport`；trace 执行接线、页面投影和入库门禁尚待后续切片，不能据此称 M3 完成。没有 HTTP／页面启动入口；运行命令不代表获得生产数据或真实模型额度授权。每次付费执行前仍须由规划者向用户确认额度。
 
 - 先 build，以普通 JSON 配置（≤1 MiB、拒绝符号链接）运行 `node scripts/badcase-capture/run-wiki-original-precheck.cjs --config <绝对路径> --plan`；只读冻结输入和本实例明确指定的已知值清单，不认证、不发模型请求。输出原版计划、停止线及 `approvalHash`，不打印模型上下文。执行使用 `--run --confirmed --expected-plan <planHash> --approval <approvalHash> --output <新的绝对JSONL路径>`；这些参数不能混入 `--plan`。计划／预算／STOP 路径改变后旧确认失效；已有输出拒绝覆盖，也不支持恢复、补发或自动重试整批。
 - 配置闭合字段：`kind:'wiki-original-precheck-v1'`、`globalRoot`、`sourceWorktree`、`caseId`、`rubricHash`、冻结 `toolset`、`codexAuthFile`、`knownKeySources`、`judgeCredentialDir`、`stopFile`、`limits`；可选 `policy`、`reportOnly`、`timeoutMs`、`judgeCatalogFile`。所有目录／文件选择均显式绝对路径；auth 只选 `.pi-sandbox/auth.json`，已知值清单和裁判目录必须指向同一个指定 sandbox，key 不在 JSON 中。只支持固定 GPT / xhigh / SSE，一次模型决定，不执行输出工具。现场必须显式 `reportOnly:true`；未接入的 trace 在离线阶段拒绝。
 - 断言须冻结且来源未变，离线回放检查须匹配当前轨迹／切点／现场。run 默认5次、最多20次，可用 `policy:{repeats,failureThreshold,controlThreshold}` 配置；不因无效或错误再补一次。pass+fail 是比例分母，失败比例严格大于阈值（默认0.5）才复现；报告、停止、未完成和用量不明结果无复现／对照资格。现场报告仅判工具与可到达的 reply 问题，不伪造 trace／file 证据，始终只出报告、不作采纳依据。
 - AI 判分复用正式 scorer／三票多数／同输出的技术重试，且必须显式提供 `judgeCatalogFile`：沿用 `readWikiEligibleJudges` 和完整配置资格校验；当前适配器仅支持已校准的固定 DeepSeek 配置，不借环境默认名单放行。配置、prompt 和资格冻结 hash 进入新计划；旧核心计划没有 `judge` 字段时仍按原字节／hash 读取。工具单检不读取裁判凭据；需要时所选 key 必须已在已知值清单内。资格／配置漂移在下一次付费请求前拒绝，不静默换裁判。
+- trace 的安全准备层 `wiki-precheck-trace-transport.cjs` 可作为原生比较器的宿主传输 factory：每次真实 provider 交换占用共享预算，保留原始（含 zstd）请求／SSE 响应字节及 hash，从唯一终止事件取用量；缺失／冲突用量即停。只读 protocol usage，不判 bash。记录不含 HTTP 认证头／账号材料；当前 access 和已知值在留存前检查，仍复用生产 Codex transport 的验证／错误序列化／只读凭据。此 factory **尚未由原版预检命令启用**，该命令对 trace 仍离线拒绝。共享 native launcher 的可选 signal 会传入 relay：两次模型交换之间也能终止已核验的确切容器 ID，并等待 attach 结束后由原生命周期证明清理；没有 signal 时原有行为不变。请求上限仅在下一次显式交换／尝试检查时阻止继续，不让定时轮询误杀正在消化最后一条已批准响应的 worker；STOP／时间停止仍持续轮询。
 - `limits` 必填：`maxRequests`（worker＋judge 共用，1–4096）、`maxInputTokens`（含 cacheRead/cacheWrite）、`maxOutputTokens`、`maxTotalTokens`、`maxDurationMs`（最多3小时）。整数停止线、计划 hash 和 STOP 绝对路径一起绑定确认。请求上限是保守占用次数，不证明实际发送；token 是已报告用量停止线，单请求可能越线，不是可精确预扣的计费上限。每次实际 worker／judge 交换均受控制，取消信号直达 SDK／宿主连接；STOP、Ctrl+C、整批时限、缺失／不一致用量和证据写失败都会阻止后续请求。取消后等待请求结束，未知不记成零；裁判重试也不能绕过共享上限。恰好用完请求额度且全部计划尝试已经完整判完，可以完成；仍需裁判但额度已尽则停止。
 - 先独占创建0600输出并预约不可变记录，再发请求。JSONL逐条 fsync，留存冻结请求、逐请求占用／用量、输出包、判分和 artifact hash；原始包另存在 `<globalRoot>/original-precheck-outputs/<precheckId>/run-replays/`，不会被普通 run／report 枚举读到。`original-prechecks/` 只存不可覆盖的预约／结果及安全引用，绑定断言版本、输入、切点和现场；不写 Wiki 快照、正式比较、门槛或测试统计。崩溃留下的预约如实未知，不自动补发。目录属于同 OS 用户受信存储，hash／no-replace 不是抵御同用户篡改的安全边界。
 

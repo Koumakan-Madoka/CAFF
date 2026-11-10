@@ -82,6 +82,12 @@ test('Codex launcher is explicitly relay-only and has no credential environment 
   await assert.rejects(runCodexDockerTask(image, codexFiles, { network: 'bridge' }), /evaluation_codex_relay_required/);
   await assert.rejects(runCodexDockerTask(image, codexFiles, { sendNativeRequest: async () => {}, key }), /evaluation_codex_relay_required/);
 });
+test('a cancelled native precheck cannot inspect images, create or attach any container', async () => {
+  const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs'), controller = new AbortController(); controller.abort();
+  const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }], f = fake();
+  await assert.rejects(runCodexDockerTask(image, input, { signal: controller.signal, timeoutMs: 1000, runDocker: f.run, sendNativeRequest: async () => assert.fail('no send') }), /evaluation_aborted/);
+  assert.equal(f.calls.length, 0); assert.equal(f.remaining(), false);
+});
 test('proxy failure returns pinned launcher hashes and isolation only after verified cleanup; missing cleanup still throws', async () => {
   const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
   const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }];

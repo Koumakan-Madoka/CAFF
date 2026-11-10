@@ -51,6 +51,12 @@ test('worker and judge consume the same request cap and tokens; returned snapsho
   assert.equal(sends, 0); assert.equal(guard.snapshot().reason, 'request_limit'); assert.equal(guard.snapshot().requests, 2);
   assert.equal(guard.snapshot().usageComplete, true);
 });
+test('reaching the request cap does not abort delivery of an already completed last response', async t => {
+  const { guard, advance } = setup(t, { limits: { ...limits(), maxRequests: 1 } }); await request(guard);
+  assert.equal(guard.signal.aborted, false); advance(100); assert.equal(guard.signal.aborted, false, 'polling must not kill the worker delivering its final response');
+  assert.equal(guard.snapshot().usageComplete, true);
+  assert.equal(guard.check(), false); assert.equal(guard.snapshot().reason, 'request_limit'); assert.equal(guard.signal.aborted, true);
+});
 test('each token stop line includes reported cache and stops at equality before another request', async t => {
   for (const [field, u] of [['maxInputTokens', { input: 1, output: 0, cacheRead: 99, cacheWrite: 0, totalTokens: 100 }],
     ['maxOutputTokens', usage(1, 20)], ['maxTotalTokens', usage(117, 2)]]) {

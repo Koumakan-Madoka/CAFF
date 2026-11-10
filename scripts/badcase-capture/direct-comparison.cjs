@@ -294,7 +294,8 @@ async function runComparison(config, options = {}) {
         transport?.beginAttempt();
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
         task = await execute(fixed.image, files[variant], native
-          ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash }
+          ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash,
+            ...(options.signal ? { signal: options.signal } : {}) }
           : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash });
       } catch { task = { failed: true, reason: 'evaluation_failed' }; }
       const durationMs = performance.now() - started, environmentReason = transport?.state().reason;

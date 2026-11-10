@@ -139,7 +139,8 @@ async function runCodexDockerTask(image, files, options = {}) {
   if (typeof options.sendNativeRequest !== 'function' || options.key !== undefined || options.network !== undefined && options.network !== 'none'
     || !files.some(f => f.path === 'evaluation-profile.json' && JSON.parse(f.bytes) === CODEX_PROFILE)) throw fail('evaluation_codex_relay_required');
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
-  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, MAILBOX_LIMITS);
+  if (options.signal?.aborted) throw fail('evaluation_aborted');
+  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, MAILBOX_LIMITS, options.signal);
   return runDockerTask(image, files, { ...options, runDocker: run, network: 'none' }, undefined);
 }
 // Credential-free classifier relay: explicit host-owned exchange and bounded
@@ -148,7 +149,8 @@ async function runHostModelDockerTask(image, files, options = {}) {
   if (typeof options.sendNativeRequest !== 'function' || options.key !== undefined || options.network !== undefined && options.network !== 'none'
     || !options.limits) throw fail('evaluation_host_relay_required');
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
-  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, options.limits);
+  if (options.signal?.aborted) throw fail('evaluation_aborted');
+  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, options.limits, options.signal);
   return runDockerTask(image, files, { ...options, runDocker: run, network: 'none' }, undefined);
 }
 // Separate credential-free path: never read a provider key and never inject
