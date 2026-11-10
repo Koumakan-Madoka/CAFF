@@ -58,7 +58,7 @@ node scripts/start-app.js > 'E:/isolated-wiki/server.log' 2>&1
 
 ## 4. 准备运行时及仓库依赖（首次/缓存未命中时）
 
-镜像必须已按契约在本地准备。`runtime.json` 只含上面的 `image` 和 `dockerBackend`：
+镜像必须已按契约在本地准备。**缓存未命中的构建不是离线操作**：宿主 `127.0.0.1:17890` 必须已有可访问公共 npm 的代理。`dependency-proxy.cjs` 只把一次性无账号凭据容器的连接转发到这个固定端口，不允许直连回退；代理没开时停止并等待用户恢复，不自行启动代理、不改捕获的 package/lock、不复用或重写旧缓存回执。缓存命中只按原规则离线核验。`runtime.json` 只含上面的 `image` 和 `dockerBackend`：
 
 ```sh
 node scripts/badcase-capture/cache-runtime-dependencies.cjs 'E:/isolated-wiki/runtime.json' 'E:/isolated-wiki/runtime-cache'

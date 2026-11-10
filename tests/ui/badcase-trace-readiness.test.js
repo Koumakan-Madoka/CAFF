@@ -84,7 +84,7 @@ test('precheck approximation disclosure uses recorded markers only, preserving a
   const h = setup(t, data); assert.equal(h.root.querySelector('[data-goal-approximation]'), null);
   p.current.goalExecutions = [{ iteration: 1, goalState: 'approximate-minimal-v1', goalSeedHash: 'e'.repeat(64), goalExecutionId: '00000000-0000-4000-8000-000000000001' }];
   p.history[0].goalExecutions = clone(p.current.goalExecutions); h.panel.render(data);
-  assert.match(h.root.querySelector('[data-goal-approximation]').textContent, /Goal 状态近似.*最小.*不还原历史.*不同回放条件/s);
+  assert.match(h.root.querySelector('[data-goal-approximation]').textContent, /Goal 状态近似.*最小.*不还原历史.*不可直接比较/s);
   assert.ok(h.root.querySelector('[data-original-precheck]').textContent.includes('e'.repeat(64)));
   p.current.goalExecutions[0].goalState = 'unseeded'; p.history[0].goalExecutions = clone(p.current.goalExecutions); h.panel.render(data);
   assert.equal(h.root.querySelector('[data-goal-approximation]'), null); assert.match(h.root.textContent, /未播种 Goal/);
@@ -111,14 +111,50 @@ for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} co
   assert.match(panel.textContent, /suggest-goal.*reason.*1000/s);
   assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
 });
+test('precheck Goal approximation is one counted line with exact per-execution evidence in closed details', t => {
+  const real = fixture(t, { statuses: ['pass', 'pass', 'pass', 'pass'], policy: { repeats: 4 } }), data = real.snapshot(), p = data.pipelineStates[0].precheck;
+  p.current.goalExecutions = Array.from({ length: 4 }, (_, i) => ({ iteration: i + 1, goalState: 'approximate-minimal-v1', goalSeedHash: String(i + 1).repeat(64), goalExecutionId: 'synthetic-' + i }));
+  p.history[0].goalExecutions = clone(p.current.goalExecutions);
+  const before = JSON.stringify(data), h = setup(t, data), box = h.root.querySelector('[data-original-precheck]');
+  const note = box.querySelector(':scope > [data-goal-approximation]'); assert.ok(note);
+  assert.match(note.textContent, /^4 次均为 Goal 状态近似.*独立最小种子.*不还原历史 Goal.*不可直接比较/);
+  const details = box.querySelector(':scope > [data-goal-details]'); assert.ok(details); assert.equal(details.open, false);
+  assert.equal(details.querySelectorAll('[data-goal-execution]').length, 4);
+  for (const row of p.current.goalExecutions) { assert.ok(details.textContent.includes(row.goalSeedHash)); assert.ok(details.textContent.includes(row.goalExecutionId)); assert.ok(!note.textContent.includes(row.goalSeedHash)); }
+  assert.equal((box.textContent.match(/不还原历史 Goal/g) || []).length, 2, 'one summary for current and one for collapsed history, not one per execution');
+  assert.equal(JSON.stringify(data), before); assert.equal(h.calls.length, 0);
+});
+test('Goal summary counts only recorded approximations and keeps unseeded and unmarked runs distinct with escaped details', t => {
+  const real = fixture(t), data = real.snapshot(), p = data.pipelineStates[0].precheck;
+  p.current.goalExecutions = [
+    { iteration: 1, goalState: 'approximate-minimal-v1', goalSeedHash: 'a'.repeat(64), goalExecutionId: '<img src=x onerror=bad()>' },
+    { iteration: 2, goalState: 'unseeded', goalSeedHash: 'b'.repeat(64), goalExecutionId: 'unseeded-execution' },
+    { iteration: 3 },
+  ];
+  const h = setup(t, data), box = h.root.querySelector('[data-original-precheck]');
+  assert.match(box.querySelector(':scope > [data-goal-approximation]').textContent, /^1 次为 Goal 状态近似/);
+  assert.doesNotMatch(box.querySelector(':scope > [data-goal-approximation]').textContent, /均为/);
+  assert.match(box.querySelector(':scope > [data-goal-unseeded]').textContent, /1 次.*未播种 Goal/);
+  assert.equal(box.querySelectorAll(':scope > [data-goal-details] [data-goal-execution]').length, 2);
+  assert.ok(box.querySelector('[data-goal-details]').textContent.includes('<img src=x onerror=bad()>')); assert.equal(h.root.querySelector('img'), null);
+  assert.equal(h.calls.length, 0);
+});
+test('precheck sparse marker projection never claims every attempt was approximate', t => {
+  const real = fixture(t), data = real.snapshot(), p = data.pipelineStates[0].precheck;
+  assert.equal(p.current.summary.attempted, 3);
+  p.current.goalExecutions = [{ iteration: 2, goalState: 'approximate-minimal-v1', goalSeedHash: 'a'.repeat(64), goalExecutionId: 'synthetic-marked' }];
+  const h = setup(t, data), note = h.root.querySelector('[data-original-precheck] > [data-goal-approximation]');
+  assert.match(note.textContent, /^1 次为 Goal 状态近似/); assert.doesNotMatch(note.textContent, /均为/); assert.equal(h.calls.length, 0);
+});
 test('formal result page and per-run detail label recorded Goal approximation, never invent it for old runs', async t => {
   const real = fixture(t), data = real.snapshot(), run = { iteration: 1, variant: 'original', status: 'fail', assessment: null,
     goalState: 'approximate-minimal-v1', goalSeedHash: 'f'.repeat(64), goalExecutionId: '00000000-0000-4000-8000-000000000001' };
   data.comparisons = [{ id: 'synthetic-comparison', kind: 'wiki-staged-batch-comparison-v2', createdAt: '2026-11-10T00:00:00.000Z', completed: true, model: 'openai-codex/gpt-6.1-sol', modelCallsKnown: 1,
     evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [{ sourceCaseId: real.c.id, stage: 'gate', split: 'gate', category: 'control', rubric: data.rubrics[0], runs: [run] }] }];
   const bytes = JSON.stringify(data.comparisons), h = setup(t, data, { full: true }); await h.panel.load(); await h.click('[data-tab="impact"]');
-  assert.match(h.root.querySelector('#impact-runs > [data-goal-approximation]').textContent, /Goal 状态近似.*不同回放条件/s);
-  assert.ok(h.root.querySelector('.assertion-run [data-goal-approximation]').textContent.includes(run.goalSeedHash));
+  assert.match(h.root.querySelector('#impact-runs > [data-goal-approximation]').textContent, /1 次均为 Goal 状态近似.*不可直接比较/s);
+  assert.ok(h.root.querySelector('.assertion-run [data-goal-details]').textContent.includes(run.goalSeedHash));
+  assert.equal(h.root.querySelector('#impact-runs > [data-goal-details]').open, false);
   assert.equal(JSON.stringify(data.comparisons), bytes);
   delete run.goalState; delete run.goalSeedHash; delete run.goalExecutionId;
   await h.panel.load(); await h.click('[data-tab="impact"]'); assert.equal(h.root.querySelector('[data-goal-approximation]'), null);
@@ -168,6 +204,40 @@ test('control is exact in-panel consent, not browser confirmation or execution; 
   assert.equal(host().querySelector('[data-control-consent]'), null);
   host().querySelector('[data-control-confirm]').click(); host().querySelector('[data-control-lock]').click();
   assert.deepEqual(sent, [{ caseId: real.c.id, proposalHash: 'f'.repeat(64) }]); assert.equal(h.calls.length, 0);
+});
+test('frozen preview content drift invalidates pending control consent even if its displayed hash was not updated', t => {
+  const real = fixture(t), data = real.snapshot(), sent = [], h = setup(t, data, { onConfirmControl: b => sent.push(b) });
+  h.root.querySelector('[data-control-confirm]').click();
+  data.rubrics.find(r => r.status === 'frozen').toolCheck.rules[0].max = 999;
+  h.root.querySelector('[data-control-lock]').click();
+  assert.equal(sent.length, 0); assert.equal(h.root.querySelector('[data-control-lock]'), null);
+});
+test('control consent uses the editor plain-language preview while exact JSON and bound hashes remain unchanged', async t => {
+  const real = fixture(t), data = real.snapshot(), before = JSON.stringify(data), h = setup(t, data, { full: true });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  const toolPreview = [...h.root.querySelectorAll('.rubric-version .rubric-checks section')].find(el => el.textContent.includes('工具调用检查')).querySelector('p').textContent;
+  await h.click('[data-tab="badcases"]'); await h.click('[data-control-confirm]');
+  const strip = h.root.querySelector('[data-control-consent]'), preview = strip.querySelector('[data-control-check-preview]'); assert.ok(preview);
+  assert.ok(preview.textContent.includes(toolPreview)); assert.match(preview.textContent, /调用时参数要对：suggest-goal，reason.*1000/s);
+  assert.equal(preview.closest('details'), null, 'plain-language checks are visible before confirmation');
+  assert.equal(preview.querySelector('pre'), null);
+  const details = strip.querySelector('[data-control-check-json]'); assert.ok(details); assert.equal(details.open, false);
+  const r = data.rubrics.find(r => r.status === 'frozen');
+  assert.deepEqual(JSON.parse(details.querySelector('pre').textContent), { questions: r.questions, toolCheck: r.toolCheck, scoringModel: r.scoringModel });
+  assert.ok(strip.textContent.includes(data.pipelineStates[0].control.proposalHash)); assert.ok(strip.textContent.includes(r.hash));
+  assert.equal(JSON.stringify(data), before); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+});
+test('control preview includes every AI question, evidence and model and escapes untrusted text', t => {
+  const real = fixture(t), data = real.snapshot(), r = data.rubrics.find(r => r.status === 'frozen');
+  r.questions = [{ id: 'q1', question: '<script>公开回复说明结果</script>', evidence: 'reply' }, { id: 'q2', question: '轨迹保留调用', evidence: 'trace' }];
+  r.scoringModel = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  r.toolCheck = { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'forbid', rules: [{ parameter: 'path', kind: 'forbidden-values', values: ['<img src=x onerror=bad()>'] }, { parameter: 'offset', kind: 'allowed-values', values: ['1'] }] };
+  const before = JSON.stringify(data), h = setup(t, data, { onConfirmControl() { throw Error('preview must not submit'); } }); h.root.querySelector('[data-control-confirm]').click();
+  const preview = h.root.querySelector('[data-control-check-preview]'); assert.ok(preview);
+  assert.match(preview.textContent, /公开回复说明结果.*公开回复.*轨迹保留调用.*轨迹.*deepseek\/deepseek-v4-flash/s);
+  assert.match(preview.textContent, /不该这样调用：read.*path 不得取.*offset 只能取/s);
+  assert.ok(preview.textContent.includes(r.questions[0].question)); assert.equal(h.root.querySelector('script,img'), null);
+  assert.equal(JSON.stringify(data), before); assert.equal(h.calls.length, 0);
 });
 test('read-only, ineligible and already-frozen/stale controls never offer a writable confirmation', t => {
   const real = fixture(t), data = real.snapshot(), sent = [], h = setup(t, data, { onConfirmControl: b => sent.push(b) });

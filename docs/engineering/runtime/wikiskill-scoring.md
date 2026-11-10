@@ -1,6 +1,6 @@
 # WikiSkill 判分 v2：硬断言与 AI 判断言
 
-本契约描述截至 2026-11-10 M4 页面与标记切片的代码行为，包括模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
+本契约描述截至 2026-11-10 S1 的代码行为，包括模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
 
 ## 四层职责
 
@@ -28,7 +28,7 @@
 
 未配 toolCheck 的 trace 评分状态仍为 `pass/fail/error`；新结构化工具检查的 trace 与 run 另有 `invalid`（没有可判检查或参数证据不可得），不进有效分母。每条真正送裁判的 AI 断言仍只有 `satisfied/not-satisfied`（成立/不成立），没有“无法判断”第三种判定；未判到的检查不伪造裁判票。以下 trace 硬断言和 AI 证据协议不变；单次 run 适用后述双检查规则，不要求工具单检额外产生公开回复。
 
-1. 先核验执行身份、隔离和输入/运行配置 hash；trace 还须核验实际容器已删除。无现场 run 不伪造容器/现场回执，须绑定不可变单次请求/输出包且零工具执行。正常完成、有非空公开回复是必需硬断言；内部回复不是公开回复。
+1. 先核验执行身份、隔离和输入/运行配置 hash；trace 还须核验实际容器已删除。无现场 run 不伪造容器/现场回执，须绑定不可变单次请求/输出包且零工具执行。正常完成、有非空公开回复是 trace 必需硬断言；内部回复不是公开回复。**只配工具调用检查的 trace 版本也不豁免**：即使工具规则全部合规，没有公开回复或未正常完成仍为 `fail/hard_assertion_failed`，不是工具规则失败。无现场单次 run 不套用这两个 trace 硬断言。
 2. 代码检查题目客观项，如指定文件内容、成功 read、未写入和前后树 hash。硬断言 fail 则整题 fail，不调用裁判使它翻盘；缺失/损坏证据或环境错误为 error。任意测试通过项须执行器确实提供受支持证据，不能靠回复自称通过。
 3. 硬断言均通过后，裁判对**同一份实际结果**取三票，每条断言独立多数表决。全部成立才 pass，任一条不成立为 fail。证据不足按不成立；这是语义缺失，不是凭空构造的技术 error。
 4. 每条裁判输出恰含 `criterionId/verdict/reason/evidence`。判成立时，至少一段有效连续原文引文须来自**该条断言配置的依据**：`reply → reply`、`trace → trace`、`files → file`（且 `path` 存在于本次输入的文件列表）；其余引文可来自本次输入提供的其他来源，但也须逐条有效。不能仅凭公开回复中“我做了”使执行类断言成立。缺少指定来源的输出按引用校验失败处理：同一输入重试1次，仍失败记 `error / judge_output_invalid`，不转为 fail。判不成立的规则不变：因缺少要求可用空引文并说明缺失项，不强制引用配置来源。每条最多8段，每段≤4096 UTF-8字节。`reply` 引用 `publicReply`，`trace` 引用 `evidence.traceSummary.text`，`file` 另含 `path` 并引用该文件 `content`。代码对解码后的引用字符串做**精确连续子串**校验，不去 Markdown/空白、不反转义、不拼接省略号、不跨证据面搜索兜底。
@@ -45,7 +45,7 @@
 
 trace 回调用每次执行独立的最小 Goal store，两个 Goal 接口复用生产 handler 和错误序列化；context/participants/post-message 的公共库及响应不变。冻结模型输入不加种子，但成功 Goal 返回原样带出种子/提案，可影响后续步骤；不宣称历史状态完全还原。完整边界、记录范围、返回顺序与不支持清单见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。
 
-worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面在预检及正式结果/逐次明细展示“Goal 状态近似”及种子 hash/执行 ID；`unseeded` 单独写明未播种，不标为近似，旧结果无标记不补造。独立预检的 trace attempts 可选保存同一组 `goalState/goalSeedHash/goalExecutionId`，三者须完整且沿用生产 marker 校验；run/report 不接受。GET 只投影这些小型元数据为可选 `goalExecutions`，不读取大输出包；旧 attempts/summary/计划及结果字节/hash 不补字段、不重算。**有无近似标记属于不同回放条件，不直接比较**：trace 默认开启 Goal 工具，旧结果中的 404 与最小种子下的生产返回不是同一执行条件。M2 按下面的结构化证据规则接入工具检查，不以 bash 文本解析冒充调用记录。
+worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面在预检及正式结果按实际标记汇总为一行“n 次（均）为 Goal 状态近似”，说明独立最小种子、不还原历史及不可直接比较；逐次种子 hash/执行 ID 保留在默认折叠详情中。只有该组全部执行都带近似标记才写“均”；`unseeded` 单独计数并写明未播种，不标为近似，旧结果无标记不补造。独立预检的 trace attempts 可选保存同一组 `goalState/goalSeedHash/goalExecutionId`，三者须完整且沿用生产 marker 校验；run/report 不接受。GET 只投影这些小型元数据为可选 `goalExecutions`，不读取大输出包；旧 attempts/summary/计划及结果字节/hash 不补字段、不重算。**有无近似标记属于不同回放条件，不直接比较**：trace 默认开启 Goal 工具，旧结果中的 404 与最小种子下的生产返回不是同一执行条件。M2 按下面的结构化证据规则接入工具检查，不以 bash 文本解析冒充调用记录。
 
 ## run 级双检查与纯文本解析
 
@@ -103,7 +103,7 @@ trace 新计划接受「有问题 + toolCheck」和工具单检，计划及回�
 - 有 run 条目的新计划为 `wiki-experiment-plan-v3`：逐条明确 `execution.level=trace|run`；run 绑定 caseId、`traceBundleHash/dehydrationHash/requestHash`。兼容字段 `sceneHash=wikiValueHash({kind:'wikiskill-run-scene-v1',traceBundleHash,dehydrationHash})`，不是伪造现场；原版冻结请求另以 `requestHash` 绑定。原版/候选请求只允许唯一 `global-harness-behavior-v1` 槽位（系统提示词或保留的历史用户输入）替换，无法定位或多处直接拒绝；模型、工具 schema 和其余前缀不变。
 - run 版本中的 AI 问题必须全为 reply；trace/files 返回 `wiki_rubric_run_evidence_invalid`，不限制同时配置工具检查。纯工具检查的 v3 条目 `judge=null`，不要求 scoringModel、名单或真实裁判适配器；有 AI 问题仍按原资格绑定，不能因工具检查绕过。测试 run 返回 `wiki_experiment_run_test_unsupported`；门槛 run 题数超过 trace 返回 `wiki_experiment_run_gate_quota`。正式选题另须已确认模式标签与冻结划分；按模式首次分组的配额和页面确认见[轨迹包契约](wikiskill-trace-bundles.md#模式标签与首次分组新题)。有现场题正式计划仍只走 trace，不允许用单次报告代替现场 run。
 - 正式生产批量配置的 `experiment:{definition,plan?}` 与用例登记分离；`cases` 显式选冻结 `rubricHash`。先规划，再将生成的实验 plan 固定到配置，实际执行必须持有该计划。v2 **拒绝** `rulesRevision/topicExemption`；#20 可使用编号但须解释，不再靠豁免规则评分。
-- 新的受信评分计划（含单裁判 v1、逐题 v2/v3）必须重建当前 `admission`：复现／探针题须有当前独立原版预检复现；对照题须在门槛组、预检达到冻结对照阈值、身份已确认且不属于候选目标模式，并已取得一次性精确用户确认。没有合格对照仍拒绝。源、冻结断言、最新预检、回放检查及 trace／run 决策失配均拒绝，不能取正式批次或 raw run 输出替代；无现场 run 不再额外要求一条旧的未判分原版回复。
+- 新的受信评分计划（含单裁判 v1、逐题 v2/v3）必须重建当前 `admission`：复现／探针题须有当前独立原版预检复现；对照题须在门槛组、预检达到冻结对照阈值、身份已确认且不属于候选目标模式，并已取得一次性精确用户确认。没有合格对照仍拒绝。这是本 Goal 的 D5 设计约束：即使模式 6 的目标门槛和测试题已就绪，部署后若没有一道已确认的其他模式门槛对照，仍建不了新正式计划，不能拿原版过不了的复现题凑数；不是代码故障或自动豁免条件。用户已决定在下一个 Goal 另改为门槛只看本模式、验证组使用已修好的题，本 Goal 不提前实施。源、冻结断言、最新预检、回放检查及 trace／run 决策失配均拒绝，不能取正式批次或 raw run 输出替代；无现场 run 不再额外要求一条旧的未判分原版回复。
 - `admission` 是可选的历史兼容扩展，纳入新计划 hash，绑定目标模式及逐题 source／rubric／预检计划与结果／对照确认 hash，不含回复原文。省略字段的旧计划按原字节/hash读取；纯重建 API 省略 proof 不是新执行授权。受信批量准备强制生成 proof，逐题付费执行前重建整份计划，证据漂移则停止后续题。新评分结果发布在 Wiki 锁内重核 proof 和当前受信记录；没有 proof 或自改 hash 不能发布新结果。精确重复发布已有结果不重新取得准入，但仍核验所引用 run 包／实际 wire 证据，不能借幂等性掩盖损坏。
 - 预检成绩及 proof 引用不进入正式门槛／测试分母，不改变 Fisher／防误伤公式。旧字面计划／结果仅按原契约保留为历史或另行明确批准的 legacy 实验；删除 `experiment` 会改变配置、计划 hash 和评分契约，不能复用新评分计划的确认，本 Goal 不授权执行 legacy 实验。
 - 新建正式计划（含单裁判 v1、逐题 v2）以及正式批量预检/执行，使用现有 `readWikiEligibleJudges` 从 `CAFF_WIKISKILL_JUDGES_CONFIG` 只读加载名单及冻结文件。每题不仅 backend/model 必须可选，整份 judge 配置（含 `settings/promptHash`）的 `wikiValueHash` 还须等于该条 `configurationHash`，且 `promptHash` 相同；不接受仅同名、调用方自行改设置/提示词并重算计划 hash 的未校准配置。不匹配或未配置名单返回 `wiki_judge_not_eligible`，名单/冻结文件不可读、无效或漂移返回 `wiki_judge_catalog_invalid`；均在付费回放前拒绝，不作裁判输出重试。没有新增配置入口、模型回退或资格豁免。旧计划/比较的纯读取、显示与完整性校验不依赖当前名单，不重判或修改旧记录。
@@ -162,7 +162,7 @@ trace 新计划接受「有问题 + toolCheck」和工具单检，计划及回�
 
 ## 保存、页面与人工裁决
 
-- 用例编辑器支持并列回复/工具检查、手写、AI 起草问题、仅达标模型选择、保存与明确完整 hash 确认冻结。管理接口 `/api/wikiskill/{rubric,draft-rubric,confirm-rubric}` 保留本地 Host/Origin/CSRF、严格字段与 revision 门禁；HTTP 只有实际传入 toolCheck 才带给 store，不给旧版本补字段。空配置不能冻结，工具单检免裁判。页面已说明工具检查同时用于 trace 评测和切点报告，工具单检可用于 trace；显示实际记录的近似标记。Badcase 面板展示独立预检的当前批次及各版本次数/阈值/比例，历史正式评测折叠保留但不作准入。对照确认在面板内展开冻结检查全文、预检计数及精确身份/hash，刷新、内容变化、取消或只读即失效，每次写后完整 GET；已保存对照（含后来失效的确认）在用例页只读，不能再编辑/起草断言。页面不提供回放或预检启动按钮；代码行为不等于 M4 截图与独立评审已通过。
+- 用例编辑器支持并列回复/工具检查、手写、AI 起草问题、仅达标模型选择、保存与明确完整 hash 确认冻结。管理接口 `/api/wikiskill/{rubric,draft-rubric,confirm-rubric}` 保留本地 Host/Origin/CSRF、严格字段与 revision 门禁；HTTP 只有实际传入 toolCheck 才带给 store，不给旧版本补字段。空配置不能冻结，工具单检免裁判。页面已说明工具检查同时用于 trace 评测和切点报告，工具单检可用于 trace；显示实际记录的近似标记。Badcase 面板展示独立预检的当前批次及各版本次数/阈值/比例，历史正式评测折叠保留但不作准入。对照确认在面板内直接展示与断言编辑器相同的工具规则白话预览、全部 AI 问题/依据及打分模型，原始检查 JSON 全文默认折叠；绑定的冻结全文和 hash 不变。面板保留预检计数及精确身份/hash，刷新、内容变化、取消或只读即失效，每次写后完整 GET；已保存对照（含后来失效的确认）在用例页只读，不能再编辑/起草断言。页面不提供回放或预检启动按钮；代码行为不等于 M4 截图与独立评审已通过。
 - 不可变比较保存该次 rubric、逐票判定/理由/短引文、硬断言、引用错误及参考字面指标；页面按**结果自己的冻结版本**展示，不用编辑器当前版本重判。原公开回复/完整轨迹及模型调用保存在操作方 JSONL，不把它们全量写进页面压缩记录。CLI/页面分门槛、测试列出模型、配置/hash、通过/有效/error。
 - 旧比较无 scoring v2 字段时仍用旧读写投影，标明“字面规则”；不迁移分数、不调用新裁判重判、不重写旧文件/hash。旧字面豁免实现仅为历史/另行批准的 legacy 实验保留。
 - 不完整比较也保存不可变结果、进度及已有 `gateDecision`，演进记录可显示本批门槛。`reviewComparison` **仅允许 `completed=true`** 且符合冻结划分的比较；不完整批次连“拒绝采纳”的正式人工裁决也不能通过它写入，返回 `wiki_comparison_review_invalid`。不得改 completed、手改快照或绕过守卫；D7 的不采纳推导另存证据/Goal，不能冒充页面已保存裁决。采纳/基线仍需原有人工批准边界。
