@@ -86,12 +86,54 @@ for (const reply of [false, true]) test(`v3 independent tool check plan (${reply
   h.single.rubric = { ...createWikiRubric({ ...h.single.rubric, actual: h.single.actual, expected: h.single.expected, toolCheck: changed }), status: 'frozen', confirmedAt: h.single.rubric.confirmedAt, confirmationRecord: 'New approval' };
   assert.throws(() => api().assertWikiExperimentPlan(plan, h.definition, h.catalog), { code: 'wiki_experiment_changed' });
 });
-test('trace-only plans ignore a co-frozen tool check when questions exist, but still reject tool-only rubrics', t => {
+test('trace plans bind structured tool-check semantics and allow tool-only rubrics without a judge', t => {
   const h = fixture(t), c = h.catalog[0];
   c.rubric = { ...require(base + 'wiki-rubric').createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic approval' };
   const plan = h.plan(); assert.equal(plan.kind, 'wiki-experiment-plan-v1'); assert.equal(plan.cases[0].rubricHash, c.rubric.hash);
+  assert.equal(plan.cases[0].traceToolCheck, 'structured-v1');
   c.rubric = { ...require(base + 'wiki-rubric').createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, questions: [], scoringModel: null }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic tool-only approval' };
-  assert.throws(h.plan, { code: 'wiki_tool_check_run_only' });
+  const only = h.plan(); assert.equal(only.cases[0].judge, null); assert.equal(only.cases[0].traceToolCheck, 'structured-v1');
+  assert.deepEqual(api().validateWikiExperimentPlan(only), only); api().assertWikiExperimentPlan(only, h.definition, h.catalog);
+});
+test('trace code-only v2 plans need no eligible judge catalog; mixed checks still require the frozen eligible judge', t => {
+  const h = fixture(t), { createWikiRubric } = require(base + 'wiki-rubric');
+  h.definition.kind = 'wiki-experiment-v2'; delete h.definition.judge;
+  for (const c of h.catalog) c.rubric = { ...createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected, questions: [], scoringModel: null,
+    toolCheck: { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic code-only approval' };
+  for (const file of [undefined, '/not-used-no-judge-catalog.json']) {
+    if (file === undefined) delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG; else process.env.CAFF_WIKISKILL_JUDGES_CONFIG = file;
+    const plan = h.plan(); assert(plan.cases.every(c => c.judge === null && c.traceToolCheck === 'structured-v1'));
+    assert.deepEqual(api().validateWikiExperimentPlan(plan), plan);
+  }
+  h.definition.kind = 'wiki-experiment-v1'; h.definition.judge = { ...h.judges.frozen.configuration };
+  const shared = h.plan(); assert(shared.cases.every(c => c.judge === null));
+  assert.deepEqual(api().validateWikiExperimentPlan(shared), shared);
+  h.definition.kind = 'wiki-experiment-v2'; delete h.definition.judge;
+  process.env.CAFF_WIKISKILL_JUDGES_CONFIG = h.judges.configFile;
+  h.definition.cases[0].judge = { ...h.judges.frozen.configuration };
+  assert.throws(h.plan, { code: 'wiki_experiment_invalid' });
+});
+test('historical ignored trace-tool plans remain byte-readable but cannot silently reuse new structured semantics', t => {
+  const h = fixture(t), c = h.catalog[0], { createWikiRubric } = require(base + 'wiki-rubric');
+  c.rubric = { ...createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected,
+    toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic approval' };
+  const historical = h.plan(); delete historical.cases[0].traceToolCheck; rehash(historical);
+  const bytes = JSON.stringify(historical), rubricBytes = JSON.stringify(c.rubric);
+  assert.equal(JSON.stringify(api().validateWikiExperimentPlan(historical)), bytes);
+  assert.throws(() => api().assertWikiExperimentPlan(historical, h.definition, h.catalog), { code: 'wiki_experiment_changed' });
+  assert.equal(JSON.stringify(historical), bytes); assert.equal(JSON.stringify(c.rubric), rubricBytes);
+  const forged = h.plan(); forged.cases[0].traceToolCheck = 'parse-bash';
+  assert.throws(() => api().validateWikiExperimentPlan(rehash(forged)));
+});
+test('structured trace invalid attempts share replacements and stay outside the unchanged gate denominator', t => {
+  const h = fixture(t), c = h.catalog[0], { createWikiRubric } = require(base + 'wiki-rubric');
+  c.rubric = { ...createWikiRubric({ ...c.rubric, actual: c.actual, expected: c.expected,
+    toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: c.rubric.confirmedAt, confirmationRecord: 'Synthetic approval' };
+  const plan = h.plan(), rows = results(6); rows[0].runs = replacementRuns({ 0: 'invalid', 1: 'error' });
+  assert.equal(api().decideWikiExperimentGate(plan, rows).repair.original.total, 10);
+  assert.equal(api().decideWikiExperimentGate(plan, rows).repair.candidate.total, 10);
+  const legacy = structuredClone(plan); delete legacy.cases[0].traceToolCheck; rehash(legacy);
+  assert.throws(() => api().decideWikiExperimentGate(legacy, rows));
 });
 test('run bindings reject malformed/extra fields, scene mismatch and all bound-input drift', t => {
   for (const key of ['traceBundleHash', 'dehydrationHash', 'requestHash']) {
@@ -127,6 +169,7 @@ test('stored run plans enforce stage, quota and derived scene hash even after ca
   for (const mutate of [p => p.cases.find(c => c.caseId === 'single').stage = 'test',
     p => p.cases.find(c => c.caseId === 'single').sceneHash = hash('forged'),
     p => p.cases.find(c => c.caseId === 'single').execution.other = 1,
+    p => p.cases.find(c => c.caseId === 'single').traceToolCheck = 'structured-v1',
     p => { for (const c of p.cases) if (c.stage === 'gate') c.execution = structuredClone(p.cases.at(-1).execution); },
     p => { for (const c of p.cases) c.execution = { level: 'trace' }; }]) {
     const h = runFixture(t), p = h.plan(); mutate(p); assert.throws(() => api().validateWikiExperimentPlan(rehash(p)));

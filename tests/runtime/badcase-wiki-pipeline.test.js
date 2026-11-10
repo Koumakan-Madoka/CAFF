@@ -21,7 +21,7 @@ test('pipeline projects frozen assertions, real replay support and one independe
   assert.equal(row.original.reproduced, true); assert.equal(row.original.comparisonId, h.comparison.id); assert.equal(row.inLibrary, true);
   assert.equal(JSON.stringify(h), before);
 });
-test('scene latest tool-only rubric is incompatible, while one co-frozen mixed rubric matches trace reproduction by its full hash', () => {
+test('scene tool-only and mixed frozen rubrics are compatible with trace and match original counts by the full hash', () => {
   for (const questions of [[], [{ id: 'q1', question: 'The trace shows the correct action.', evidence: 'trace' }, { id: 'q2', question: 'The reply is clear.', evidence: 'reply' }]]) {
     const h = fixture(); Object.assign(h.c, { kind: 'marked-badcase', role: 'role-family-gpt' });
     const latest = { ...createWikiRubric({ ...h.rubric, version: 2, actual: h.c.actual, expected: h.c.expected, questions, scoringModel: questions.length ? h.rubric.scoringModel : null,
@@ -29,9 +29,9 @@ test('scene latest tool-only rubric is incompatible, while one co-frozen mixed r
       status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: 'Co-frozen report and trace checks' };
     h.state.rubrics.push(latest); h.comparison.cases[0].rubric = latest;
     const row = project(h); assert.equal(row.level, 'trace'); assert.equal(row.assertion.hash, latest.hash);
-    assert.equal(row.assertion.status, questions.length ? 'frozen' : 'incompatible'); assert.equal(row.inLibrary, !!questions.length);
-    assert.equal(row.original.valid, questions.length ? 3 : 0);
-    assert.equal(row.original.reproduced, !!questions.length);
+    assert.equal(row.assertion.status, 'frozen'); assert.equal(row.inLibrary, true);
+    assert.equal(row.original.valid, 3);
+    assert.equal(row.original.reproduced, true);
   }
 });
 test('new draft does not erase frozen version; draft-only, changed source and all-pass original do not claim reproduced/library', () => {

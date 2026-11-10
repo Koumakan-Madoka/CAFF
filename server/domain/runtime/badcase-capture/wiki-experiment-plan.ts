@@ -23,7 +23,7 @@ export interface WikiExperimentDefinition {
 export interface WikiExperimentPlan {
   kind: 'wiki-experiment-plan-v1' | 'wiki-experiment-plan-v2' | 'wiki-experiment-plan-v3'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof POLICY;
-  cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding | null; execution?: WikiExperimentExecution })[];
+  cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding | null; execution?: WikiExperimentExecution; traceToolCheck?: 'structured-v1' })[];
   planHash: string;
 }
 export interface WikiExperimentCaseResult {
@@ -74,7 +74,7 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
   ensure(Array.isArray(catalog) && new Set(catalog.map(c => c?.id)).size === catalog.length);
   ensure(Array.isArray(definition.cases) && definition.cases.length >= 3 && definition.cases.length <= 20
     && new Set(definition.cases.map(c => c?.caseId)).size === definition.cases.length);
-  const eligibleJudges = readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
+  let eligibleJudges: ReturnType<typeof readWikiEligibleJudges> | undefined;
   const cases = definition.cases.map(selection => {
     wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction', ...(perCase && Object.hasOwn(selection, 'judge') ? ['judge'] : [])]); identifier(selection.caseId);
     ensure(['gate', 'test'].includes(selection.stage) && ['reproduction', 'control', 'probe'].includes(selection.category)
@@ -88,15 +88,18 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     ensure(rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected));
     if (perCase) ensure(rubric.kind === 'wiki-rubric-v2');
     if (source.execution && rubric.questions.some(q => q.evidence !== 'reply')) throw fail('wiki_rubric_run_evidence_invalid');
-    if (rubric.toolCheck && !source.execution && !rubric.questions.length) throw fail('wiki_tool_check_run_only');
     const { judge: selectedJudge, ...partition } = selection;
-    const codeOnly = !!source.execution && !!rubric.toolCheck && !rubric.questions.length;
+    const codeOnly = !!rubric.toolCheck && !rubric.questions.length;
     if (codeOnly && perCase) ensure(selectedJudge == null);
     const configuration = (perCase ? selectedJudge : definition.judge)!;
     const judge = codeOnly ? null : bindWikiJudge(configuration, rubric);
-    if (!codeOnly) assertWikiEligibleConfiguration(configuration, eligibleJudges);
+    if (!codeOnly) assertWikiEligibleConfiguration(configuration, eligibleJudges ??= readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG));
     return { ...structuredClone(partition), sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }),
       hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge,
+      // Bind the new trace semantics explicitly. Historical plans may have a
+      // co-frozen ignored toolCheck; they stay readable but cannot be reused as
+      // a newly planned structured check without changing the plan hash.
+      ...(!source.execution && rubric.toolCheck ? { traceToolCheck: 'structured-v1' as const } : {}),
       ...(source.execution ? { execution: structuredClone(source.execution) } : {}) };
   });
   ensure(cases.some(c => c.stage === 'gate' && c.targetReproduction) && cases.some(c => c.stage === 'gate' && c.category === 'control')
@@ -124,7 +127,8 @@ function checkPlanHash(plan: WikiExperimentPlan) {
     && (v === null || ['string', 'boolean'].includes(typeof v) || typeof v === 'number' && Number.isFinite(v)));
   ensure(Array.isArray(plan.cases) && plan.cases.length >= 3 && plan.cases.length <= 20 && new Set(plan.cases.map(c => c?.caseId)).size === plan.cases.length);
   for (const c of plan.cases) {
-    wikiExactKeys(c, ['caseId', 'stage', 'category', 'targetReproduction', 'sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash', 'judge', ...(plan.kind === 'wiki-experiment-plan-v3' ? ['execution'] : [])]); identifier(c.caseId);
+    wikiExactKeys(c, ['caseId', 'stage', 'category', 'targetReproduction', 'sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash', 'judge', ...(plan.kind === 'wiki-experiment-plan-v3' ? ['execution'] : []), ...(Object.hasOwn(c, 'traceToolCheck') ? ['traceToolCheck'] : [])]); identifier(c.caseId);
+    if (Object.hasOwn(c, 'traceToolCheck')) ensure(c.traceToolCheck === 'structured-v1' && c.execution?.level !== 'run');
     if (plan.kind === 'wiki-experiment-plan-v3') {
       ensure(c.execution);
       if (c.execution.level === 'trace') wikiExactKeys(c.execution, ['level']);
@@ -134,7 +138,7 @@ function checkPlanHash(plan: WikiExperimentPlan) {
       && (!c.targetReproduction || c.category === 'reproduction'));
     for (const key of ['sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash'] as const) ensure(/^[a-f0-9]{64}$/.test(c[key]));
     if (c.judge === null) {
-      ensure(plan.kind === 'wiki-experiment-plan-v3' && c.execution?.level === 'run');
+      ensure(c.traceToolCheck === 'structured-v1' || plan.kind === 'wiki-experiment-plan-v3' && c.execution?.level === 'run');
       continue; // The rubric is checked by plan reconstruction/publication.
     }
     wikiExactKeys(c.judge, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
@@ -152,8 +156,8 @@ function checkPlanHash(plan: WikiExperimentPlan) {
   // Historical v1 plans had one shared judge. V2 binds one judge per case,
   // shared by that case's original/candidate runs, not across the experiment.
   if (plan.kind === 'wiki-experiment-plan-v1') {
-    const first = plan.cases[0].judge;
-    ensure(plan.cases.every(c => ['backend', 'model', 'modelHash', 'promptHash', 'passes'].every(k => (c.judge as any)[k] === (first as any)[k])));
+    const judged = plan.cases.filter(c => c.judge !== null), first = judged[0]?.judge;
+    ensure(judged.every(c => ['backend', 'model', 'modelHash', 'promptHash', 'passes'].every(k => (c.judge as any)[k] === (first as any)[k])));
   }
 }
 export function validateWikiExperimentPlan(plan: WikiExperimentPlan): WikiExperimentPlan { checkPlanHash(plan); return structuredClone(plan); }
@@ -179,7 +183,7 @@ export function decideWikiExperimentGate(plan: WikiExperimentPlan, results: Wiki
       ensure(!Object.hasOwn(row, 'judgeError') || row.judgeError === true && row.status === 'error');
       if (slots[next] === 10) next = next === 'original' ? 'candidate' : 'original';
       ensure(row.variant === next && Number.isSafeInteger(row.iteration) && row.iteration === ++attempts[next]
-        && slots[next] < 10 && ['pass', 'fail', 'error', ...(source.execution?.level === 'run' ? ['invalid'] : [])].includes(row.status));
+        && slots[next] < 10 && ['pass', 'fail', 'error', ...(source.execution?.level === 'run' || source.traceToolCheck === 'structured-v1' ? ['invalid'] : [])].includes(row.status));
       if (row.status === 'invalid' || row.status === 'error' && !row.judgeError) replacements++;
       if (row.status === 'pass' || row.status === 'fail') scored[next]++;
       if (row.status !== 'error' && row.status !== 'invalid' || row.judgeError) slots[next]++;
@@ -189,7 +193,7 @@ export function decideWikiExperimentGate(plan: WikiExperimentPlan, results: Wiki
   }
   const rows = plan.cases.map(c => ({ sourceCaseId: c.caseId, stage: c.stage, category: c.category,
     ...(results.find(r => r.caseId === c.caseId) || { status: 'not-run', runs: [] }) }));
-  // The existing formula only knows pass/fail/error. Invalid run outputs are
+  // The existing formula only knows pass/fail/error. Invalid run/trace outputs are
   // outside its denominator, never a new score and never counted as a fail.
   const decision = decideWikiGate(rows.map(c => ({ ...c, runs: c.runs.filter(r => r.status !== 'invalid') })),
     plan.cases.filter(c => c.stage === 'gate' && c.targetReproduction).map(c => c.caseId), plan.repeats);

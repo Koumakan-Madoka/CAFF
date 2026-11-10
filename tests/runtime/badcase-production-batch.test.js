@@ -302,6 +302,21 @@ function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
  const judge=adapter(configuration(suite[0].sourceCaseId)),judges=Object.fromEntries(suite.map(c=>[c.sourceCaseId,adapter(configuration(c.sourceCaseId))]));
  return {...h,judge,judges,definition,catalog,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
 }
+for(const perCaseModels of [false,true])test(`trusted production plan admits trace tool-only marked-badcase with ${perCaseModels?'per-case':'shared'} judge selection`,t=>{
+ const h=scoringV2Fixture(t,{perCaseModels}),source=h.store.read().cases.find(c=>c.id===h.marks[0].id);
+ assert.equal(source.kind,'marked-badcase');assert.equal(source.role,'role-family-gpt');assert.ok(source.sealedCheckpointId);
+ const rubric=h.store.saveRubricDraft({caseId:source.id,model:'deepseek/deepseek-v4-flash',questions:[],scoringModel:null,
+  toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
+ const frozen=h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic trace-tool approval'},h.store.read().revision);
+ h.config.cases.find(c=>c.sourceCaseId===source.id).rubricHash=frozen.hash;
+ if(perCaseModels)delete h.definition.cases.find(c=>c.caseId===source.id).judge;
+ let executions=0;h.options.readKey=()=>{executions++;throw Error('No auth in planning');};h.options.runProductionComparison=()=>{executions++;throw Error('No execution in planning');};
+ const before=JSON.stringify(h.store.read()),p=h.pin(),selected=p.summary.experiment.cases.find(c=>c.caseId===source.id),item=p.prepared.find(c=>c.sourceCaseId===source.id);
+ assert.equal(selected.traceToolCheck,'structured-v1');assert.equal(selected.judge,null);assert.equal(selected.rubricHash,frozen.hash);
+ assert.equal(item.comparisonConfig.scoring.binding,null);assert.equal(item.comparisonConfig.scoring.rubric.hash,frozen.hash);
+ assert.equal(JSON.stringify(h.store.read()),before,'trusted plan reads do not alter frozen data');
+ assert.equal(executions,0);
+});
 function runBatchFixture(t,{baseline=true,slot=true}={}) {
  const h=scoringV2Fixture(t,{perCaseModels:true}),sourceCaseId=h.marks[0].id;
  const s=h.store.read();delete s.cases.find(c=>c.id===sourceCaseId).sealedCheckpointId;s.replayCases=s.replayCases.filter(r=>r.sourceCaseId!==sourceCaseId);s.revision++;
@@ -638,13 +653,14 @@ function v2Execution(h,settings={}){
  };
  return f;
 }
-test('scene trace planning rejects a latest tool-only rubric before judge selection or execution',t=>{
+test('scene trace planning selects the latest tool-only frozen rubric with no judge',t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true}),c=h.marks[0];
  const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',questions:[],scoringModel:null,
   toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
  h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Tool-only scene report'},h.store.read().revision);
  h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=draft.hash;delete h.definition.cases.find(r=>r.caseId===c.id).judge;
- assert.throws(h.plan,{code:'wiki_tool_check_run_only'});
+ const p=h.plan(),selected=p.summary.experiment.cases.find(r=>r.caseId===c.id);
+ assert.equal(selected.rubricHash,draft.hash);assert.equal(selected.judge,null);assert.equal(selected.traceToolCheck,'structured-v1');
 });
 test('scene gate/test trace v2 plans and immutable receipts accept one mixed rubric; tool check stays out of trace judgments',async t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true});
