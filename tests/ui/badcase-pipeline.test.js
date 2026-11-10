@@ -74,6 +74,61 @@ test('unscored run output says awaiting scoring only; freezing or loading never 
   row.original.outputs = row.original.unscored = 0; h.data.runReplays = []; h.panel.render(h.data);
   assert.match(h.root.querySelector('.next-line').textContent, /待复现|受信操作方/);
 });
+function codeOnlyRunPage(t) {
+  const h = setup(t), c = h.data.cases[0];
+  Object.assign(c, { kind: 'marked-badcase', role: 'role-family-gpt' });
+  h.data.cases = [c]; // No sealedCheckpointId: this is a run case, not a scene report.
+  const decision = { hash: 'd'.repeat(64), kind: 'single', level: 'run', cutStep: 1 };
+  h.data.dehydrations = [{ caseId: c.id, traceHash: c.traceBundle.hash, decision, recommendation: {}, request: { state: { steps: [] } } }];
+  const { createWikiRubric, validateWikiRubric, WIKI_RUBRIC_MODEL } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const rubric = validateWikiRubric({ ...createWikiRubric({ caseId: c.id, version: 1, model: WIKI_RUBRIC_MODEL, actual: c.actual, expected: c.expected, questions: [], scoringModel: null,
+    toolCheck: { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] } }),
+    status: 'frozen', confirmedAt: '2026-11-05T00:00:00.000Z', confirmationRecord: 'Synthetic user confirmation of the code-only check' }, true);
+  h.data.rubrics = [rubric];
+  const { projectWikiRunAccounting } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-store');
+  h.data.runReplays = projectWikiRunAccounting(['pass', 'fail', 'reached', 'invalid', 'error', 'reserved'].map((status, i) => ({
+    id: String(i + 1).repeat(64), caseId: c.id, traceHash: c.traceBundle.hash, decisionHash: decision.hash, rubricHash: rubric.hash, variant: { kind: 'original' }, status,
+    model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', modelCalls: status === 'reserved' ? null : 1, toolExecutions: 0,
+  })), h.data.dehydrations);
+  h.panel.render(h.data);
+  return { ...h, c, decision, validOutputs: h.data.runReplays.filter(r => r.eligibleForScoring).length };
+}
+test('run funnel totals include code-only pass/fail alongside reached, matching backend accounting', t => {
+  const h = codeOnlyRunPage(t), text = h.root.querySelector('[data-run-totals]').textContent;
+  assert.equal(h.validOutputs, 3);
+  assert.match(text, new RegExp(`共 6 次：有效输出 ${h.validOutputs}；无效 1.*请求失败 1.*结果未知 1`));
+  assert.match(text, /有效输出含待判分与代码已判通过／失败；待判分不表示通过/);
+  assert.equal(h.root.querySelector('[data-run-report]'), null);
+  assert.equal(h.calls.length, 0);
+});
+test('run panel counts code-only pass/fail as valid without changing invalid/error/unknown counts', t => {
+  const h = codeOnlyRunPage(t), panel = h.root.querySelector('[data-run-panel]');
+  assert.match(panel.textContent, new RegExp(`有效输出 ${h.validOutputs} · 无效 1.*请求失败 1.*结果未知 1`));
+  assert.match(panel.textContent, /有效输出含待判分与代码已判通过／失败；待判分不表示通过/);
+  assert.match(panel.textContent, /正式批次判分见「原版复现」，不在本页重新判分/);
+  assert.doesNotMatch(panel.textContent, /单次原始回放不表示判分通过/);
+  assert.equal(panel.querySelectorAll('[data-run-details]').length, 6);
+  assert.equal(h.calls.length, 0);
+});
+test('run result summaries distinguish code-decided pass/fail from an unscored reached output in Chinese', t => {
+  const h = codeOnlyRunPage(t), summary = i => h.root.querySelector(`[data-run-details="${String(i).repeat(64)}"] summary`).textContent;
+  assert.match(summary(1), /原版 · 已判通过（代码判断）/);
+  assert.match(summary(2), /原版 · 已判失败（代码判断）/);
+  assert.match(summary(3), /有效输出（待判分）/); assert.doesNotMatch(summary(3), /通过|失败/);
+  assert.match(summary(4), /无效 · 不算通过也不算不通过/);
+  assert.match(summary(5), /请求失败/); assert.match(summary(6), /结果未知，不自动重试/);
+  assert.equal(h.calls.length, 0);
+});
+test('reference-only withdrawal still excludes code-decided pass/fail from both totals and panel', t => {
+  const h = codeOnlyRunPage(t);
+  Object.assign(h.decision, { supersedesDecisionHash: h.decision.hash, hash: 'e'.repeat(64), kind: 'throughout', level: 'reference', cutStep: null });
+  h.panel.render(h.data);
+  assert.match(h.root.querySelector('[data-run-totals]').textContent, /共 0 次：有效输出 0；无效 0.*请求失败 0.*结果未知 0/);
+  const panel = h.root.querySelector('[data-run-panel]');
+  assert.match(panel.textContent, /有效输出 0 · 无效 0.*请求失败 0.*结果未知 0/);
+  for (const summary of panel.querySelectorAll('[data-run-details] summary')) assert.match(summary.textContent, /已被用户改判，不计入/);
+  assert.equal(h.calls.length, 0);
+});
 test('three-way labels use named inline consent and locked evaluation roles, never browser dialogs', t => {
   const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body), confirm: () => { throw Error('no browser dialog'); } });
   h.data.casePatterns = ['c1', 'c3'].map(caseId => ({ caseId, confirmed: false, entryId: null, patternKey: null, labelHash: 'c'.repeat(64), options: [{ entryId: 'entry-1', title: '<script>pattern</script>' }], pendingOptions: [] }));
