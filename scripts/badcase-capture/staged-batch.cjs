@@ -85,6 +85,7 @@ function formatStagedBatch(result) {
     `门槛判定：${{accepted:'接受',rejected:'拒绝',indeterminate:'无法判定'}[d.outcome]}`,
     `修好：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue ?? 'N/A'} < 0.05；${d.repair.passed?'满足':'不满足'}`,
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
+  if(result.cases?.some(c=>c.runs?.some(r=>r.goalState==='approximate-minimal-v1')))lines.push('Goal 状态近似：独立最小种子，不还原历史 Goal；仅 Goal 工具返回可见，冻结输入不变。');
   if(d.byLevel)for(const level of ['trace','run']){
     const t=d.byLevel[level];lines.push(`${level} 级门槛：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);
   }

@@ -2,6 +2,7 @@
 // the exclusive operator evidence file, never this page summary.
 import { decideWikiGate } from './wiki-gate-policy';
 import { containsSecretSentinel } from './secrets';
+import { projectEvaluationGoalMarker } from './evaluation-goal-evidence';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(c: any): asserts c { if (!c) throw invalid(); }
 const id = (s: any) => { check(typeof s === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(s)); return s; };
@@ -63,7 +64,8 @@ export function projectProductionResult(input: any, totals: (cases: any[], repea
       // terminal judge-error slot, with its assessment validated separately.
       if (r.status !== 'error' || consumesErrorSlot(r)) slots[r.variant]++;
       return { variant: r.variant, iteration: r.iteration, status: r.status, ...(r.reason === undefined ? {} : { reason: code(r.reason) }),
-        replySource: ['public', 'internal', 'none'].includes(r.replySource) ? r.replySource : 'unknown', cleaned: r.cleaned === true };
+        replySource: ['public', 'internal', 'none'].includes(r.replySource) ? r.replySource : 'unknown', cleaned: r.cleaned === true,
+        ...projectEvaluationGoalMarker(r) };
     });
     check(c.status !== 'completed' || scored.original === 10 && scored.candidate === 10);
     check(!['unsupported', 'not-run'].includes(c.status) || runs.length === 0);

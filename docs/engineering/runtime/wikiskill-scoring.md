@@ -41,6 +41,12 @@ trace 评分状态仍为 `pass/fail/error`；run 另有 `invalid`（没有可判
 
 结论词、禁词、编号、快照 HEAD 等旧字面检查在 v2 中仅为参考指标。客观文件检查不是参考指标，仍决定硬断言。评分断言/参考值不进入被测 agent 输入。
 
+## trace 回放 Goal 状态与证据披露（2026-11-10 M1）
+
+trace 回调用每次执行独立的最小 Goal store，两个 Goal 接口复用生产 handler 和错误序列化；context/participants/post-message 的公共库及响应不变。冻结模型输入不加种子，但成功 Goal 返回原样带出种子/提案，可影响后续步骤；不宣称历史状态完全还原。完整边界、记录范围、返回顺序与不支持清单见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。
+
+worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面显示留待页面里程碑；旧结果无标记不补造。M1 尚不改变下述 trace toolCheck 的准入/判分规则，后续 M2 才接按回调记录判定，不能把回调已支持误报为 trace 工具检查已交付。
+
 ## run 级双检查与纯文本解析
 
 `wiki-run-checks.ts` 先做纯代码判定，`wiki-run-check-scoring.ts` 仅在有可判回复时接原裁判；不改冻结裁判提示词、不重新校准、不执行输出中的工具。两者都没配的版本不能判分。

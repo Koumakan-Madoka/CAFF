@@ -10,6 +10,7 @@ import { createChatAppStore } from '../../../../lib/chat-app-store';
 import { createAgentToolBridge } from '../agent-tool-bridge';
 import { containsSecretSentinel } from './secrets';
 import { prepareEvaluationCallbackTrace } from './evaluation-trace';
+import { createEvaluationGoalStore } from './evaluation-goal-store';
 const object = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v: any, keys: string[]) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const id = (v: any) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(v);
@@ -17,16 +18,20 @@ const text = (v: any, max: number) => typeof v === 'string' && v.trim().length >
 const fail = (code: string, statusCode = 400) => Object.assign(Error(code), { code, statusCode });
 const invalid = () => fail('evaluation_callback_invalid');
 const prefix = '/api/agent-tools/';
-const routes: Record<string, string> = { context: 'GET', participants: 'GET', 'post-message': 'POST' };
+const routes: Record<string, string> = { context: 'GET', participants: 'GET', 'post-message': 'POST', 'goal/suggest': 'POST', 'goal/update': 'POST' };
 function validate(input: any) {
   const fromTrace = object(input) && Object.hasOwn(input, 'trace');
-  if (!exact(input, fromTrace ? ['directory', 'trace', 'expectedTraceHash', 'association', 'lifetimeMs'] : ['directory', 'seed', 'lifetimeMs'])
+  const withGoal = object(input) && Object.hasOwn(input, 'goalTools');
+  if (!exact(input, [...(fromTrace ? ['directory', 'trace', 'expectedTraceHash', 'association', 'lifetimeMs'] : ['directory', 'seed', 'lifetimeMs']), ...(withGoal ? ['goalTools'] : [])])
     || typeof input.directory !== 'string' || !path.isAbsolute(input.directory)
     || !Number.isSafeInteger(input.lifetimeMs) || input.lifetimeMs < 1 || input.lifetimeMs > 45 * 60 * 1000) throw invalid();
+  const goalTools = withGoal ? input.goalTools : fromTrace ? { initialState: 'minimal', executionId: crypto.randomUUID() } : false;
+  if (goalTools !== false && (!exact(goalTools, ['initialState', 'executionId']) || !['minimal', 'none'].includes(goalTools.initialState)
+    || typeof goalTools.executionId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(goalTools.executionId))) throw invalid();
   if (fromTrace) {
     const prepared = prepareEvaluationCallbackTrace(input.trace, input.expectedTraceHash, input.association);
     return { directory: path.resolve(input.directory), seed: prepared.seed, trace: prepared.trace,
-      traceReceipt: prepared.receipt, lifetimeMs: input.lifetimeMs };
+      traceReceipt: prepared.receipt, lifetimeMs: input.lifetimeMs, goalTools: structuredClone(goalTools) };
   }
   const s = input.seed;
   if (!exact(s, ['conversationId', 'turnId', 'agent', 'userMessage', 'assistantMessageId'])
@@ -36,7 +41,7 @@ function validate(input: any) {
     || !text(s.agent.name, 128) || !text(s.userMessage.content, 32768) || containsSecretSentinel(JSON.stringify(s))) throw invalid();
   // Copy BEFORE the first await; changes to caller input cannot alter a run.
   return { directory: path.resolve(input.directory), seed: structuredClone(s), lifetimeMs: input.lifetimeMs,
-    trace: null, traceReceipt: null };
+    trace: null, traceReceipt: null, goalTools: structuredClone(goalTools) };
 }
 function reply(res: http.ServerResponse, status: number, value: any) {
   const body = JSON.stringify(value);
@@ -59,7 +64,8 @@ async function body(req: http.IncomingMessage) {
 
 /** Caller must own a dedicated parent directory. Each call owns one NEW child,
  * SQLite DB and loopback ephemeral listener; no reopen/recovery or ambient config.
- * This kernel intentionally supports only context/participants/PUBLIC post, and
+ * This kernel supports context/participants/PUBLIC post and (for trace replay)
+ * Goal handlers on a separate per-execution store, and
  * either a legacy single text seed OR explicit versioned public-text input
  * state. Trace mode never falls back to a seed on failure. Private/delegation/
  * attachments/capabilities remain unsupported, NOT stripped or emulated.
@@ -67,7 +73,7 @@ async function body(req: http.IncomingMessage) {
  * Do not use as faithful replay proof; source capture/Docker wiring are separate.
  */
 export async function startEvaluationCallback(input: any) {
-  const { directory, seed, lifetimeMs, trace, traceReceipt } = validate(input);
+  const { directory, seed, lifetimeMs, trace, traceReceipt, goalTools } = validate(input);
   try {
     const parent = path.dirname(directory), st = fs.lstatSync(parent);
     if (!st.isDirectory() || st.isSymbolicLink() || fs.realpathSync(parent) !== parent) throw Error();
@@ -123,6 +129,10 @@ export async function startEvaluationCallback(input: any) {
       conversationAgents: conversation.agents, stage, allowHandoffs: false,
       autoCompleteOnPublicPost: true, onPublicPostCompleted: () => { stage.status = 'completed'; } }));
   } catch { store.close(); throw fail('evaluation_callback_start_failed', 500); }
+  let goals: ReturnType<typeof createEvaluationGoalStore> | undefined;
+  try {
+    if (goalTools) goals = createEvaluationGoalStore({ directory, seed, publicStore: store, credentials, stage, ...goalTools });
+  } catch { bridge.unregisterInvocation(context.invocationId); store.close(); throw fail('evaluation_callback_start_failed', 500); }
   const deadline = performance.now() + lifetimeMs;
   let stopped = false, requests = 0, authority = '', stopping: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -134,23 +144,35 @@ export async function startEvaluationCallback(input: any) {
       || !crypto.timingSafeEqual(Buffer.from(auth.callbackToken), Buffer.from(credentials.callbackToken))) throw fail('evaluation_callback_auth_failed', 401);
   }
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
+    let observed: { route: string; parameters: any } | undefined;
+    const answer = (status: number, value: any) => {
+      if (observed) goals?.recordCall(observed.route, observed.parameters, status, value);
+      reply(res, status, value);
+    };
     try {
       live();
       if (req.headers.origin !== undefined || req.headers.host !== authority || !req.url?.startsWith('/') || req.url.includes('#')) throw fail('evaluation_callback_request_forbidden', 403);
       if (++requests > 128) throw fail('evaluation_callback_request_limit', 429);
       if (active.size >= 8) throw fail('evaluation_callback_busy', 429);
       const url = new URL(req.url, 'http://' + authority), route = url.pathname.slice(prefix.length);
-      if (!url.pathname.startsWith(prefix) || !Object.hasOwn(routes, route) || routes[route] !== req.method) throw fail('evaluation_callback_route_unavailable', 404);
+      if (!url.pathname.startsWith(prefix) || !Object.hasOwn(routes, route) || routes[route] !== req.method
+        || route.startsWith('goal/') && !goals) throw fail('evaluation_callback_route_unavailable', 404);
       if (req.method === 'GET') {
         const allowed = ['invocationId', 'callbackToken', ...(route === 'context' ? ['publicLimit', 'privateLimit'] : [])];
         if ([...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) throw fail('evaluation_callback_query_invalid');
         for (const name of ['publicLimit', 'privateLimit']) if (url.searchParams.has(name) && !/^(?:[1-9]|1[0-9]|2[0-4])$/.test(url.searchParams.get(name)!)) throw fail('evaluation_callback_query_invalid');
         authenticate(Object.fromEntries(url.searchParams));
-        reply(res, 200, route === 'context' ? bridge.handleReadContext(url) : bridge.handleListParticipants(url));
+        observed = { route, parameters: Object.fromEntries(url.searchParams) };
+        answer(200, route === 'context' ? bridge.handleReadContext(url) : bridge.handleListParticipants(url));
       } else {
         if (url.search) throw fail('evaluation_callback_query_invalid');
         const b = await body(req); live(); // never use SQLite after expiry/stop across await
         authenticate(b);
+        if (route.startsWith('goal/')) {
+          const result = goals!.handle(route, b);
+          reply(res, result.statusCode, result.response); return;
+        }
+        observed = { route, parameters: b };
         const allowed = ['invocationId', 'callbackToken', 'visibility', 'content', 'mode', 'noFinalize'];
         if (Object.keys(b).some(k => !allowed.includes(k)) || b.visibility !== 'public' || !text(b.content, 32768)
           || b.content.includes(credentials.callbackToken) || b.content.includes(credentials.invocationId) || containsSecretSentinel(b.content)
@@ -162,13 +184,16 @@ export async function startEvaluationCallback(input: any) {
         const combined = b.mode === 'append' && prior !== 'Thinking...' ? prior + b.content.trim() : b.content.trim();
         if (Buffer.byteLength(combined) > 32768 || combined.includes(credentials.callbackToken)
           || combined.includes(credentials.invocationId) || containsSecretSentinel(combined)) throw fail('evaluation_callback_body_invalid');
-        reply(res, 200, bridge.handlePostMessage(b));
+        answer(200, bridge.handlePostMessage(b));
       }
     } catch (e: any) {
       // Never return arbitrary storage errors, content, paths or auth material.
       const known = typeof e?.code === 'string' && /^evaluation_callback_[a-z_]+$/.test(e.code);
       const status = known ? e.statusCode : [401, 409].includes(e?.statusCode) ? e.statusCode : 500;
-      if (!res.destroyed && !res.headersSent) reply(res, status, { error: known ? e.code : status === 409 ? 'evaluation_callback_inactive' : status === 401 ? 'evaluation_callback_auth_failed' : 'evaluation_callback_failed' });
+      if (!res.destroyed && !res.headersSent) {
+        const value = { error: known ? e.code : status === 409 ? 'evaluation_callback_inactive' : status === 401 ? 'evaluation_callback_auth_failed' : 'evaluation_callback_failed' };
+        try { answer(status, value); } catch { reply(res, 500, { error: 'evaluation_callback_storage_failed' }); }
+      }
     }
   }
   const server = http.createServer((req, res) => {
@@ -183,7 +208,7 @@ export async function startEvaluationCallback(input: any) {
       const closed = new Promise<void>((resolve, reject) => server.close(e => e && (e as any).code !== 'ERR_SERVER_NOT_RUNNING' ? reject(e) : resolve()));
       server.closeAllConnections(); // own server sockets only, never kill-by-port
       await Promise.allSettled([...active]);
-      try { await closed; } finally { store.close(); }
+      try { await closed; } finally { try { goals?.close(); } finally { store.close(); } }
     })(); return stopping;
   }
   try {
@@ -192,6 +217,7 @@ export async function startEvaluationCallback(input: any) {
     authority = '127.0.0.1:' + address.port;
     live(); timer = setTimeout(() => { void stop().catch(() => {}); }, Math.max(1, deadline - performance.now())); timer.unref();
     return Object.freeze({ apiUrl: 'http://' + authority, databasePath, credentials, stop,
+      ...(goals ? { goalDatabasePath: goals.databasePath, readGoalEvidence: () => { live(); return goals!.readEvidence(); } } : {}),
       // Trusted worker observation, not an additional HTTP capability. Read
       // before stop closes this callback's own disposable SQLite connection.
       readPublicReply: () => {

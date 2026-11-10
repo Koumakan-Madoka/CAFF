@@ -740,3 +740,15 @@ test('production model never silently falls back to proxy or accepts caller-draw
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);
  delete h.config.cases[0].repository;assert.throws(h.plan,/evaluation_repository_restore_required/);
 });
+
+test('Goal approximation marker survives formal v2 persistence/export and readable staged report without rewriting legacy bytes',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ const legacy=store.save(r),legacyBytes=fs.readFileSync(path.join(h.config.globalRoot,'comparisons',legacy.id.slice(11)+'.json'));
+ const marked=structuredClone(r),marker={goalState:'approximate-minimal-v1',goalSeedHash:'e'.repeat(64),goalExecutionId:crypto.randomUUID()};
+ for(const c of marked.cases)for(const row of c.runs){Object.assign(row,marker);Object.assign(row.assessment.referenceMetrics,marker);}
+ const saved=store.save(marked);assert.notEqual(saved.id,legacy.id);
+ for(const c of saved.cases)for(const row of c.runs){for(const k of Object.keys(marker))assert.equal(row[k],marker[k]);assert.equal(row.assessment.referenceMetrics.goalState,marker.goalState);}
+ assert.deepEqual(JSON.parse(JSON.stringify(saved)),saved);assert.match(require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved),/Goal 状态近似/);
+ assert.deepEqual(fs.readFileSync(path.join(h.config.globalRoot,'comparisons',legacy.id.slice(11)+'.json')),legacyBytes);
+ assert.equal(JSON.stringify(legacy).includes('goalState'),false);
+});

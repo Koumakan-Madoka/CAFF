@@ -7,7 +7,7 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
+async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, goalEvidence, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
@@ -65,7 +65,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
       callbackLifetimeMs = config.lifetimeMs;
       return { apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
-        readPublicReply: () => published, stop: async () => { stopped = true; } }; } };
+        readPublicReply: () => published, ...(goalEvidence ? { readGoalEvidence: () => structuredClone(goalEvidence) } : {}), stop: async () => { stopped = true; } }; } };
     assert.ok(name.startsWith('node:'), name); return require(name);
   };
   const workerModule = { exports: {} }, filename = require.resolve('../../scripts/badcase-capture/direct-sdk-container.cjs');
@@ -469,4 +469,18 @@ test('CLI run requires explicit confirmation and a new output file; plan does no
   assert.equal(argumentsFor(['--config', file, '--run', '--confirmed', '--output', output])['--run'], true);
   for (const args of [['--config', file, '--run'], ['--config', file, '--run', '--output', output], ['--config', file, '--plan', '--run'],
     ['--config', file, '--plan', '--output', output], ['--config', 'relative', '--plan'], ['--config', file, '--plan', '--unknown']]) assert.throws(() => argumentsFor(args), /cli_invalid/);
+});
+
+test('Goal evidence is exported by the actual trace worker without changing prompt/session/prepared-input bytes or hashes', async t => {
+  const sourceRoot = 'C:/synthetic/room', prompt = 'Now {{CAFF_CHAT_API_URL}}';
+  const sessionText = [{ type: 'session', version: 3, id: 'goal-prefix', cwd: sourceRoot },
+    { type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: [{ type: 'text', text: '{{PI_AGENT_PRIVATE_DIR}}' }], timestamp: 1 } }].map(JSON.stringify).join('\n') + '\n';
+  const options = { prompt, sessionText, bindings: { sourceRoot, controlledReplacements: [{ name: 'CAFF_CHAT_API_URL', count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] } };
+  const evidence = { kind: 'evaluation-goal-evidence-v1', executionId: 'synthetic-worker-execution', goalState: 'approximate-minimal-v1', seedHash: 'a'.repeat(64), seed: { status: 'active' }, calls: [] };
+  const a = await workerReceipt(t, options), b = await workerReceipt(t, { ...options, goalEvidence: evidence });
+  for (const key of ['input', 'invocationPrompt', 'workingSessionText']) {
+    assert.deepEqual(a[key], b[key]); assert.equal(crypto.createHash('sha256').update(JSON.stringify(a[key])).digest('hex'), crypto.createHash('sha256').update(JSON.stringify(b[key])).digest('hex'));
+  }
+  assert.deepEqual(a.receipt.replaySession, b.receipt.replaySession); assert.equal(a.receipt.historyHash, b.receipt.historyHash);
+  assert.equal(a.receipt.inputHash, b.receipt.inputHash); assert.deepEqual(b.receipt.goalEvidence, evidence); assert.equal(Object.hasOwn(a.receipt, 'goalEvidence'), false);
 });

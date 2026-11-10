@@ -125,3 +125,19 @@ test('judge output is scanned for executor key before any result/event can discl
   await assert.rejects(runComparison(h.config, h.options), /evaluation_output_contains_key/);
   assert.equal(JSON.stringify(h.state.events).includes(h.key), false);
 });
+
+test('approximate Goal evidence survives host scoring, rows/events, JSON export and readable report, without entering judge input', async () => {
+  const h = fixture(), executionId = crypto.randomUUID(), seed = { goalId: 'goal_' + crypto.randomUUID(), revision: 1, status: 'active', owner: { agentId: 'role-family-gpt' }, acceptanceCriteria: [{ status: 'pending' }], workItems: [{ status: 'todo' }], evidence: [] };
+  const goalEvidence = { kind: 'evaluation-goal-evidence-v1', executionId, goalState: 'approximate-minimal-v1', seed, seedHash: hash(JSON.stringify(seed)), calls: [
+    { executionId, sequence: 1, endpoint: 'goal/suggest', parameters: { action: 'pause', reason: 'x'.repeat(1001) }, statusCode: 400, errorCode: null, response: { error: 'reason must be at most 1000 characters' } }] };
+  const execute = h.options.execute; h.options.execute = async (...args) => { const result = await execute(...args); result.receipt.goalEvidence = structuredClone(goalEvidence); return result; };
+  const result = await runComparison(h.config, h.options);
+  for (const row of result.runs) {
+    assert.deepEqual(row.goalEvidence, goalEvidence); assert.equal(row.goalState, 'approximate-minimal-v1'); assert.equal(row.goalSeedHash, goalEvidence.seedHash); assert.equal(row.goalExecutionId, executionId);
+    assert.equal(row.assessment.referenceMetrics.goalState, 'approximate-minimal-v1'); assert.equal(row.assessment.referenceMetrics.goalSeedHash, goalEvidence.seedHash);
+  }
+  assert(h.state.events.filter(e => e.event === 'run').every(e => e.goalState === 'approximate-minimal-v1'));
+  assert.equal(JSON.stringify(h.state.judgeInputs).includes('approximate-minimal'), false);
+  assert.match(formatComparison(result), /Goal 状态近似/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)).runs[0].goalEvidence, goalEvidence);
+});

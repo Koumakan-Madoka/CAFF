@@ -198,6 +198,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     receipt = { kind: 'direct-caff-turn-v1', inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
+      ...(callback?.readGoalEvidence ? { goalEvidence: callback.readGoalEvidence() } : {}),
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
       ...(input.recordedModelConfig ? { recordedModelConfig: input.recordedModelConfig } : {}),

@@ -6,6 +6,8 @@
 
 本契约描述截至 2026-11-09 的代码行为，不代表已部署或已获最终接受。覆盖标记、不可覆盖轨迹、授权历史回填、脱水、三类模式标签、模型类别提议与整组确认、训练成员限定归纳及审核后自动关联、按模式首次分组、Badcase 页、离线预检，以及双检查的单次 run 与现场切点报告；正式计划/判分见[评分契约](wikiskill-scoring.md)。历史重分组保留原确认和冻结 trace 组别，新题另走首次分组，不重新随机旧题。新标记的现场元数据来自 schemaVersion 2 检查点，旧缺失如实披露；不能把展示、导出、元数据齐全或合成测试当成可回放、已复现或已入库的证明。
 
+2026-11-10 M1 追加：trace 回调使用本次执行独立的最小 Goal store，并保存近似标记和不可改调用记录，详见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。不从 session_goal 展示文本反解结构化 Goal，不修改冻结 prompt/session/触发消息/准备输入或包 hash；以后标记时冻结结构化 Goal 不在本次范围。Goal 成功响应带出的人造状态是新增的后续上下文，不冒称恢复历史 Goal；公共读接口保持原样。页面标记在后续页面里程碑接入。
+
 ## 数据流与签名
 
 1. `createAgentContextSnapshot({ ..., archiveKnownKeyValues? })`：正常 Agent 执行传入实例的已知 key 清单读取函数。内部 `archiveContext.sections` 保存同一份 delivered sections 的逐字内容，只替换已知 key；包含 harness 最终系统提示词（收到时），不二次生成提示词。`archiveContext` 不进入 `materializeAgentContextSnapshot()`、summary、Inspector 或其 Markdown 导出。原有 Inspector 的模式脱敏仍只用于展示字段。

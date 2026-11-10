@@ -52,6 +52,20 @@
 
 本 Goal 收尾在最终固定 SHA 运行 `npm run typecheck`、`npm run build`、`npm run test:fast` 并扫描秘密；每条测试命令先设置新的临时 Wiki/agent/SQLite 目录。最终由规划者独立审查、用户接受；不复用下面历史 Goal 的双平台或模型评测结论。临时 DeepSeek provider 副本及旧 #19/#20 获准 TEMP 副本在收尾删除，只保留无秘密验证回执。
 
+### 2026-11-10 trace 回放的独立 Goal store
+
+`evaluation-callback.ts` 的 trace 模式新增 `/api/agent-tools/goal/suggest`、`goal/update`。两个接口只调用独立 `goal-store/goal.sqlite` 上的生产 `handleSuggestGoal/handleUpdateGoal`，复用 `session-goal` 和 `buildErrorJsonPayload`，不复制校验或调整顺序。公共 context、participants、post-message 仍用原 `callback.sqlite`，生产读接口与投影未改、未过滤。legacy 单文字 seed 默认仍不开 Goal；受信测试可明确禁用或选择无种子对照，HTTP 不能选择数据库/状态。
+
+每次执行独立生成 execution ID、Goal ID、revision（初始1）。最小种子 active、owner 为执行智能体，仅一条 pending 验收标准和一条 todo 工作项，证据为空；不伪造 passed、历史提案或 planner binding。`evaluation-goal-evidence-v1` 保存种子内容、SHA-256及 `goalState: approximate-minimal-v1`。这表示 **Goal 状态近似**，不是还原历史房间：#22/#23 的 resume 冻结材料无 session_goal，#21/#24 的展示文本也不足以恢复 ID、revision、提案。以后标记时冻结结构化 Goal 不在本次范围。
+
+冻结 prompt、session 前缀、触发消息和准备输入字节/hash 不变；同一公共 store 状态与同一请求序列下，启用 Goal 工具不改变 context、participants、post-message 的响应字节（包括 context 的游标状态）。Goal 的更新只在 Goal 工具自身响应中可见；生产 context/participants 会返回真实 Goal，而本回放公共 store 不显示人造种子。**成功 Goal 响应会原样带出种子和提案，进入模型后续上下文，可能影响后续步骤**；不宣称整个轮次上下文不受影响。模式6首个 suggest-goal 的参数产生于返回之前；超长被拒只返回错误、不带 Goal。
+
+返回一致性仅指**同一显式种子状态**与生产 handler/错误序列化相同：pause 理由 `.trim()` 后 UTF-16 长度1000为200、1001为400且没有 `code`；无 Goal 的 pause 为404；pending 验收标准的 complete 为409、先于理由长度；再次 pause 替换提案为200；自审403；update 缺 Goal 对象或含 action 为400。成功响应中的新提案/裁决 ID 与时间是本次独立生成值，不复用历史身份。
+
+Goal store 还存追加式调用账：每个已认证、JSON/路由准入后的受支持接口调用保存 endpoint、解析后参数、HTTP状态、错误 code（可为null）和返回包，绑定 execution ID 与顺序。Goal 状态写入和对应调用记录在同一SQLite事务；公共接口保留原行为后另追加记录，不为记录而改写其响应。表的 UPDATE/DELETE 被触发器拒绝；可信 worker 只能读快照，读者改动不影响账。这不是对可直接改数据库/删触发器的同OS受信操作者的安全边界。认证字段不入账；参数夹带本次认证材料或秘密哨兵时，拒绝并存 redacted/null 参数，不把秘密写入SQLite/WAL。未通过认证、非JSON、未知路由等协议流量不算已执行工具调用，不记录为模型调用证据。私信、委派、附件、能力及其他原不支持的接口仍404，不模拟。
+
+trace worker 在关闭前读取完整 `goalEvidence`；宿主验证 seed hash/执行绑定/调用顺序后保留在独占操作方输出（JSON原始报告），判分结果与正式结果投影携带 `goalState/goalSeedHash/goalExecutionId`，AI 裁判输入不增加这些字段。可读报告注明“Goal 状态近似”；页面显示在后续页面里程碑接入。旧回执没有这些字段时不补造、不迁移旧结果或hash。此处只交付回调和证据通路，trace 工具检查按记录判定在后续里程碑接入，不把旧bash解析器的结果冒充新检查；真实验证须另获额度批准。
+
 ### 2026-11-02 生产同配置扩展（历史 Goal）
 
 上一 Goal 当时为 `goal_3e443bab-5e17-460f-86c4-65ee28174627`，在已接受的 `4f993bbc` 与 develop 同步基础上继续。M1–M6 已通过规划者独立里程碑评审：真实 GPT/xhigh 现场回放、resume、Windows 页面和命令、正式两阶段评测、基线/经验回流及副本迁移均有证据。S1 最终固定 SHA 的双平台全量检查、DeepSeek 审查和用户最终接受仍须独立完成；未部署。当前操作入口见 [Windows 操作说明](wikiskill-windows.md)、[迁移契约](wikiskill-data-migration.md) 和 [发布审批步骤](wikiskill-release.md)。下面明确标为历史的样例/代理模型结果只保留当时的验证边界，不代替生产评测。

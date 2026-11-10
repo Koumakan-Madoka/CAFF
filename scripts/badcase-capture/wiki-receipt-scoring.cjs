@@ -5,6 +5,7 @@ const { scoreWikiRun, bindWikiJudge, validateWikiJudgeBinding } = require('../..
 const { validateWikiRubric, wikiExactKeys, wikiRubricText, wikiValueHash } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
 const { scoreLiteralFiles, parseLiteralEvidence } = require('./file-literal-rules.cjs');
 const { scorePublicReply } = require('./public-reply-literal-rules.cjs');
+const { evaluationGoalMarker } = require('../../build/server/domain/runtime/badcase-capture/evaluation-goal-evidence');
 const fail = code => Object.assign(Error(code), { code });
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 function validateWikiScoring(value, { runChecks = false } = {}) {
@@ -90,6 +91,6 @@ async function scoreWikiReceipt({ receipt, rules, scoring, beforeHash, environme
       environmentError: environmentError === true, traceSummary: trace,
       ...(files ? { files: files.filter(f => f.state === 'file').map(f => ({ path: f.path, content: f.text })) } : {}) },
   }, judge);
-  return { ...result, referenceDetails };
+  return { ...result, ...(receipt.goalEvidence === undefined ? {} : { referenceMetrics: { ...result.referenceMetrics, ...evaluationGoalMarker(receipt.goalEvidence) } }), referenceDetails };
 }
 module.exports = { scoreWikiReceipt, validateWikiScoring, wikiScoringSummary, assertWikiScoringJudge };

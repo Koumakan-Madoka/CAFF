@@ -26,6 +26,7 @@ const { validateLiteralRules, scoreLiteralFiles } = require('./file-literal-rule
 const { validatePublicReplyRules, scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const { scoreWikiReceipt, validateWikiScoring, wikiScoringSummary, assertWikiScoringJudge } = require('./wiki-receipt-scoring.cjs');
 const { isWikiJudgeTechnicalError } = require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2');
+const { validateEvaluationGoalEvidence, evaluationGoalMarker } = require('../../build/server/domain/runtime/badcase-capture/evaluation-goal-evidence');
 const hash = v => crypto.createHash('sha256').update(v).digest('hex');
 const { hashJson, createKnownValueScanner } = require('./replay-streams.cjs');
 const fail = code => Object.assign(Error(code), { code });
@@ -338,6 +339,10 @@ async function runComparison(config, options = {}) {
         && Array.isArray(receipt.modelCalls) && receipt.modelCalls.length > 0
         && receipt.modelCalls.every(c => c.model === plan.summary.model && typeof c.success === 'boolean' && Number.isFinite(c.durationMs) && c.durationMs >= 0);
       if (valid) {
+        if (receipt.goalEvidence !== undefined) {
+          row.goalEvidence = validateEvaluationGoalEvidence(receipt.goalEvidence);
+          Object.assign(row, evaluationGoalMarker(row.goalEvidence));
+        }
         if (plan.summary.replaySession) row.replaySession = { ...plan.summary.replaySession };
         if (plan.summary.projectResources) row.projectResources = { ...plan.summary.projectResources, verified: true,
           loadedContextFiles: receipt.projectResources.loadedContextFiles, loadedSkills: receipt.projectResources.loadedSkills };
@@ -441,6 +446,7 @@ function formatComparison(result) {
     result.scoring ? '评分：硬断言＋AI细则裁判；字面指标只作参考。' : '评分：字面规则（旧版）。'];
   if (result.scoring) lines.push('裁判：' + result.scoring.binding.model + ' / ' + result.scoring.binding.backend + '；每条细则3次取多数。',
     '细则：v' + result.scoring.rubricVersion + ' / ' + result.scoring.rubricHash + '；判分配置：' + result.scoring.configHash + '。');
+  if (result.runs?.some(r => r.goalState === 'approximate-minimal-v1')) lines.push('Goal 状态近似：独立最小种子，不还原历史 Goal；仅 Goal 工具返回可见，不写入冻结输入。');
   if (result.dockerBackend) lines.push('Docker：Windows宿主 → WSL(' + result.dockerBackend.distribution + ')；凭据和供应方连接仅在Windows，材料经stdin，容器断网。');
   if (result.modelConfig) lines.push('配置：' + result.modelConfig.api + ' / thinking ' + result.modelConfig.thinking + ' / ' + result.modelConfig.transport + ' / Fast关闭；凭据仅在宿主。');
   if (Number.isSafeInteger(result.timeoutMs)) lines.push('容器时限：' + result.timeoutMs / 1000 + '秒（配置上限，不是已用时）。');
