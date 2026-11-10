@@ -97,6 +97,7 @@ test('trace command uses production comparison and record scorer, retains Goal/n
     assert.deepEqual(a.artifact.packet.receipts[0].goalEvidence, h.state.receipts[i].goalEvidence);
     assert.deepEqual(a.artifact.packet.receipts[0].toolCalls, h.state.receipts[i].toolCalls);
     assert.equal(a.artifact.packet.comparison.runs[0].assessment.tool.status, 'pass'); assert.equal(a.artifactHash, r.runs[i].artifactHash);
+    assert.deepEqual(require(base + 'evaluation-goal-evidence').projectEvaluationGoalMarker(r.runs[i]), require(base + 'evaluation-goal-evidence').projectEvaluationGoalMarker(a.artifact.packet.comparison.runs[0]));
   }
   assert.equal(fs.readFileSync(h.outputFile, 'utf8').includes(h.access), false); assert.equal(JSON.stringify(h.store.read()), before);
   for (const folder of ['comparisons', 'run-replays', 'experiment-results']) assert.equal(fs.existsSync(path.join(h.scope.globalRoot, folder)), false);

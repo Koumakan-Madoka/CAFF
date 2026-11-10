@@ -5,6 +5,7 @@ import { resolveFrozenWikiRubric, validateWikiScoringModel, wikiValueHash } from
 import { wikiRunHash, WIKI_RUN_MODEL } from './wiki-run-replay';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 import { wikiGoalCaseNumber } from './wiki-suite';
+import { projectEvaluationGoalMarker } from './evaluation-goal-evidence';
 import { wikiSceneReportChecks } from './wiki-run-check-scoring';
 import type { WikiEligibleJudge } from './wiki-judge-catalog';
 const fail = (code = 'wiki_original_precheck_invalid') => Object.assign(Error(code), { code });
@@ -37,6 +38,9 @@ export interface WikiOriginalPrecheckPlan {
 export interface WikiOriginalPrecheckAttempt {
   iteration: number; variant: 'original'; status: 'pass' | 'fail' | 'invalid' | 'error';
   artifactId: string; artifactHash: string; usageComplete: boolean;
+  // Optional recorded trace metadata; absent on historical/run outputs. Not
+  // inferred from the current implementation, source text or a legacy result.
+  goalState?: 'approximate-minimal-v1' | 'unseeded'; goalSeedHash?: string; goalExecutionId?: string;
 }
 export interface WikiOriginalPrecheckOutcome {
   status: 'completed' | 'stopped' | 'failed'; reason: string | null; runs: WikiOriginalPrecheckAttempt[];
@@ -139,7 +143,11 @@ export function summarizeWikiOriginalPrecheck(plan: WikiOriginalPrecheckPlan, va
   check(['completed', 'stopped', 'failed'].includes(value.status) && Array.isArray(value.runs) && value.runs.length <= plan.policy.repeats);
   check(value.status === 'completed' ? value.reason === null : typeof value.reason === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(value.reason));
   for (const [i, row] of value.runs.entries()) {
-    shape(row, ['iteration', 'variant', 'status', 'artifactId', 'artifactHash', 'usageComplete']);
+    shape(row, ['iteration', 'variant', 'status', 'artifactId', 'artifactHash', 'usageComplete'], ['goalState', 'goalSeedHash', 'goalExecutionId']);
+    try {
+      const marker = projectEvaluationGoalMarker(row);
+      check(plan.execution.level === 'trace' || !Object.keys(marker).length);
+    } catch { throw fail(); }
     check(row.iteration === i + 1 && row.variant === 'original' && ['pass', 'fail', 'invalid', 'error'].includes(row.status) && typeof row.usageComplete === 'boolean');
     id(row.artifactId); hash(row.artifactHash);
   }

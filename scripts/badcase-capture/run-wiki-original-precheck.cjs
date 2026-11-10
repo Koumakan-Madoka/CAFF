@@ -9,6 +9,7 @@ const { createWikiStore } = require(base + 'wiki-store');
 const { createWikiRunStore } = require(base + 'wiki-run-store');
 const { createWikiOriginalPrecheckStore } = require(base + 'wiki-original-precheck-store');
 const { createWikiOriginalPrecheckPlan } = require(base + 'wiki-original-precheck');
+const { projectEvaluationGoalMarker } = require(base + 'evaluation-goal-evidence');
 const { createWikiPipelinePrecheckStore, readWikiPipelineInputs } = require(base + 'wiki-pipeline-prechecks');
 const { buildWikiRunRequest, replayWikiRun, replayWikiRunReport, wikiRunHash } = require(base + 'wiki-run-replay');
 const { pageDehydrationCause } = require(base + 'wiki-dehydration');
@@ -146,13 +147,14 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       catch { fatal = 'wiki_original_precheck_stale'; break; }
       if (fresh.plan.planHash !== fixed.plan.planHash || wikiValueHash(fresh.scoring) !== wikiValueHash(fixed.scoring)) { fatal = 'wiki_original_precheck_stale'; break; }
       let client, cleanupFailed = false;
-      let packet, scored, traceStatus;
+      let packet, scored, traceStatus, goalMarker = {};
       try {
         // Lazy judge wrapper: a tool-first failure never reads credentials.
         const judgeAdapter = fixed.scoring.binding === null ? undefined : { configuration: CONFIGURATION, evaluate: input => getJudge().evaluate(input) };
         if (fixed.plan.execution.level === 'trace') {
           const executed = await executeTracePrecheck(fixed, config, dependencies, { values, budget, append, judge: judgeAdapter });
           packet = executed.packet; traceStatus = executed.status;
+          goalMarker = projectEvaluationGoalMarker(packet.comparison.runs[0]);
         } else {
           const input = { store: fixed.store, runs: packets, caseId: config.caseId, toolset: config.toolset, approvedRequestHash: fixed.plan.inputHash,
             // Every precheck attempt gets its own packet execution ID. Outer
@@ -184,7 +186,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       const retained = redactTraceKnownValues(artifact, values);
       if (retained.count) { fatal = 'wiki_original_precheck_output_contains_key'; throw fail(fatal); }
       append({ event: 'attempt_result', artifactId, artifactHash, artifact });
-      const b = budget.snapshot(); attempts.push({ iteration, variant: 'original', status, artifactId, artifactHash, usageComplete: b.usageComplete });
+      const b = budget.snapshot(); attempts.push({ iteration, variant: 'original', status, artifactId, artifactHash, usageComplete: b.usageComplete, ...goalMarker });
       if (fatal) break;
     }
     const accounting = budget.snapshot(), all = attempts.length === fixed.plan.policy.repeats;

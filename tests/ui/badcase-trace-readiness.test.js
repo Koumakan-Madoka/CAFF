@@ -13,6 +13,7 @@ function fixture(t, config = {}) {
     s.pipelineStates = require(base + 'wiki-pipeline').projectWikiPipelineStates({ state: s,
       originalPrechecks: real.records.list(), replayChecks: require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(s, real.cache) });
     s.cases[0].n = s.cases[0].displayNumber = 22; // Display fields are added AFTER pure binding projection, as in HTTP.
+    s.replayCases = s.replayCases.map(r => ({ ...r, task: 'Synthetic scene task', category: 'control', split: s.cases[0].split, fixture: { commit: 'a'.repeat(40) } }));
     s.caseStates = real.store.getCaseStates(); s.comparisons = []; s.runReplays = [];
     s.targets = require(base + 'wiki-targets').listWikiTargets();
     return s;
@@ -37,6 +38,39 @@ function setup(t, data, { full = false, onConfirmControl, handler } = {}) {
   return { root, panel, calls, window: dom.window, card: () => root.querySelector('[data-case-id]'),
     click: async selector => { const el = root.querySelector(selector); assert.ok(el, selector); el.click(); await tick(); await tick(); } };
 }
+test('precheck approximation disclosure uses recorded markers only, preserving absent and unseeded history', t => {
+  const real = fixture(t), data = real.snapshot(), p = data.pipelineStates[0].precheck;
+  const h = setup(t, data); assert.equal(h.root.querySelector('[data-goal-approximation]'), null);
+  p.current.goalExecutions = [{ iteration: 1, goalState: 'approximate-minimal-v1', goalSeedHash: 'e'.repeat(64), goalExecutionId: '00000000-0000-4000-8000-000000000001' }];
+  p.history[0].goalExecutions = clone(p.current.goalExecutions); h.panel.render(data);
+  assert.match(h.root.querySelector('[data-goal-approximation]').textContent, /Goal 状态近似.*最小.*不还原历史.*不同回放条件/s);
+  assert.ok(h.root.querySelector('[data-original-precheck]').textContent.includes('e'.repeat(64)));
+  p.current.goalExecutions[0].goalState = 'unseeded'; p.history[0].goalExecutions = clone(p.current.goalExecutions); h.panel.render(data);
+  assert.equal(h.root.querySelector('[data-goal-approximation]'), null); assert.match(h.root.textContent, /未播种 Goal/);
+  assert.equal(h.calls.length, 0);
+});
+for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} control makes case assertions read-only without paid draft controls`, async t => {
+  const real = fixture(t); real.confirm(); const data = real.snapshot();
+  if (stale) data.pipelineStates[0].control.status = 'stale';
+  const h = setup(t, data, { full: true }); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const panel = h.root.querySelector('[data-rubric-panel]'); assert.ok(panel);
+  assert.match(panel.textContent, /已冻结为对照.*不能修改/s);
+  assert.equal(panel.querySelector('[data-edit-rubric],[data-draft-rubric],[data-save-rubric],[data-freeze-rubric],textarea'), null);
+  assert.match(panel.textContent, /suggest-goal.*reason.*1000/s);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+});
+test('formal result page and per-run detail label recorded Goal approximation, never invent it for old runs', async t => {
+  const real = fixture(t), data = real.snapshot(), run = { iteration: 1, variant: 'original', status: 'fail', assessment: null,
+    goalState: 'approximate-minimal-v1', goalSeedHash: 'f'.repeat(64), goalExecutionId: '00000000-0000-4000-8000-000000000001' };
+  data.comparisons = [{ id: 'synthetic-comparison', kind: 'wiki-staged-batch-comparison-v2', createdAt: '2026-11-10T00:00:00.000Z', completed: true, model: 'openai-codex/gpt-6.1-sol', modelCallsKnown: 1,
+    evaluation: { splitPolicy: 'd15-frozen-v1' }, cases: [{ sourceCaseId: real.c.id, stage: 'gate', split: 'gate', category: 'control', rubric: data.rubrics[0], runs: [run] }] }];
+  const bytes = JSON.stringify(data.comparisons), h = setup(t, data, { full: true }); await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.match(h.root.querySelector('#impact-runs > [data-goal-approximation]').textContent, /Goal 状态近似.*不同回放条件/s);
+  assert.ok(h.root.querySelector('.assertion-run [data-goal-approximation]').textContent.includes(run.goalSeedHash));
+  assert.equal(JSON.stringify(data.comparisons), bytes);
+  delete run.goalState; delete run.goalSeedHash; delete run.goalExecutionId;
+  await h.panel.load(); await h.click('[data-tab="impact"]'); assert.equal(h.root.querySelector('[data-goal-approximation]'), null);
+});
 test('current independent precheck shows counts, configured strict threshold and provenance without formal results or launch controls', t => {
   const real = fixture(t, { statuses: ['pass', 'fail', 'invalid', 'error'], policy: { repeats: 4, failureThreshold: .4 } }), data = real.snapshot(), h = setup(t, data);
   const box = h.root.querySelector('[data-original-precheck]'); assert.ok(box);

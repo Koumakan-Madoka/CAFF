@@ -22,6 +22,30 @@ function rows(statuses) {
 }
 function summary(plan, statuses, status = 'completed') { return api().summarizeWikiOriginalPrecheck(plan, { status, reason: status === 'completed' ? null : 'operator_interrupted', runs: rows(statuses) }); }
 
+const marker = () => ({ goalState: 'approximate-minimal-v1', goalSeedHash: H('f'), goalExecutionId: require('node:crypto').randomUUID() });
+test('trace precheck retains a complete validated Goal marker without changing summary, old bytes or hashes', t => {
+  const h = fixture(t), records = storage().createWikiOriginalPrecheckStore(h.scope), plan = h.plan(), old = rows(['pass', 'pass', 'pass']);
+  const outcome = { status: 'completed', reason: null, runs: old }, r = records.reserve(plan), before = JSON.stringify(outcome);
+  const marked = { ...outcome, runs: old.map(r => ({ ...r, ...marker() })) }, saved = records.finish(r.id, marked);
+  assert.deepEqual(saved.summary, api().summarizeWikiOriginalPrecheck(plan, outcome));
+  assert.deepEqual(records.read(r.id).result.runs, marked.runs); assert.equal(JSON.stringify(outcome), before);
+  const history = require(base + 'wiki-original-precheck-projection').projectWikiOriginalPrechecks(h.state, records.list(), h.input.replayChecks)[0];
+  assert.deepEqual(history.current.goalExecutions, marked.runs.map(({ iteration, goalState, goalSeedHash, goalExecutionId }) => ({ iteration, goalState, goalSeedHash, goalExecutionId })));
+  const legacy = records.reserve(plan), legacySaved = records.finish(legacy.id, outcome);
+  assert.deepEqual(legacySaved.runs, old); assert.equal(Object.hasOwn(legacySaved.runs[0], 'goalState'), false);
+  const legacyView = require(base + 'wiki-original-precheck-projection').projectWikiOriginalPrechecks(h.state, [records.read(legacy.id)], h.input.replayChecks)[0];
+  assert.equal(Object.hasOwn(legacyView.current, 'goalExecutions'), false);
+});
+test('partial, invalid or non-trace Goal markers are rejected rather than silently marked approximate', t => {
+  for (const run of [false, true]) {
+    const h = fixture(t, { run }), plan = h.plan(), value = rows(Array(plan.policy.repeats).fill('pass'));
+    for (const change of [m => delete m.goalSeedHash, m => m.goalState = 'invented', m => m.goalExecutionId = 'bad-id', m => m.goalSeedHash = 'bad-hash', () => {}]) {
+      const m = marker(); change(m); const outcome = { status: 'completed', reason: null, runs: value.map((r, i) => i === 0 ? { ...r, ...m } : r) };
+      if (!run && Object.keys(m).length === 3 && m.goalState === 'approximate-minimal-v1' && m.goalSeedHash === H('f') && m.goalExecutionId !== 'bad-id') continue;
+      assert.throws(() => api().summarizeWikiOriginalPrecheck(plan, outcome), /wiki_original_precheck_invalid/);
+    }
+  }
+});
 test('precheck defaults to 3 trace / 5 run attempts, pins frozen identities, and never mutates Wiki', t => {
   for (const run of [false, true]) {
     const h = fixture(t, { run }), before = JSON.stringify(h.state), plan = h.plan();

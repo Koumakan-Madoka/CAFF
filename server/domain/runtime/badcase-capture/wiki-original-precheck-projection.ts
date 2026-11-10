@@ -1,6 +1,7 @@
 // Read-only small-record projection. No frozen trace reads, Git restoration,
 // runtime materialization, model calls or writes. Formal results are NOT input.
 import { createWikiOriginalPrecheckPlan, validateWikiOriginalPrecheckRecord } from './wiki-original-precheck';
+import { projectEvaluationGoalMarker } from './evaluation-goal-evidence';
 const fail = () => Object.assign(Error('wiki_original_precheck_record_invalid'), { code: 'wiki_original_precheck_record_invalid' });
 export function projectWikiOriginalPrechecks(state: any, records: any[], replayChecks: any[]) {
   let checked: ReturnType<typeof validateWikiOriginalPrecheckRecord>[];
@@ -25,10 +26,14 @@ export function projectWikiOriginalPrechecks(state: any, records: any[], replayC
             policy, replayChecks, ...(Object.hasOwn(plan, 'judge') ? { judge: plan.judge } : {}) }).planHash === plan.planHash;
         } catch { /* Valid history, but not the current eligible conditions. */ }
       }
+      const goalExecutions = (result?.runs || []).flatMap((r: any) => {
+        const marker = projectEvaluationGoalMarker(r);
+        return Object.keys(marker).length ? [{ iteration: r.iteration, ...marker }] : [];
+      });
       return { id: reservation.id, createdAt: reservation.createdAt, finishedAt: result?.finishedAt ?? null,
         planHash: plan.planHash, rubricHash: plan.rubricHash, rubricVersion: plan.rubricVersion, execution: structuredClone(plan.execution),
         policy: structuredClone(plan.policy), reportOnly: plan.reportOnly, current, status: result?.status ?? 'reserved', reason: result?.reason ?? null,
-        summary: result ? structuredClone(result.summary) : null };
+        summary: result ? structuredClone(result.summary) : null, ...(goalExecutions.length ? { goalExecutions } : {}) };
     });
     // Newest MATCHING execution supplies the whole denominator. A reserved,
     // stopped or error-only latest result never falls back to a favorable older
