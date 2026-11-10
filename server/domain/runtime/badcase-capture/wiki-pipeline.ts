@@ -8,6 +8,7 @@ import { wikiRubricSourceHash } from './wiki-rubric';
 import { buildDehydrationPrefix } from './wiki-dehydration';
 import { wikiRunHash } from './wiki-run-replay';
 import { projectWikiOriginalPrechecks } from './wiki-original-precheck-projection';
+import { projectWikiGateControls } from './wiki-gate-control';
 
 // OFFLINE operator only: trace checks may restore a git snapshot; run checks
 // read/build the frozen prefix. HTTP must use readWikiPipelineInputs/cache only.
@@ -40,9 +41,11 @@ export function inspectWikiPipelineInputs(state: any, readers: any) {
 }
 
 export function projectWikiPipelineStates({ state, comparisons = [], runReplays = [], replayChecks = [], originalPrechecks = [] }: any) {
-  const prechecks = new Map(projectWikiOriginalPrechecks(state, originalPrechecks, replayChecks).map((r: any) => [r.caseId, r]));
+  const projected = projectWikiOriginalPrechecks(state, originalPrechecks, replayChecks);
+  const prechecks = new Map(projected.map((r: any) => [r.caseId, r]));
+  const controls = new Map(projectWikiGateControls(state, originalPrechecks, replayChecks, projected).map((r: any) => [r.caseId, r]));
   return state.cases.map((c: any) => {
-    const precheck: any = prechecks.get(c.id);
+    const precheck: any = prechecks.get(c.id), control: any = controls.get(c.id);
     const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash)?.decision;
     const source = [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!);
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : decision?.level === 'run' ? 'run' : 'pending';
@@ -82,8 +85,8 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
       invalid: (match ? runs : originals).filter((r: any) => r.status === 'invalid').length,
       errors: (match ? runs : originals).filter((r: any) => r.status === 'error').length,
       unknown: match ? 0 : originals.filter((r: any) => r.status === 'reserved').length };
-    return { caseId: c.id, level, stopReason, assertion, replay: replayStatus, original, precheck,
+    return { caseId: c.id, level, stopReason, assertion, replay: replayStatus, original, precheck, control,
       inLibrary: !stopReason && ['train', 'gate', 'test'].includes(c.split) && assertion.status === 'frozen'
-        && replayStatus.status === 'supported' && precheck.reproduced };
+        && replayStatus.status === 'supported' && (precheck.reproduced || control.confirmed) };
   });
 }
