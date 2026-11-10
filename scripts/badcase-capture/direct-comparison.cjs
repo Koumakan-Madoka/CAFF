@@ -6,7 +6,7 @@ const { isSafeRelativePath } = require('./replay-path.cjs');
 const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
-const { createCodexRelayExchange } = require('./codex-mailbox.cjs');
+const { createCodexRelayExchange, codexMailboxLimits } = require('./codex-mailbox.cjs');
 const { validateWslDockerBackend, createWslDockerRunner } = require('./wsl-docker.cjs');
 const { readKnownKeyValues } = require('./known-key-values.cjs');
 const { tokenUsage } = require('./replay-measurements.cjs');
@@ -81,12 +81,19 @@ function comparisonKnownValues(config, options) {
   if (config?.repository !== undefined) throw fail('evaluation_known_sources_required');
   return [];
 }
+function validateNativeMaxRequests(config) {
+  if (config?.nativeMaxRequests !== undefined) {
+    if (config.modelProfile !== CODEX_PROFILE) throw fail('evaluation_config_invalid');
+    codexMailboxLimits(config.nativeMaxRequests);
+  }
+}
 function prepareComparison(config, options = {}) {
+  validateNativeMaxRequests(config);
   if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const variants = config?.variants === undefined ? ['original', 'candidate'] : config.variants;
   const originalOnly = Array.isArray(variants) && variants.length === 1 && variants[0] === 'original';
   if (!config || !Array.isArray(variants) || !(originalOnly || variants.length === 2 && variants[0] === 'original' && variants[1] === 'candidate') || !Number.isSafeInteger(config.repeats) || config.repeats < 1 || config.repeats > 20
-    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants', 'dockerBackend', 'scoring'].includes(k))
+    || Object.keys(config).some(k => !['request', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'candidateRole', 'wikiCandidate', 'globalWikiCandidate', 'rules', 'timeoutMs', 'modelProfile', 'keySource', 'executionPolicy', 'repository', 'dependencies', 'codexAuthFile', 'knownKeySources', 'variants', 'dockerBackend', 'scoring', 'nativeMaxRequests'].includes(k))
     || config.timeoutMs !== undefined && (!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 45 * 60 * 1000)
     || config.executionPolicy !== undefined && (config.executionPolicy !== 'alternating-valid-v1' || !config.globalWikiCandidate || config.repeats !== 10)
     || [config.candidateRole, config.wikiCandidate, config.globalWikiCandidate].filter(v => v !== undefined).length !== (originalOnly ? 0 : 1)
@@ -195,7 +202,8 @@ function prepareComparison(config, options = {}) {
     ...(original.input.recordedModelConfig ? { recordedModelConfig: { ...original.input.recordedModelConfig } } : {}),
     ...(original.input.projectResources ? { projectResources: projectResourcesSummary(original.input.projectResources) } : {}),
     ...(original.input.sessionText ? { replaySession: replaySessionInfo(original.input.sessionText) } : {}), repeats: config.repeats, ...(config.executionPolicy ? {executionPolicy:config.executionPolicy,maxExtraAttemptsPerCase:5} : {}),
-    imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000, rules, rulesHash: hash(JSON.stringify(rules)),
+    imageId: config.image.imageId, timeoutMs: config.timeoutMs ?? 120000,
+    ...(config.nativeMaxRequests === undefined ? {} : { nativeMaxRequests: config.nativeMaxRequests }), rules, rulesHash: hash(JSON.stringify(rules)),
     inputHashes: Object.fromEntries(Object.entries(inputs).map(([v, i]) => [v, hashJson(i)])),
     strictEvalEligible: false, ...(baseline?.fragments.length > 1 ? { promptBaseline: { kind: 'adopted-wiki-baseline-v1', baseHash: baseline.target.baseHash,
       archivedTargetHash: original.provenance.originalTargetHash, alreadyMerged: original.provenance.originalTargetHash === baseline.target.baseHash, appliedToBothVariants: true } } : {}),
@@ -211,6 +219,7 @@ async function runComparison(config, options = {}) {
   // read explicitly configured known-value sources, never authenticate/send.
   if (options.confirmed !== true) throw fail('evaluation_confirmation_required');
   const fixed = structuredClone(config);
+  validateNativeMaxRequests(fixed);
   // Select the explicit host transport BEFORE safety/auth sources can open.
   // Windows never passes access to a Linux process or silently falls back.
   let wslDocker;
@@ -233,7 +242,7 @@ async function runComparison(config, options = {}) {
   const emit = options.onEvent || (() => {}), keyReader = options.readKey || (fixed.keySource === 'caff-deepseek' ? readCaffDeepseekKey : readEvaluationKey);
   const variants = plan.summary.variants || ['original', 'candidate'], files = {}, manifests = {};
   for (const variant of variants) {
-    files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant], fixed.modelProfile);
+    files[variant] = stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, plan.inputs[variant], fixed.modelProfile, fixed.nativeMaxRequests);
     manifests[variant] = manifestFor(files[variant], { replayWorkspace: true });
   }
   if (variants.length === 2 && manifests.original.runtimeHash !== manifests.candidate.runtimeHash) throw fail('evaluation_runtime_mismatch');
@@ -283,7 +292,7 @@ async function runComparison(config, options = {}) {
       if (fixed.scoring) assertWikiScoringJudge(fixed.scoring, options.judge);
       const fresh = prepareComparison(fixed, effectiveOptions);
       if (!fresh.supported || JSON.stringify(fresh.summary) !== JSON.stringify(plan.summary)
-        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
+        || manifestFor(stage(fixed.repoRoot, fixed.dependencyRoot, fixed.image, fresh.inputs[variant], fixed.modelProfile, fixed.nativeMaxRequests), { replayWorkspace: true }).inputHash !== manifests[variant].inputHash) {
         throw fail('evaluation_input_changed');
       }
       checkInputs(fresh);
@@ -295,6 +304,7 @@ async function runComparison(config, options = {}) {
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
         task = await execute(fixed.image, files[variant], native
           ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash,
+            ...(fixed.nativeMaxRequests === undefined ? {} : { maxRequests: fixed.nativeMaxRequests }),
             ...(options.signal ? { signal: options.signal } : {}) }
           : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash });
       } catch { task = { failed: true, reason: 'evaluation_failed' }; }

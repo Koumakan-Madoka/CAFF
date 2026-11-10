@@ -82,6 +82,45 @@ test('Codex launcher is explicitly relay-only and has no credential environment 
   await assert.rejects(runCodexDockerTask(image, codexFiles, { network: 'bridge' }), /evaluation_codex_relay_required/);
   await assert.rejects(runCodexDockerTask(image, codexFiles, { sendNativeRequest: async () => {}, key }), /evaluation_codex_relay_required/);
 });
+test('host native relay refuses a container request beyond configured cap, including explicit 64, and proves cleanup', async () => {
+  const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  for (const maxRequests of [undefined, 64, 1]) {
+    const cap = maxRequests ?? 32, f = fake(); let running = false, finish, sequence = 1, sent = 0;
+    const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) },
+      ...(maxRequests === undefined ? [] : [{ path: 'evaluation-limits.json', bytes: Buffer.from(JSON.stringify({ maxRequests })) }])];
+    const runDocker = async (args, options) => {
+      if (args[0] === 'start') { running = true; await new Promise(resolve => { finish = resolve; }); return f.run(args, options); }
+      if (args[0] === 'kill') { running = false; finish(); return { code: 0, stdout: '', stderr: '' }; }
+      if (args[0] === 'exec') {
+        if (args[1] === '-i') { sequence++; return { code: 0, stdout: '', stderr: '' }; }
+        return { code: 0, stdout: JSON.stringify({ sequence, body: Buffer.from('{}').toString('base64') }), stderr: '' };
+      }
+      const result = await f.run(args, options);
+      if (args[0] === 'inspect' && result.code === 0) {
+        const values = JSON.parse(result.stdout); values[0].State.Running = running; result.stdout = JSON.stringify(values);
+      }
+      return result;
+    };
+    await assert.rejects(runCodexDockerTask(image, input, { maxRequests, runDocker, timeoutMs: 10000,
+      sendNativeRequest: async () => { sent++; return Buffer.from('{}'); } }), /container_model_relay_failed/);
+    assert.equal(sent, cap); assert.equal(sequence, cap + 1); assert.equal(f.remaining(), false);
+    assert.ok(f.calls.some(c => c.args[0] === 'rm'));
+  }
+});
+test('native launcher refuses out-of-range or mismatched stage/caller limits before Docker', async () => {
+  const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }];
+  const configured = [...input, { path: 'evaluation-limits.json', bytes: Buffer.from(JSON.stringify({ maxRequests: 64 })) }];
+  const f = fake(), options = { timeoutMs: 1000, runDocker: f.run, sendNativeRequest: async () => assert.fail('no send') };
+  for (const maxRequests of [0, 65, null, '64']) {
+    await assert.rejects(runCodexDockerTask(image, input, { ...options, maxRequests }), /evaluation_codex_mailbox_limits_invalid/);
+  }
+  await assert.rejects(runCodexDockerTask(image, input, { ...options, maxRequests: 64 }), /evaluation_codex_mailbox_limits_mismatch/);
+  await assert.rejects(runCodexDockerTask(image, configured, options), /evaluation_codex_mailbox_limits_mismatch/);
+  assert.equal(f.calls.length, 0);
+  const r = await runCodexDockerTask(image, configured, { ...options, maxRequests: 64 });
+  assert.equal(r.cleaned, true); assert.equal(f.remaining(), false);
+});
 test('a cancelled native precheck cannot inspect images, create or attach any container', async () => {
   const { runCodexDockerTask } = require('../../scripts/badcase-capture/direct-docker.cjs'), controller = new AbortController(); controller.abort();
   const input = [...files, { path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify('openai-codex/gpt-6.1-sol')) }], f = fake();

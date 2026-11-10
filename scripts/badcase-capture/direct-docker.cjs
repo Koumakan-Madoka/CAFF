@@ -7,7 +7,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { manifestFor } = require('./pi-probe-materials.cjs');
 const { readEvaluationKey, validKey, modelProfile, DEFAULT_PROFILE, CODEX_PROFILE, KEY_ENV } = require('./direct-model.cjs');
 const { relayDockerTransport } = require('./container-model-relay.cjs');
-const { MAILBOX_LIMITS } = require('./codex-mailbox.cjs');
+const { codexMailboxLimits } = require('./codex-mailbox.cjs');
 const { prepareCaffRuntimeFiles } = require('./caff-runtime-wiring.cjs');
 const { readTrustedDistributionFile } = require('./evaluation-bridge-launcher.cjs');
 const { hashFile, fileChunks, bufferChunks, writeChunks, createKnownValueScanner } = require('./replay-streams.cjs');
@@ -63,8 +63,10 @@ function prepareDirectReplayInput(input) {
   manifestFor(files, { replayWorkspace: true });
   return files;
 }
-function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile = DEFAULT_PROFILE) {
+function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile = DEFAULT_PROFILE, nativeMaxRequests) {
   modelProfile(profile);
+  if (nativeMaxRequests !== undefined && profile !== CODEX_PROFILE) throw fail('evaluation_config_invalid');
+  const limits = profile === CODEX_PROFILE ? codexMailboxLimits(nativeMaxRequests) : null;
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
   const files = prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, input.sessionText === null ? 'fresh' : 'resume');
   files.find(f => f.path === 'probe.cjs').path = 'caff-runtime-bootstrap.cjs';
@@ -76,6 +78,7 @@ function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile 
   }
   files.push(...prepareDirectReplayInput(input));
   files.push({ path: 'evaluation-profile.json', bytes: Buffer.from(JSON.stringify(profile)) });
+  if (nativeMaxRequests !== undefined) files.push({ path: 'evaluation-limits.json', bytes: Buffer.from(JSON.stringify({ maxRequests: limits.maxRequests })) });
   manifestFor(files, { replayWorkspace: true }); return files;
 }
 const LABEL = 'caff.badcase.direct';
@@ -138,9 +141,21 @@ async function runDirectDockerTask(image, files, options = {}) {
 async function runCodexDockerTask(image, files, options = {}) {
   if (typeof options.sendNativeRequest !== 'function' || options.key !== undefined || options.network !== undefined && options.network !== 'none'
     || !files.some(f => f.path === 'evaluation-profile.json' && JSON.parse(f.bytes) === CODEX_PROFILE)) throw fail('evaluation_codex_relay_required');
+  const limits = codexMailboxLimits(options.maxRequests);
+  const stagedLimits = files.filter(f => f.path === 'evaluation-limits.json');
+  let maxRequests;
+  try {
+    if (stagedLimits.length > 1) throw Error();
+    if (stagedLimits.length) {
+      const value = JSON.parse(stagedLimits[0].bytes);
+      if (!value || Object.keys(value).join(',') !== 'maxRequests') throw Error();
+      maxRequests = value.maxRequests;
+    }
+    if (codexMailboxLimits(maxRequests).maxRequests !== limits.maxRequests) throw Error();
+  } catch { throw fail('evaluation_codex_mailbox_limits_mismatch'); }
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
   if (options.signal?.aborted) throw fail('evaluation_aborted');
-  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, MAILBOX_LIMITS, options.signal);
+  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, limits, options.signal);
   return runDockerTask(image, files, { ...options, runDocker: run, network: 'none' }, undefined);
 }
 // Credential-free classifier relay: explicit host-owned exchange and bounded

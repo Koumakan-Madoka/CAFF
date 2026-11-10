@@ -6,6 +6,12 @@ const MAILBOX_LIMITS = Object.freeze({ maxRequests: 32, maxRequestBytes: 4194304
 const ALLOWED_HEADERS = new Set(['originator', 'user-agent', 'openai-beta', 'accept', 'content-type', 'content-encoding', 'session-id', 'x-client-request-id']);
 const fail = suffix => Object.assign(Error('evaluation_codex_mailbox_' + suffix), { code: 'evaluation_codex_mailbox_' + suffix });
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+// Trusted execution config only. Default stays byte-compatible; neither the
+// model request nor callback parameters can select a larger allowance.
+function codexMailboxLimits(maxRequests = MAILBOX_LIMITS.maxRequests) {
+  if (!Number.isSafeInteger(maxRequests) || maxRequests < 1 || maxRequests > 64) throw fail('limits_invalid');
+  return Object.freeze({ ...MAILBOX_LIMITS, maxRequests });
+}
 function decode(value) {
   if (typeof value !== 'string') throw Error();
   const b = Buffer.from(value, 'base64'); if (b.toString('base64') !== value) throw Error(); return b;
@@ -30,10 +36,11 @@ function createCodexRelayExchange(transport) {
     } catch { throw fail('response_invalid'); }
   };
 }
-function createCodexMailboxFetch({ exchange, callbackUrl, callbackFetch = globalThis.fetch, gate = () => {} } = {}) {
-  let activeSignal, busy = false;
+function createCodexMailboxFetch({ exchange, callbackUrl, callbackFetch = globalThis.fetch, gate = () => {}, maxRequests } = {}) {
+  const limits = codexMailboxLimits(maxRequests);
+  let activeSignal, busy = false, requests = 0;
   const check = () => { gate(); if (activeSignal?.aborted) throw fail('aborted'); };
-  const send = exchange || createMailbox({ maxRequests: MAILBOX_LIMITS.maxRequests,
+  const send = exchange || createMailbox({ maxRequests: limits.maxRequests,
     settings: { maxRequestBytes: MAILBOX_LIMITS.maxRequestBytes, maxResponseBytes: MAILBOX_LIMITS.maxResponseBytes } }, check);
   return async (url, options) => {
     const text = typeof url === 'string' || url instanceof URL ? String(url) : url?.url;
@@ -51,7 +58,8 @@ function createCodexMailboxFetch({ exchange, callbackUrl, callbackFetch = global
     } catch { throw fail('request_invalid'); }
     busy = true; activeSignal = options.signal;
     try {
-      check(); const response = await send(encoded); check();
+      check(); if (requests >= limits.maxRequests) throw fail('request_limit');
+      requests++; const response = await send(encoded); check();
       try {
         if (!Buffer.isBuffer(response) || response.length > MAILBOX_LIMITS.maxResponseBytes) throw Error();
         const r = JSON.parse(response);
@@ -61,4 +69,4 @@ function createCodexMailboxFetch({ exchange, callbackUrl, callbackFetch = global
     } finally { activeSignal = undefined; busy = false; }
   };
 }
-module.exports = { createCodexRelayExchange, createCodexMailboxFetch, MAILBOX_LIMITS };
+module.exports = { createCodexRelayExchange, createCodexMailboxFetch, MAILBOX_LIMITS, codexMailboxLimits };

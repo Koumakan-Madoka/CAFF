@@ -46,6 +46,43 @@ test('model observer uses the native Codex endpoint, latches failures, and count
   await observer.fetch(endpoint); observer.complete({ stopReason: 'error' });
   await assert.rejects(observer.fetch(endpoint), /request_blocked/); assert.equal(observer.calls.length, 2);
 });
+test('native mailbox defaults to 32 and explicitly configured 64 refuses the next exchange', async () => {
+  const { createCodexMailboxFetch } = load();
+  for (const maxRequests of [undefined, 64, 1]) {
+    let sent = 0;
+    const fetch = createCodexMailboxFetch({ ...(maxRequests === undefined ? {} : { maxRequests }),
+      callbackUrl: 'http://127.0.0.1:45678', callbackFetch: async () => new Response('callback'),
+      exchange: async () => { sent++; return Buffer.from(JSON.stringify({ status: 200, body: Buffer.from('ok').toString('base64') })); } });
+    const cap = maxRequests ?? 32;
+    for (let i = 0; i < cap; i++) await fetch(endpoint, request());
+    await assert.rejects(fetch(endpoint, request()), /evaluation_codex_mailbox_request_limit/);
+    assert.equal(sent, cap);
+    assert.equal(await (await fetch('http://127.0.0.1:45678/context')).text(), 'callback');
+    assert.equal(sent, cap, 'callbacks do not spend model slots');
+  }
+});
+test('native SDK observer also enforces default 32 and configured 64 without inventing a denied HTTP call', async () => {
+  const d = direct();
+  for (const maxRequests of [undefined, 64]) {
+    let sent = 0;
+    const observer = d.observeDirectFetch(async () => { sent++; return new Response('native'); }, { profile: d.CODEX_PROFILE,
+      ...(maxRequests === undefined ? {} : { maxRequests }) });
+    const cap = maxRequests ?? 32;
+    for (let i = 0; i < cap; i++) { await observer.fetch(endpoint); observer.complete({ stopReason: 'toolUse' }); }
+    await assert.rejects(observer.fetch(endpoint), /evaluation_request_blocked/);
+    assert.equal(sent, cap); assert.equal(observer.calls.length, cap); assert.ok(observer.calls.every(c => c.success));
+  }
+});
+test('native request configuration is bounded and immutable; invalid values never reach exchange', () => {
+  const { codexMailboxLimits, createCodexMailboxFetch, MAILBOX_LIMITS } = load();
+  assert.equal(codexMailboxLimits().maxRequests, 32);
+  const explicit = codexMailboxLimits(64); assert.equal(explicit.maxRequests, 64);
+  assert.equal(Object.isFrozen(explicit), true); assert.equal(MAILBOX_LIMITS.maxRequests, 32);
+  for (const maxRequests of [0, -1, 65, 1000, 1.5, NaN, Infinity, null, '64']) {
+    assert.throws(() => codexMailboxLimits(maxRequests), /evaluation_codex_mailbox_limits_invalid/);
+    assert.throws(() => createCodexMailboxFetch({ maxRequests, exchange: () => assert.fail('no send') }), /evaluation_codex_mailbox_limits_invalid/);
+  }
+});
 test('corrupt envelopes, encoded credentials and oversize messages fail before host fetch', async () => {
   const { createCodexRelayExchange, MAILBOX_LIMITS } = load(); let sent = 0;
   const exchange = createCodexRelayExchange({ fetch: () => { sent++; throw Error('unexpected'); } });

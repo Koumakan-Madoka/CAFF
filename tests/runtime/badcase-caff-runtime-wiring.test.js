@@ -142,6 +142,20 @@ test('direct staging separates a large workspace from the actual fixed SDK/runti
   assert.deepEqual(staged.find(f => f.path === 'replay-workspace/large.txt').bytes, bytes);
   assert.equal(m.runtimeHash, manifestFor(staged.filter(f => !f.path.startsWith('replay-workspace/'))).runtimeHash);
 });
+test('explicit native limits enter hashed stage control only; default stage and sealed inputs stay unchanged', t => {
+  const root = fixture(t), input = { kind: 'prepared-caff-turn-v1', prompt: 'Inspect.', files: [], sessionText: null };
+  const { prepareDirectTurnFiles } = require('../../scripts/badcase-capture/direct-docker.cjs');
+  const profile = 'openai-codex/gpt-6.1-sol', before = JSON.stringify(input);
+  const legacy = prepareDirectTurnFiles(repo, root, image, input, profile);
+  assert.equal(legacy.some(f => f.path === 'evaluation-limits.json'), false);
+  const explicit = prepareDirectTurnFiles(repo, root, image, input, profile, 64);
+  assert.deepEqual(JSON.parse(explicit.find(f => f.path === 'evaluation-limits.json').bytes), { maxRequests: 64 });
+  assert.equal(JSON.stringify(input), before);
+  assert.notEqual(manifestFor(legacy).inputHash, manifestFor(explicit).inputHash);
+  assert.deepEqual(explicit.filter(f => f.path !== 'evaluation-limits.json'), legacy);
+  assert.deepEqual(prepareDirectTurnFiles(repo, root, image, input, profile), legacy);
+  assert.throws(() => prepareDirectTurnFiles('/missing', '/missing', image, input, profile, 65), /evaluation_codex_mailbox_limits_invalid/);
+});
 test('invalid modes refuse before any source reads and never downgrade resume to fresh', () => {
   const a = api(), original = fs.lstatSync; let reads = 0;
   try {
