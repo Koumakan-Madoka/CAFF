@@ -1,6 +1,6 @@
 # WikiSkill 判分 v2：硬断言与 AI 判断言
 
-本契约描述截至 2026-11-09 的代码行为，包括模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
+本契约描述截至 2026-11-10 M2 的代码行为，包括模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
 
 ## 四层职责
 
@@ -26,7 +26,7 @@
 
 ## 判分与证据协议
 
-trace 评分状态仍为 `pass/fail/error`；run 另有 `invalid`（没有可判检查或参数无法解析），不进有效分母。每条真正送裁判的 AI 断言仍只有 `satisfied/not-satisfied`（成立/不成立），没有“无法判断”第三种判定；未判到的检查不伪造裁判票。以下 trace 硬断言和 AI 证据协议不变；单次 run 适用后述双检查规则，不要求工具单检额外产生公开回复。
+未配 toolCheck 的 trace 评分状态仍为 `pass/fail/error`；新结构化工具检查的 trace 与 run 另有 `invalid`（没有可判检查或参数证据不可得），不进有效分母。每条真正送裁判的 AI 断言仍只有 `satisfied/not-satisfied`（成立/不成立），没有“无法判断”第三种判定；未判到的检查不伪造裁判票。以下 trace 硬断言和 AI 证据协议不变；单次 run 适用后述双检查规则，不要求工具单检额外产生公开回复。
 
 1. 先核验执行身份、隔离和输入/运行配置 hash；trace 还须核验实际容器已删除。无现场 run 不伪造容器/现场回执，须绑定不可变单次请求/输出包且零工具执行。正常完成、有非空公开回复是必需硬断言；内部回复不是公开回复。
 2. 代码检查题目客观项，如指定文件内容、成功 read、未写入和前后树 hash。硬断言 fail 则整题 fail，不调用裁判使它翻盘；缺失/损坏证据或环境错误为 error。任意测试通过项须执行器确实提供受支持证据，不能靠回复自称通过。
@@ -45,7 +45,7 @@ trace 评分状态仍为 `pass/fail/error`；run 另有 `invalid`（没有可判
 
 trace 回调用每次执行独立的最小 Goal store，两个 Goal 接口复用生产 handler 和错误序列化；context/participants/post-message 的公共库及响应不变。冻结模型输入不加种子，但成功 Goal 返回原样带出种子/提案，可影响后续步骤；不宣称历史状态完全还原。完整边界、记录范围、返回顺序与不支持清单见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。
 
-worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面显示留待页面里程碑；旧结果无标记不补造。M1 尚不改变下述 trace toolCheck 的准入/判分规则，后续 M2 才接按回调记录判定，不能把回调已支持误报为 trace 工具检查已交付。
+worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面显示留待页面里程碑；旧结果无标记不补造。**有无近似标记属于不同回放条件，不直接比较**：trace 默认开启 Goal 工具，旧结果中的 404 与最小种子下的生产返回不是同一执行条件。M2 按下面的结构化证据规则接入工具检查，不以 bash 文本解析冒充调用记录。
 
 ## run 级双检查与纯文本解析
 
@@ -63,17 +63,27 @@ worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行
 - 一般管道、`;`/`&&` 等复合命令、重定向、stdin/文件写法、heredoc 和内联 Node 包装脚本均不支持；文本出现目标名但不在受限语法内时保守算参数无法解析，而不是猜成通过。**管道唯一例外**：内联调用后接 `node -e` 的固定闭合纯 JSON 展示语法（累计 stdin、JSON.parse、属性投影、JSON.stringify），不解释任意 JavaScript；#21–#24 原始受支持夹具沿用此例外。M4 实际生成的其他展示包装仍无效。
 - 原有回复提取能识别受限 send-public 字面 heredoc，但这不等于工具参数解析支持 heredoc；若 send-public 本身是工具检查目标，stdin 形式仍无法解析。隐藏在运行时拼接名称中的目标不会被推断，故“不该调用”检查不是实际执行路径证明。
 
+## trace 级结构化工具调用检查（M2）
+
+`wiki-trace-tool-checks.ts` 只读已执行证据，复用 run 的标量/trim/UTF-16、on-call/forbid、多次调用逐次合规规则；不解析 bash、不解释 JavaScript、不执行命令，也不让 AI 猜工具参数。
+
+- CAFF 聊天工具从本次 `goalEvidence.calls` 取接口身份和解析后的 HTTP 参数，验证 execution ID、顺序、seed hash 及错误序列化。支持 context/participants/post-message/goal/suggest/goal/update 对应的桥子命令和显式参数别名；公共发言仅匹配 visibility=public。不支持接口或缺失账本记 `invalid/tool_evidence_unavailable`，不能用空数组伪造「没有调用」。HTTP 拒绝仍可判实参：reason=1001 的 400 记录违反≤1000规则，正常的 200 本身也不证明参数合规。
+- 原生工具从本次会话 `toolCalls[].args` 取结构化参数；缺少轨迹记证据不可得。管道、heredoc、内联 Node 等外层写法不参与判定；bash 文本无论包含什么都不能覆盖回调实参。完整性损坏抛错，不回退 shell 解析；缺失、非标量、已脱敏目标实参记 invalid，已观察到的规则违规仍优先。
+- 环境错误维持 error；工具违规先定 fail、零裁判调用；其余仍须满足既有 completed/publicReply/文件硬断言。硬断言通过后，工具证据不可判为 invalid；工具单检 pass 即 pass、on-call 未调用即 `invalid/no_check_reached`。有 AI 问题时仍判全部配置依据的原问题，工具未调用不拦截可判 AI 问题，证据/三票/引用/技术错误规则不变。无 toolCheck 的评分与旧实现不变。
+- invalid 不占回复槽位，不进有效分母，与可恢复环境错误共用每题两版最多5次替补。裁判技术错误仍占原槽位、不补回复。不可变正式结果只保留 `assessment.tool={status,reason}` 与原硬断言/票数/参考指标，验证整题合并状态、空票短路、完整 rubric/judge 及计划标记；完整调用账本只留操作方证据，不塞入页面摘要或 AI 裁判。
+- 新 trace 计划有 toolCheck 时追加逐题 `traceToolCheck:'structured-v1'`，纳入原计划 hash；工具单检 `judge=null`，不需要名单或适配器。有 AI 问题仍要求原资格绑定。pipeline 不再把工具单检标 incompatible。历史 marker-free 计划/结果/断言按旧形状读取，不补字段、不改字节/hash；历史 co-frozen toolCheck 仍是当时忽略的条件。重建执行时拒绝把旧确认静默套用新语义，须显式确认新计划。
+
 ### 同一冻结版本的 trace 与现场报告
 
 有现场的用例可以在标记回复之前确认切点，只在此处调用一次模型。用例仍是 trace 级，组别和首次分组 hash 不变；不恢复现场、不执行工具。`replayWikiRunReport` 仅原版、显式确认、完整版本 hash 绑定，报告不进正式计划、门槛统计、原版复现或入库，不作采纳依据。
 
 | 使用位置 | 判什么 | 不判什么 |
 |---|---|---|
-| trace 正式计划/评测 | 同一冻结版本的全部 AI 问题及原硬断言 | toolCheck 完全忽略；判分等同于去掉 toolCheck，不改完整 hash |
+| trace 新正式计划/评测 | 同一冻结版本的 toolCheck（结构化执行记录）、全部 AI 问题及原硬断言 | 不从 bash 文本推断参数，不模拟不支持接口 |
 | 有现场切点报告 | reply 依据的问题及 toolCheck | trace/files 问题算未判到、不送裁判、不计通过/失败 |
 | 无现场正式 run（v3） | reply 问题及 toolCheck | 非 reply 问题仍拒绝 `wiki_rubric_run_evidence_invalid` |
 
-trace 计划接受「有问题 + toolCheck」；只有 toolCheck、没有问题仍拒绝 `wiki_tool_check_run_only`，pipeline 显示 `incompatible`。trace 计划及回执可读摘要注明「工具调用检查不用于 trace 级」，不变更 trace 计划 schema。现场报告没有 toolCheck 且没有 reply 问题时，在模型调用/预留之前拒绝；只配工具或 trace 问题 + 工具可以报告且零裁判调用。筛选可见问题不创建新版本、不重算 hash；裁判绑定、结果仍保留完整冻结 hash。
+trace 新计划接受「有问题 + toolCheck」和工具单检，计划及回执可读摘要注明「工具调用检查按结构化记录判定」；旧 marker-free 计划注明未启用，不冒充新检查。现场报告没有 toolCheck 且没有 reply 问题时，在模型调用/预留之前拒绝；只配工具或 trace 问题 + 工具可以报告且零裁判调用。筛选可见问题不创建新版本、不重算 hash；裁判绑定、结果仍保留完整冻结 hash。
 
 页面并列编辑两种检查、给工具规则白话预览，面板内确认在内容变化后失效、写后重读；只读禁用。现场报告列出未判到的 trace/files 问题；没有 reply 问题时写「本版本没有回复依据的问题」，不是“没有配置断言”。报告只统计当前切点 + 最新冻结版本，写明「统计的是 vN」及「不作采纳依据」，新冻结版本不拼接旧次数。没有网页回放启动按钮。
 
@@ -149,7 +159,7 @@ trace 计划接受「有问题 + toolCheck」；只有 toolCheck、没有问题�
 
 ## 保存、页面与人工裁决
 
-- 用例编辑器支持并列回复/工具检查、手写、AI 起草问题、仅达标模型选择、保存与明确完整 hash 确认冻结。管理接口 `/api/wikiskill/{rubric,draft-rubric,confirm-rubric}` 保留本地 Host/Origin/CSRF、严格字段与 revision 门禁；HTTP 只有实际传入 toolCheck 才带给 store，不给旧版本补字段。空配置不能冻结，工具单检免裁判。有现场的说明明确工具检查仅用于 report，不用于 trace。
+- 用例编辑器支持并列回复/工具检查、手写、AI 起草问题、仅达标模型选择、保存与明确完整 hash 确认冻结。管理接口 `/api/wikiskill/{rubric,draft-rubric,confirm-rubric}` 保留本地 Host/Origin/CSRF、严格字段与 revision 门禁；HTTP 只有实际传入 toolCheck 才带给 store，不给旧版本补字段。空配置不能冻结，工具单检免裁判。页面说明及近似标记展示仍待 M4 更新；M2 后端已支持上述 trace 检查，旧页面「仅用于报告」文案不再代表后端契约。
 - 不可变比较保存该次 rubric、逐票判定/理由/短引文、硬断言、引用错误及参考字面指标；页面按**结果自己的冻结版本**展示，不用编辑器当前版本重判。原公开回复/完整轨迹及模型调用保存在操作方 JSONL，不把它们全量写进页面压缩记录。CLI/页面分门槛、测试列出模型、配置/hash、通过/有效/error。
 - 旧比较无 scoring v2 字段时仍用旧读写投影，标明“字面规则”；不迁移分数、不调用新裁判重判、不重写旧文件/hash。旧字面豁免实现仅为历史/另行批准的 legacy 实验保留。
 - 不完整比较也保存不可变结果、进度及已有 `gateDecision`，演进记录可显示本批门槛。`reviewComparison` **仅允许 `completed=true`** 且符合冻结划分的比较；不完整批次连“拒绝采纳”的正式人工裁决也不能通过它写入，返回 `wiki_comparison_review_invalid`。不得改 completed、手改快照或绕过守卫；D7 的不采纳推导另存证据/Goal，不能冒充页面已保存裁决。采纳/基线仍需原有人工批准边界。

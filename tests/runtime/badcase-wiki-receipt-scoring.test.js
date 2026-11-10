@@ -109,6 +109,29 @@ test('no trace/evidence is invented and environment/model completion keep their 
   assert.equal((await other.score(other.publicRules, { environmentError: true })).status, 'error');
 });
 
+// Immutable publication follows the same tool/hard/AI precedence as the host.
+test('structured trace publication round-trips tool/hard/AI outcomes without exposing callback records', async () => {
+  const { projectWikiTraceAssessment, projectWikiAssessment } = require(base + 'wiki-comparison-scoring');
+  for (const only of [false, true]) for (const scenario of ['pass', 'violation', 'unreached', 'unavailable', 'hard-fail', 'hard-missing', 'environment', 'judge-down']) {
+    const h = withTool(fixture(), only); h.receipt.goalEvidence = ledger(scenario === 'violation' ? 'x'.repeat(1001) : 'ok');
+    if (scenario === 'unreached') h.receipt.goalEvidence.calls = [];
+    if (['unavailable', 'hard-fail', 'hard-missing'].includes(scenario)) delete h.receipt.goalEvidence;
+    if (scenario === 'hard-fail') h.receipt.success = false;
+    if (scenario === 'hard-missing') delete h.receipt.success;
+    if (scenario === 'judge-down') h.judge.evaluate = async () => { throw Error('synthetic backend failure'); };
+    const result = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring, environmentError: scenario === 'environment' }, only ? undefined : h.judge);
+    const before = JSON.stringify(result), { referenceDetails, ...expected } = result;
+    const projected = projectWikiTraceAssessment(result, h.scoring.rubric, h.scoring.binding, []);
+    assert.deepEqual(projected, expected, `${only}/${scenario}`); assert.equal(JSON.stringify(result), before);
+    assert.equal(Object.hasOwn(projected, 'goalEvidence'), false);
+    assert.throws(() => projectWikiAssessment(result, h.scoring.rubric, h.scoring.binding, []), 'legacy projection must not accept structured trace checks');
+    for (const patch of [{ status: result.status === 'pass' ? 'fail' : 'pass' }, { tool: { status: 'unconfigured', reason: null } },
+      { tool: { status: 'pass', reason: 'tool_rule_failed' } }, { tool: { status: 'fail', reason: 'tool_evidence_unavailable' } }]) {
+      assert.throws(() => projectWikiTraceAssessment({ ...result, ...patch }, h.scoring.rubric, h.scoring.binding, []));
+    }
+  }
+});
+
 // Trace D3: the receipt contains callback observations, not parsed bash arguments.
 test('tool-only trace config/summary validates with null binding and never needs a judge adapter', async () => {
   const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger('x'.repeat(862));

@@ -3,7 +3,7 @@
 import { projectProductionResult } from './wiki-production-result';
 import { validateWikiExperimentPlan, decideWikiExperimentGate, wikiExperimentRun, wikiExperimentRunSceneHash } from './wiki-experiment-plan';
 import { validateWikiRubric, wikiValueHash, wikiExactKeys } from './wiki-rubric';
-import { projectWikiAssessment, projectWikiScoringSummary } from './wiki-comparison-scoring';
+import { projectWikiAssessment, projectWikiTraceAssessment, projectWikiScoringSummary } from './wiki-comparison-scoring';
 import { isWikiJudgeTechnicalError } from './wiki-scoring-v2';
 import { projectWikiRunCheckAssessment } from './wiki-run-check-projection';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
@@ -30,11 +30,16 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
   // Adapt invalid attempts to non-scoring errors ONLY for legacy structural
   // validation. Restore and validate the real run statuses below. No stored
   // result or original plan is rewritten, and the gate formula is unchanged.
+  const structured = experiment.cases.some(c => c.traceToolCheck === 'structured-v1');
   const { byLevel: _report, ...pooledGate } = input.gateDecision;
   const base = projectProductionResult({ ...input, kind: 'wiki-staged-batch-comparison-v1',
-    ...(mixed ? { gateDecision: pooledGate, cases: input.cases.map((c: any) => ({ ...c,
-      runs: c.runs.map((r: any) => r.status === 'invalid' && experiment.cases.find(p => p.caseId === c.sourceCaseId)?.execution?.level === 'run'
-        ? { ...r, status: 'error' } : r) })) } : {}),
+    ...(mixed ? { gateDecision: pooledGate } : {}),
+    ...(mixed || structured ? { cases: input.cases.map((c: any) => ({ ...c,
+      runs: c.runs.map((r: any) => {
+        const selection = experiment.cases.find(p => p.caseId === c.sourceCaseId);
+        return r.status === 'invalid' && (selection?.execution?.level === 'run' || selection?.traceToolCheck === 'structured-v1')
+          ? { ...r, status: 'error' } : r;
+      }) })) } : {}),
     disclosures: [...input.disclosures.filter((s: string) => s !== 'literal_metrics_reference_only'), 'literal_rules_not_semantic_judgment'] }, totals,
     row => row.status === 'error' && isWikiJudgeTechnicalError(row.assessment));
   check(same(experiment.runner, { model: base.model, settings: base.modelConfig }) && same(experiment.variants,
@@ -49,7 +54,8 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
     check(Array.isArray(hardAssertionIds) && hardAssertionIds.length <= 128 && new Set(hardAssertionIds).size === hardAssertionIds.length
       && hardAssertionIds.every((id: any) => typeof id === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id) && !['completed', 'publicReply'].includes(id)));
     const rubric = validateWikiRubric(raw.rubric, true); check(rubric.caseId === c.sourceCaseId && rubric.hash === selection.rubricHash);
-    const run = selection.execution?.level === 'run';
+    const run = selection.execution?.level === 'run', traceTool = selection.traceToolCheck === 'structured-v1';
+    check(!traceTool || !run && rubric.toolCheck);
     if (run) {
       check(same(raw.execution, selection.execution) && c.replayId === null && hardAssertionIds.length === 0
         && rubric.questions.every(q => q.evidence === 'reply')
@@ -60,7 +66,7 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
         && raw.comparison.originalRequestHash === (selection.execution as any).requestHash);
       digest(raw.comparison.candidateRequestHash);
       check(raw.comparison.commonInputHash === wikiValueHash({ originalRequestHash: raw.comparison.originalRequestHash, candidateRequestHash: raw.comparison.candidateRequestHash }));
-    } else check(raw.execution === undefined && rubric.questions.length > 0);
+    } else check(raw.execution === undefined && (rubric.questions.length > 0 || traceTool));
     check(raw.comparison && c.comparison);
     const scoring = projectWikiScoringSummary(raw.comparison.scoring, rubric, selection.judge); check(scoring.inputHash === selection.inputHash);
     const comparison = { ...(run ? { kind: raw.comparison.kind, execution: structuredClone(raw.execution),
@@ -70,7 +76,8 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
     const runs = c.runs.map((baseRow: any, n: number) => {
       const original = raw.runs[n], assessment = original.assessment;
       const row = run ? { ...baseRow, status: original.status, runReplayId: digest(original.runReplayId), requestHash: digest(original.requestHash),
-        toolExecutions: 0, durationMs: original.durationMs, tokenUsage: projectRunUsage(original.tokenUsage) } : baseRow;
+        toolExecutions: 0, durationMs: original.durationMs, tokenUsage: projectRunUsage(original.tokenUsage) }
+        : traceTool ? { ...baseRow, status: original.status } : baseRow;
       if (run) {
         check(original.toolExecutions === 0 && Number.isSafeInteger(row.durationMs) && row.durationMs >= 0
           && row.requestHash === comparison[row.variant + 'RequestHash']);
@@ -91,16 +98,17 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
         check(row.status === 'error' || !run && row.status === 'fail' && ['model_timeout', 'model_turn_failed'].includes(row.reason));
         return row;
       }
-      const projected = projectWikiAssessment(assessment, rubric, selection.judge!, hardAssertionIds);
+      const projected = traceTool ? projectWikiTraceAssessment(assessment, rubric, selection.judge, hardAssertionIds)
+        : projectWikiAssessment(assessment, rubric, selection.judge!, hardAssertionIds);
       check(row.cleaned && row.status === projected.status && (row.reason ?? null) === projected.reason);
       return { ...row, assessment: projected };
     });
     const result = { ...c, ...(run ? { execution: structuredClone(raw.execution) } : {}), comparison, runs, rubric, hardAssertionIds: [...hardAssertionIds] };
-    return run ? { ...result, totals: totals([result], 10) } : result;
+    return run || traceTool ? { ...result, totals: totals([result], 10) } : result;
   });
   const gate = decideWikiExperimentGate(experiment, cases.filter((c: any) => !c.reportOnly).map((c: any) => ({ caseId: c.sourceCaseId, status: c.status,
     runs: c.runs.map(wikiExperimentRun) })));
   check(same(gate, mixed ? input.gateDecision : base.gateDecision));
   return { ...base, kind: input.kind, disclosures: structuredClone(input.disclosures), experiment, cases,
-    ...(mixed ? { gateDecision: gate, byStage: Object.fromEntries(['gate', 'test'].map(s => [s, totals(cases.filter((c: any) => c.stage === s), 10)])) } : {}) };
+    ...(mixed || structured ? { gateDecision: gate, byStage: Object.fromEntries(['gate', 'test'].map(s => [s, totals(cases.filter((c: any) => c.stage === s), 10)])) } : {}) };
 }
