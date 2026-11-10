@@ -72,11 +72,17 @@ function parseBash(command: string, target: WikiToolCheck['target']): WikiParsed
       || !/^['"]/.test(tail[2].raw) || !jsonDisplayOnly(tail[2].text)) return unknown;
   }
   const parameters: Record<string, unknown> = Object.create(null);
-  for (let i = 3; i < head.length; i += 2) {
+  for (let i = 3; i < head.length; i++) {
     const flag = head[i], value = head[i + 1];
-    if (flag.dynamic || !/^--[A-Za-z][A-Za-z0-9_-]*$/.test(flag.text) || !value || value.dynamic || value.pipe
-      || value.text.startsWith('--') || /(?:^--|-)(?:stdin|file)(?:-|$)/.test(flag.text) || Object.hasOwn(parameters, flag.text.slice(2))) return unknown;
-    parameters[flag.text.slice(2)] = value.text;
+    if (flag.dynamic || !/^--[A-Za-z][A-Za-z0-9_-]*$/.test(flag.text)
+      || /(?:^--|-)(?:stdin|file)(?:-|$)/.test(flag.text) || Object.hasOwn(parameters, flag.text.slice(2))) return unknown;
+    // Match bridge parseArgs: absent/empty next value or another --flag means true.
+    if (!value || value.text.startsWith('--')) parameters[flag.text.slice(2)] = true;
+    else {
+      if (value.dynamic || value.pipe) return unknown;
+      parameters[flag.text.slice(2)] = value.text || true;
+      i++;
+    }
   }
   return { kind: 'target', parameters };
 }

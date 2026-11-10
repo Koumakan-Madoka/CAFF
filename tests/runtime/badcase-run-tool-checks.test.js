@@ -140,7 +140,6 @@ test('closed literal parsing rejects ambiguous flags, shell composition and malf
     'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason short; echo other',
     'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason sh*rt',
     'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason short > /unwritten/output',
-    'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --reason',
   ]) assert.equal(evaluate(message([call('bash', { command })]), { questions: [], toolCheck: check() }).final.status, 'invalid');
   for (const args of [null, [], 'not a structured object', { reason: { nested: 'not scalar' } }, {}]) {
     const result = evaluate(message([call('suggest_goal', args)]), { questions: [], toolCheck: check({ target: { kind: 'native', name: 'suggest_goal' } }) });
@@ -171,6 +170,67 @@ test('any CAFF subcommand can be the target, including send-public; its stdin fo
   assert.equal(evaluate(message([send('too long')]), config).final.status, 'fail');
   const heredoc = call('bash', { command: 'cat <<\'PUBLIC_EOF\' | node "$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin\nresult\nPUBLIC_EOF' });
   assert.equal(evaluate(message([heredoc]), config).final.status, 'invalid');
+});
+const switchedPublic = [
+  { label: 'trailing', args: '--content "result" --no-finalize', argv: ['--content', 'result', '--no-finalize'] },
+  { label: 'middle', args: '--no-finalize --content "result"', argv: ['--no-finalize', '--content', 'result'] },
+];
+for (const { label, args, argv } of switchedPublic) {
+  const command = 'node "$CAFF_CHAT_TOOLS_PATH" send-public ' + args;
+  test(`${label} boolean flag parameters match the actual bridge CLI without running it`, () => {
+    const { parseArgs } = require('../../build/lib/agent-chat-tools');
+    const parsed = require(base + 'wiki-tool-call-parse').parseWikiToolCall(call('bash', { command }), { kind: 'caff-chat', name: 'send-public' });
+    assert.equal(parsed.kind, 'target');
+    assert.deepEqual({ ...parsed.parameters }, parseArgs(['send-public', ...argv]).flags);
+    assert.equal(parsed.parameters['no-finalize'], true);
+  });
+  for (const mode of ['on-call', 'forbid']) test(`${label} send-public switch is judged in ${mode} mode and does not suppress its reply check`, () => {
+    const toolCheck = check({ target: { kind: 'caff-chat', name: 'send-public' }, mode, rules: [{ parameter: 'content', kind: 'max-chars', max: 6 }] });
+    for (const replyStatus of ['pass', 'fail']) {
+      const result = evaluate(message([call('bash', { command })]), { questions, toolCheck }, replyStatus);
+      assert.equal(result.prepared.tool.status, 'pass'); assert.equal(result.prepared.reply, 'result');
+      assert.equal(result.prepared.needsReplyJudge, true); assert.equal(result.judgeCalls, 1);
+      assert.equal(result.final.status, replyStatus);
+    }
+    // A boolean parameter is normalized to "true" (4 UTF-16 units), not empty text.
+    for (const [rule, status] of [
+      [{ kind: 'max-chars', max: 4 }, 'pass'], [{ kind: 'max-chars', max: 3 }, 'fail'],
+      [{ kind: 'allowed-values', values: ['true'] }, 'pass'], [{ kind: 'allowed-values', values: ['false'] }, 'fail'],
+      [{ kind: 'forbidden-values', values: ['false'] }, 'pass'], [{ kind: 'forbidden-values', values: ['true'] }, 'fail'],
+    ]) {
+      const result = evaluate(message([call('bash', { command })]), { questions, toolCheck: { ...toolCheck, rules: [{ parameter: 'no-finalize', ...rule }] } });
+      assert.equal(result.final.status, status); assert.equal(result.judgeCalls, status === 'pass' ? 1 : 0);
+    }
+  });
+  test(`${label} send-public switch retains an observable reply without a tool check`, () => {
+    const result = evaluate(message([call('bash', { command })]), { questions });
+    assert.equal(result.prepared.reply, 'result'); assert.equal(result.judgeCalls, 1); assert.equal(result.final.status, 'pass');
+  });
+}
+test('a valueless parameter is boolean true even when it is usually a string-valued reason', () => {
+  const { parseArgs } = require('../../build/lib/agent-chat-tools');
+  for (const [args, argv] of [
+    ['--reason', ['--reason']],
+    ['--reason --action pause', ['--reason', '--action', 'pause']],
+    ['--reason ""', ['--reason', '']],
+  ]) {
+    const output = call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal ' + args });
+    const parsed = require(base + 'wiki-tool-call-parse').parseWikiToolCall(output, { kind: 'caff-chat', name: 'suggest-goal' });
+    assert.equal(parsed.kind, 'target'); assert.deepEqual({ ...parsed.parameters }, parseArgs(['suggest-goal', ...argv]).flags);
+    for (const [max, status] of [[4, 'pass'], [3, 'fail']]) assert.equal(evaluate(message([output]), { questions: [],
+      toolCheck: check({ rules: [{ parameter: 'reason', kind: 'max-chars', max }] }) }).final.status, status);
+  }
+});
+for (const args of [
+  '--no-finalize --content-stdin', '--content-stdin --no-finalize', '--no-finalize --content-file /unread/content', '--file /unread/content --no-finalize',
+  '--no-finalize --no-finalize --content "result"', '--content "result" --no-finalize --no-finalize', '--content "first" --no-finalize --content "result"',
+  '--content "$UNREAD" --no-finalize', '--no-finalize --content "$(printf hidden)"', '--content "`printf hidden`" --no-finalize',
+]) test(`switch parsing still rejects stdin/file, duplicate and dynamic flags: ${args}`, () => {
+  for (const mode of ['on-call', 'forbid']) {
+    const result = evaluate(message([call('bash', { command: 'node "$CAFF_CHAT_TOOLS_PATH" send-public ' + args })]), { questions,
+      toolCheck: check({ target: { kind: 'caff-chat', name: 'send-public' }, mode, rules: [{ parameter: 'content', kind: 'max-chars', max: 1000 }] }) });
+    assert.deepEqual(result.final, { status: 'invalid', reason: 'arguments_unparseable' }); assert.equal(result.judgeCalls, 0);
+  }
 });
 // These are only inspected, never run. No command-name/read-only allowlist:
 // absence of the literal caff-chat target makes any bash shape unrelated.

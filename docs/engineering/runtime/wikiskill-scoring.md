@@ -53,6 +53,7 @@ trace 评分状态仍为 `pass/fail/error`；run 另有 `invalid`（没有可判
 **工具参数解析范围**（只看文本/结构，不执行命令、不读取输出提到的文件、不展开环境）：
 
 - 原生工具用结构化参数；聊天工具只接受 `node "$CAFF_CHAT_TOOLS_PATH" <子命令> --参数 值` 或相同 `build/lib/agent-chat-tools.js` 入口的受限内联语法，值可单/双引号或静态字面 token。允许的入口变量仅用于识别，不读取环境值；参数中动态变量、命令替换或反引号不解析。
+- 内联开关参数沿用桥 CLI：没有后续值或下一词以 `--` 开头时记为布尔 `true`，显式空字符串也按 CLI 记为 `true`；例如 `--no-finalize` 可在 `--content` 前或整条调用末尾。规则仍按 `String(value || '').trim()` 处理，`true` 是字符串 `"true"`、长度 4；重复 flag、stdin/文件类 flag 及动态值仍无法解析。
 - 一般管道、`;`/`&&` 等复合命令、重定向、stdin/文件写法、heredoc 和内联 Node 包装脚本均不支持；文本出现目标名但不在受限语法内时保守算参数无法解析，而不是猜成通过。**管道唯一例外**：内联调用后接 `node -e` 的固定闭合纯 JSON 展示语法（累计 stdin、JSON.parse、属性投影、JSON.stringify），不解释任意 JavaScript；#21–#24 原始受支持夹具沿用此例外。M4 实际生成的其他展示包装仍无效。
 - 原有回复提取能识别受限 send-public 字面 heredoc，但这不等于工具参数解析支持 heredoc；若 send-public 本身是工具检查目标，stdin 形式仍无法解析。隐藏在运行时拼接名称中的目标不会被推断，故“不该调用”检查不是实际执行路径证明。
 

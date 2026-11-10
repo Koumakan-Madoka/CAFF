@@ -86,6 +86,20 @@ for (const [shape, status, votes] of [['tool-fail', 'fail', 0], ['both-pass', 'p
     if (shape === 'reply-fail') assert.ok(r.runs.every(row => row.checks.reason === 'reply_check_failed'));
   });
 }
+for (const [position, args] of [['trailing', '--content "Clear result." --no-finalize'], ['middle', '--no-finalize --content "Clear result."']]) {
+  for (const mode of ['on-call', 'forbid']) test(`${position} send-public switch reaches the real scoring path in ${mode} mode without executing tools`, async t => {
+    const check = toolCheck({ target: { kind: 'caff-chat', name: 'send-public' }, mode, rules: [
+      { parameter: 'content', kind: 'max-chars', max: 1000 }, { parameter: 'no-finalize', kind: 'max-chars', max: 4 },
+    ] });
+    const content = [{ type: 'toolCall', id: 'public', name: 'bash', arguments: { command: 'node "$CAFF_CHAT_TOOLS_PATH" send-public ' + args } }];
+    const h = setup(t, { kind: 'both', check, content }), r = await h.run();
+    assert.equal(r.completed, true); assert.equal(h.requests.length, 20); assert.equal(h.judged(), 60);
+    assert.ok(r.runs.every(row => row.status === 'pass' && row.checks.tool.status === 'pass' && row.assessment && row.toolExecutions === 0));
+    const packet = h.packets.read(r.runs[0].runReplayId);
+    assert.equal(packet.result.checks.prepared.reply, 'Clear result.'); assert.equal(packet.result.checks.prepared.needsReplyJudge, true);
+    assert.equal(packet.result.outcome.status, 'reached', 'raw reply still awaits scoring rather than being declared passed');
+  });
+}
 for (const fault of ['backend', 'parse']) test(`dual reply judge ${fault} remains error, occupies existing slot and never becomes invalid/replacement`, async t => {
   const h = setup(t, { kind: 'both', content: [send(), ...real(22, 30)], fault }), r = await h.run();
   assert.equal(r.fatal, false); assert.equal(r.completed, false); assert.equal(r.runs.length, 20); assert.equal(h.requests.length, 20); assert.equal(h.judged(), 40);

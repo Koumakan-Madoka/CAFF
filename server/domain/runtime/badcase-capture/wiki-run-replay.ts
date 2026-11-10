@@ -65,8 +65,9 @@ export function publicMessage(call: any): string | null {
   const node = String.raw`node\s+(?:"\$CAFF_CHAT_TOOLS_PATH"|'\$CAFF_CHAT_TOOLS_PATH'|\$CAFF_CHAT_TOOLS_PATH|\.?\/?build/lib/agent-chat-tools\.js)\s+send-public`;
   const heredoc = command.match(new RegExp(String.raw`^cat\s+<<\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*\|\s*${node}\s+(?:--no-finalize\s+)?--content-stdin\s*\r?\n([\s\S]*?)\r?\n\2$`));
   if (heredoc) return heredoc[3];
-  const quoted = command.match(new RegExp(String.raw`^${node}\s+(?:--no-finalize\s+)?--content\s+(?:'([^']*)'|"([^"$\\]*)")$`));
-  return quoted ? quoted[1] ?? quoted[2] : null;
+  const quoted = command.match(new RegExp(String.raw`^${node}\s+(--no-finalize\s+)?--content\s+(?:'([^']*)'|"([^"$\\]*)")(?:\s+(--no-finalize))?$`));
+  // Either supported position is a public reply; repeated flags stay unsupported.
+  return quoted && !(quoted[1] && quoted[4]) ? quoted[2] ?? quoted[3] : null;
 }
 export function classifyWikiRunOutput(message: any) {
   if (message?.role !== 'assistant' || !['stop', 'toolUse'].includes(message.stopReason) || !Array.isArray(message.content)) return { status: 'error', reason: 'model_failed', reply: null };
