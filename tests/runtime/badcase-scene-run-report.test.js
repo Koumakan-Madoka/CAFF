@@ -134,6 +134,29 @@ test('scene report tool failure skips reply judge, even with a configured reply 
  const h = setup(t, { reply: true }), f = kernel(h), row = await f.run([...blocks(22, 29), send]);
  assert.equal(row.outcome.status, 'fail'); assert.equal(f.judgeCalls, 0); assert.equal(row.report.assessment, undefined);
 });
+for (const [status, content] of [['pass', blocks(22, 30)], ['fail', blocks(22, 29)], ['invalid', blocks(23, 45)]]) {
+ test(`scene report Markdown names ${status} in Chinese and discloses report-only evidence`, async t => {
+  const h = setup(t), f = kernel(h), row = await f.run(content);
+  assert.equal(h.c.kind, 'marked-badcase'); assert.equal(h.c.role, 'role-family-gpt'); assert.ok(h.item().sealedCheckpointId);
+  assert.deepEqual(h.rubric.questions, []); assert.equal(row.outcome.status, status); assert.equal(f.judgeCalls, 0);
+  const view = await get(h), packet = { accounting: view.runReplays.find(r => r.id === row.id), ...f.runs.read(row.id) };
+  assert.equal(packet.accounting.reportOnly, true);
+  const before = JSON.stringify(packet), md = require(base + 'wiki-run-export').wikiRunMarkdown(packet);
+  const title = md.split('\n').find(line => line.startsWith('当前分类：'));
+  assert.equal(title, '当前分类：' + ({ pass: '已判通过（代码判断）', fail: '已判失败（代码判断）', invalid: '无效，不算通过也不算不通过' }[status]) + '。');
+  assert.match(md, /只出报告，不作采纳依据/); assert.doesNotMatch(title, /未知分类/);
+  assert.equal(JSON.stringify(packet), before); assert.deepEqual(f.runs.read(row.id).result, row);
+  assert.equal(packet.accounting.resultHash, api().wikiRunHash(row));
+ });
+}
+for (const [fault, status, judges] of [[undefined, 'pass', 3], ['reject', 'fail', 3], ['parse', 'error', 2], ['backend', 'error', 2]]) test(`reply-judged report Markdown labels ${fault || 'success'} without claiming a code-only decision`, async t => {
+ const h = setup(t, { reply: true, tool: false }), f = kernel(h, fault), row = await f.run([send]);
+ assert.equal(row.outcome.status, status); assert.equal(f.judgeCalls, judges); assert.ok(row.report.assessment);
+ const packet = { accounting: f.runs.list().find(r => r.id === row.id), ...f.runs.read(row.id) };
+ const md = require(base + 'wiki-run-export').wikiRunMarkdown(packet), title = md.split('\n').find(line => line.startsWith('当前分类：'));
+ assert.equal(title, status === 'error' ? '当前分类：技术错误。' : `当前分类：已判${status === 'pass' ? '通过' : '失败'}。`);
+ assert.doesNotMatch(title, /代码判断|未知分类/); assert.match(md, /只出报告，不作采纳依据/);
+});
 test('scene reply-only reporting is supported without changing legacy non-report packets', async t => {
  const h = setup(t, { reply: true, tool: false }), f = kernel(h), row = await f.run([send]);
  assert.equal(row.outcome.status, 'pass'); assert.equal(f.judgeCalls, 3); assert.equal(row.report.checks.tool.status, 'unconfigured');

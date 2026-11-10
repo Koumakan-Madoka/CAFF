@@ -135,6 +135,23 @@ test('native structured multiple calls are checked without ever dispatching them
   const h = setup(t, { check, content }), r = await h.run();
   assert.equal(h.requests.length, 20); assert.equal(h.judged(), 0); assert.ok(r.runs.every(row => row.status === 'fail' && row.toolExecutions === 0));
 });
+for (const status of ['pass', 'fail', 'reached']) test(`formal run Markdown preserves the Chinese ${status} classification and immutable evidence`, async t => {
+  const h = setup(t, status === 'reached' ? { kind: 'reply', content: [{ type: 'text', text: 'Clear result.' }] }
+    : { content: real(22, status === 'pass' ? 30 : 29) });
+  assert.equal(h.c.kind, 'marked-badcase'); assert.equal(h.c.role, 'role-family-gpt'); assert.ok(!h.item().sealedCheckpointId);
+  if (status !== 'reached') { assert.deepEqual(h.rubric.questions, []); assert.ok(h.rubric.toolCheck); }
+  const r = await h.run(), row = r.runs.find(r => r.variant === 'original');
+  const packet = { accounting: h.packets.list().find(r => r.id === row.runReplayId), ...h.packets.read(row.runReplayId) };
+  assert.equal(packet.accounting.status, status); assert.ok(!packet.accounting.reportOnly);
+  const before = JSON.stringify(packet), md = require(base + 'wiki-run-export').wikiRunMarkdown(packet);
+  const title = md.split('\n').find(line => line.startsWith('当前分类：'));
+  if (status === 'reached') {
+    assert.match(title, /^当前分类：有效输出（(?:待判分|未判分)）。$/); assert.doesNotMatch(title, /通过|失败/);
+  } else assert.equal(title, `当前分类：已判${status === 'pass' ? '通过' : '失败'}（代码判断）。`);
+  assert.doesNotMatch(md, /未知分类|只出报告，不作采纳依据/);
+  assert.equal(JSON.stringify(packet), before); assert.deepEqual(h.packets.read(row.runReplayId).result, packet.result);
+  assert.equal(packet.accounting.resultHash, wikiRunHash(packet.result));
+});
 test('tool-only binding must be explicitly null, and stale frozen rubric rejects before client creation', async t => {
   const h = setup(t); h.config.scoring.binding = {};
   await assert.rejects(h.run()); assert.equal(h.requests.length, 0);
