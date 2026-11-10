@@ -1,6 +1,7 @@
 // Experiment-owned choices and immutable bindings, separate from case storage
 // and execution. D7 delegates to the existing gate formula, never a new metric.
 import { decideWikiGate } from './wiki-gate-policy';
+import { validateWikiExperimentAdmission, type WikiExperimentAdmission } from './wiki-experiment-admission';
 import { containsSecretSentinel } from './secrets';
 import { assertWikiEligibleConfiguration, readWikiEligibleJudges } from './wiki-judge-catalog';
 import { bindWikiJudge, isWikiJudgeTechnicalError, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
@@ -24,6 +25,7 @@ export interface WikiExperimentPlan {
   kind: 'wiki-experiment-plan-v1' | 'wiki-experiment-plan-v2' | 'wiki-experiment-plan-v3'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof POLICY;
   cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding | null; execution?: WikiExperimentExecution; traceToolCheck?: 'structured-v1' })[];
+  admission?: WikiExperimentAdmission;
   planHash: string;
 }
 export interface WikiExperimentCaseResult {
@@ -56,7 +58,9 @@ function checkExecutionPartitions(cases: WikiExperimentPlan['cases']) {
   const gate = cases.filter(c => c.stage === 'gate');
   if (gate.filter(c => c.execution?.level === 'run').length > gate.filter(c => c.execution?.level !== 'run').length) throw fail('wiki_experiment_run_gate_quota');
 }
-export function createWikiExperimentPlan(definition: WikiExperimentDefinition, catalog: WikiExperimentCase[]): WikiExperimentPlan {
+// Omitted admission preserves the legacy pure reconstruction API, not current
+// execution permission. Trusted new planning must supply current host evidence.
+export function createWikiExperimentPlan(definition: WikiExperimentDefinition, catalog: WikiExperimentCase[], admission?: WikiExperimentAdmission): WikiExperimentPlan {
   const perCase = definition?.kind === 'wiki-experiment-v2';
   wikiExactKeys(definition, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', ...(!perCase ? ['judge'] : []), 'cases']);
   ensure(['wiki-experiment-v1', 'wiki-experiment-v2'].includes(definition.kind) && definition.repeats === 10 && definition.executionPolicy === 'alternating-valid-v1'
@@ -108,11 +112,12 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
   const hasRuns = cases.some(c => c.execution?.level === 'run');
   const payload = { kind: (hasRuns ? 'wiki-experiment-plan-v3' : perCase ? 'wiki-experiment-plan-v2' : 'wiki-experiment-plan-v1') as WikiExperimentPlan['kind'], variants: structuredClone(definition.variants), runner: structuredClone(definition.runner),
     repeats: 10 as const, executionPolicy: 'alternating-valid-v1' as const, decision: { ...POLICY },
-    cases: hasRuns ? cases.map(c => ({ ...c, execution: c.execution ?? { level: 'trace' as const } })) : cases };
+    cases: hasRuns ? cases.map(c => ({ ...c, execution: c.execution ?? { level: 'trace' as const } })) : cases,
+    ...(admission === undefined ? {} : { admission: validateWikiExperimentAdmission(admission, cases) }) };
   return { ...payload, planHash: wikiValueHash(payload) };
 }
 function checkPlanHash(plan: WikiExperimentPlan) {
-  wikiExactKeys(plan, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'cases', 'planHash']);
+  wikiExactKeys(plan, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'cases', 'planHash', ...(Object.hasOwn(plan, 'admission') ? ['admission'] : [])]);
   const { planHash, ...payload } = plan;
   ensure(['wiki-experiment-plan-v1', 'wiki-experiment-plan-v2', 'wiki-experiment-plan-v3'].includes(plan.kind) && plan.repeats === 10 && plan.executionPolicy === 'alternating-valid-v1'
     && wikiValueHash(plan.decision) === wikiValueHash(POLICY) && /^[a-f0-9]{64}$/.test(planHash) && wikiValueHash(payload) === planHash);
@@ -153,6 +158,7 @@ function checkPlanHash(plan: WikiExperimentPlan) {
     ensure(plan.cases.some(c => c.execution?.level === 'run'));
     checkExecutionPartitions(plan.cases);
   }
+  if (Object.hasOwn(plan, 'admission')) validateWikiExperimentAdmission(plan.admission!, plan.cases);
   // Historical v1 plans had one shared judge. V2 binds one judge per case,
   // shared by that case's original/candidate runs, not across the experiment.
   if (plan.kind === 'wiki-experiment-plan-v1') {
@@ -161,10 +167,10 @@ function checkPlanHash(plan: WikiExperimentPlan) {
   }
 }
 export function validateWikiExperimentPlan(plan: WikiExperimentPlan): WikiExperimentPlan { checkPlanHash(plan); return structuredClone(plan); }
-export function assertWikiExperimentPlan(plan: WikiExperimentPlan, definition: WikiExperimentDefinition, catalog: WikiExperimentCase[]): void {
+export function assertWikiExperimentPlan(plan: WikiExperimentPlan, definition: WikiExperimentDefinition, catalog: WikiExperimentCase[], admission?: WikiExperimentAdmission): void {
   try {
     checkPlanHash(plan);
-    if (wikiValueHash(plan) === wikiValueHash(createWikiExperimentPlan(definition, catalog))) return;
+    if (wikiValueHash(plan) === wikiValueHash(createWikiExperimentPlan(definition, catalog, admission))) return;
   } catch { /* Integrity errors never trigger a model retry. */ }
   throw fail('wiki_experiment_changed');
 }
