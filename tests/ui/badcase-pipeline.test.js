@@ -32,7 +32,7 @@ test('steps 6–9 and funnels use the actual pipeline projection; frozen asserti
   assert.equal(card.querySelector('[data-assertion-slot] a').getAttribute('href'), '#case-1');
   assert.equal(card.querySelector('[data-draft-rubric],[data-freeze-rubric],[data-start-replay]'), null);
   assert.deepEqual([...h.root.querySelectorAll('[data-lane="trace"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
-  assert.deepEqual([...h.root.querySelectorAll('[data-lane="run"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 1, 1]);
+  assert.deepEqual([...h.root.querySelectorAll('[data-lane="run"] .f-step b')].map(el => +el.textContent), [1, 1, 1, 0, 1]); // Old raw/formal outputs do not supply the independent precheck stage.
   assert.doesNotMatch(h.root.textContent, /评分 v2 待接入|评分 v2 接入后|尚未接入判分|等待评分 v2/); assert.equal(h.calls.length, 0);
 });
 test('missing assertions, incompatible run evidence, pending reproduction and unscored raw replies are distinct, never fake library readiness', t => {
@@ -733,11 +733,11 @@ test('candidate-readiness overview never treats unconfirmed labels as an eligibl
   const h = setup(t), scene = h.data.cases[1]; h.data.cases = [scene, { ...scene, id: 'test-ready', n: 30, split: 'test' }, { ...scene, id: 'control-ready', n: 31 }];
   const options = [{ entryId: 'p1', title: 'First' }, { entryId: 'p2', title: 'Control' }];
   h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, confirmed: i === 2, entryId: i === 2 ? 'p2' : null, patternKey: i === 2 ? 'p2' : null, options }));
-  h.data.pipelineStates = h.data.cases.map(c => ({ caseId: c.id, assertion: { status: 'frozen', version: 1, model: 'fixture', questions: [] }, replay: { status: 'supported' }, original: { valid: 10, pass: 0, fail: 10, reproduced: true, invalid: 0, errors: 0 }, inLibrary: true }));
+  h.data.pipelineStates = h.data.cases.map((c, i) => ({ caseId: c.id, assertion: { status: 'frozen', version: 1, model: 'fixture', questions: [] }, replay: { status: 'supported' }, original: { valid: 10, pass: 0, fail: 10, reproduced: true, invalid: 0, errors: 0 }, precheck: { reproduced: i !== 2 }, control: { status: i === 2 ? 'confirmed' : 'ineligible', confirmed: i === 2 }, inLibrary: true }));
   h.panel.render(h.data); assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能|不能/);
   for (const label of h.data.casePatterns.slice(0, 2)) Object.assign(label, { confirmed: true, entryId: 'p1', patternKey: 'p1' });
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
-  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用门槛、测试和其他模式的防误伤题/); assert.equal(h.calls.length, 0);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用门槛、测试和其他模式的已确认防误伤对照/); assert.equal(h.calls.length, 0);
 });
 test('approved modes with zero active members remain selectable with zero quotas, not silently removed', t => {
   const h = setup(t); h.data.versions = [{ entries: [{ id: 'empty-mode', title: 'Empty approved mode', status: 'approved' }, { id: 'draft-mode', title: 'Draft mode', status: 'draft' }] }];

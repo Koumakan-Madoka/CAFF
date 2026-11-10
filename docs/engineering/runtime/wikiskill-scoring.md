@@ -95,7 +95,7 @@ trace 新计划接受「有问题 + toolCheck」和工具单检，计划及回�
 - 来源类别草稿经用户通过时，在同一快照置 approved、确认训练成员、追加一次性关联；所有审核入口（含知识库）共用此逻辑。只审最新版本，成员变化或已手动关联时拒绝通过，仍可驳回重归纳。普通无类别来源草稿不会自动关联。#185 手动关联是默认折叠的次要入口，只用于「这一类其实是已有模式」，默认空选、须主动选择并确认；同种不可改关联记录允许多对一，不能撤销或更改目标。`resolveWikiPatternLabel` 关联后解析为该模式 entryId；首次分组计数按此合并，只分配新题、已有组别及旧标签不动。门槛/测试题不因关联加入训练归纳材料，已审核模式的冻结规则不变。
 - `planWikiEvaluationSuite` 对 marked-badcase 的 reproduction 题使用 `wikiConfirmedClassification`，解析 entryId 等于目标模式且来源为 GPT 才算 `targetReproduction`；沿冻结 gate/test 身份分别进入 `targetReproductionCaseIds/targetTestReproductionCaseIds`。关联前不计目标、关联后符合条件者计为目标；非 GPT 仍只报告，control 不因关联变成 reproduction，旧题来源仍沿既有版本成员规则。不靠预分类建议或归纳成员猜测门槛/测试题归属。
 - 页面标签锁定后，非训练题的旧 `assignCase/resolveSuggestion` 入口拒绝 `wiki_pattern_label_frozen`，不再写 classification。若已有页面标签和旧 classification 并存，解析 entryId 不一致则拒绝 `wiki_classification_confirmation_required`，不静默覆盖；一致才沿用原归类来源/时间。没有页面标签的旧归类仍可读取，不迁移或改写旧字节、hash、分组和确认。
-- 目标归属确定不代表评测就绪：独立实验计划仍要求门槛有目标复现题及防误伤对照题、测试有目标复现题，并满足冻结断言、回放输入/身份等原门禁；Fisher、容差、trace/run 配额、裁判绑定和人工采纳规则不变。页面只显示目标清单与缺项，不启动评测，不自动补对照题。
+- 目标归属确定不代表评测就绪：独立实验计划仍要求门槛有目标复现题及防误伤对照题、测试有目标复现题，并满足冻结断言、回放输入/身份等原门禁；Fisher、容差、trace/run 配额、裁判绑定和人工采纳规则不变。页面只显示目标清单与缺项，不启动评测，不自动补对照题。模式总览及分组就绪提示只认当前独立预检复现的目标门槛／trace 测试题，以及其他模式已确认且仍有效、已入库的门槛对照；其他模式的复现题或未确认的达标预检不能冒充对照。已冻结的对照（包括后来失效的确认）不在原模式目标清单显示，详情保留模式身份但明确其对照角色。run 漏斗先列冻结检查，再列独立预检复现／对照确认，不以历史 raw 回复作为冻结或已入库提示的额外前提。
 
 ## 独立实验计划与执行入口
 

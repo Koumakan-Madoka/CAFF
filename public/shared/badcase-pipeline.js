@@ -155,7 +155,6 @@
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
       const labelPending = patternLabel(c) && !patternLabel(c).confirmed;
-      const baselinePending = !has && d?.level === 'run' && !status.original.outputs && !status.original.valid && !status.original.unscored && !invalidCase;
       const needsAssertion = status.assertion.status !== 'frozen' && (has || d?.level === 'run');
       const categoryReview = patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId && splitName[c.split];
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) || canConfirmControl(c) ? 'you' : categoryReview ? c.split === 'train' ? 'you' : 'system' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
@@ -167,7 +166,6 @@
         : categoryReview ? c.split === 'train' ? '在分组区归纳本类别的模式内容并审核，只给模型训练成员。' : '等待本类别训练成员归纳并审核通过；门槛和测试不参与归纳。'
         : canConfirmControl(c) ? '可作对照：请核对原版预检，在下方面板内确认并冻结；不启动模型或评测'
         : needsAssertion ? (has ? sceneNote(c) + '；有现场，走 trace 级；' : '') + assertionText(c)
-        : baselinePending ? precheckText(c)
         : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
         : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : precheckText(c))
         : !d ? '等待 DeepSeek 推荐，再请你确认'
@@ -178,7 +176,7 @@
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(c => hasScene(c) && !sourceOnly(c)), refs = gpt.filter(c => !hasScene(c) && dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && dehydration(c)?.decision?.level === 'run');
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
       $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；从这一轮开头执行到自然结束；不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [tr.filter(c => pipeline(c).replay.status === 'supported').length, '回放检查通过'], [tr.filter(c => pipeline(c).assertion.status === 'frozen').length, '断言已冻结'], [tr.filter(c => pipeline(c).inLibrary).length, '已入库']])
-        + lane('run', 'run 级（脱水）', `无现场；冻结切点只调一次模型；只作参考 ${refs.length} 条不计入，未确认的也不计入`, [[rn.length, '用户确认可脱水'], [rn.filter(c => pipeline(c).replay.status === 'supported').length, '前缀可构造请求'], [rn.filter(c => pipeline(c).original.outputs || pipeline(c).original.valid || pipeline(c).original.unscored).length, '原版有有效输出'], [rn.filter(c => pipeline(c).assertion.status === 'frozen').length, '检查已冻结（回复／工具调用）'], [rn.filter(c => pipeline(c).inLibrary).length, '已入库']]);
+        + lane('run', 'run 级（脱水）', `无现场；冻结切点只调一次模型；只作参考 ${refs.length} 条不计入，未确认的也不计入`, [[rn.length, '用户确认可脱水'], [rn.filter(c => pipeline(c).replay.status === 'supported').length, '前缀可构造请求'], [rn.filter(c => pipeline(c).assertion.status === 'frozen').length, '检查已冻结（回复／工具调用）'], [rn.filter(c => precheck(c).reproduced || control(c).confirmed).length, '原版预检已复现／对照已确认'], [rn.filter(c => pipeline(c).inLibrary).length, '已入库']]);
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
       if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(validRunOutput).length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出含待判分与代码已判通过／失败；待判分不表示通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
     }
@@ -199,11 +197,11 @@
     function readiness(cases) {
       if (cases.some(c => patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId)) return '待归纳新模式内容尚未审核通过或关联已有模式；暂不算任何模式的目标用例。';
       if (cases.some(c => patternKey(c) === 'pending')) return '尚不能评测候选：先确认模式标签；旧的分组和结果不等于归类已确认';
-      const ready = cases.filter(c => pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c));
+      const ready = cases.filter(c => pipeline(c).inLibrary && precheck(c).reproduced && isGpt(c) && !sourceOnly(c));
       const gate = ready.filter(c => c.split === 'gate'), test = ready.filter(c => c.split === 'test' && hasScene(c));
-      const control = D.cases.some(c => !cases.includes(c) && c.split === 'gate' && pipeline(c).inLibrary && isGpt(c) && !sourceOnly(c) && patternKey(c) !== 'pending');
-      const missing = [!gate.length && '可用门槛题', !test.length && '可用 trace 测试题', !control && '其他模式的可用防误伤题'].filter(Boolean);
-      return missing.length ? '尚不能评测候选：缺' + missing.join('、') : '有可用门槛、测试和其他模式的防误伤题；正式计划仍须预检';
+      const hasControl = D.cases.some(c => !cases.includes(c) && c.split === 'gate' && pipeline(c).inLibrary && control(c).status === 'confirmed' && control(c).confirmed && isGpt(c) && !sourceOnly(c) && patternKey(c) !== 'pending');
+      const missing = [!gate.length && '可用门槛题', !test.length && '可用 trace 测试题', !hasControl && '其他模式的已确认防误伤对照'].filter(Boolean);
+      return missing.length ? '尚不能评测候选：缺' + missing.join('、') : '有可用门槛、测试和其他模式的已确认防误伤对照；正式计划仍须逐题校验预检及冻结绑定';
     }
     function groupingPanel() {
       const all = patterns(), host = $('[data-grouping]'), p = D.initialSplitProposal;
@@ -251,7 +249,7 @@
     }
     function targetPanel(x) {
       if (!(D.pendingPatternLinks || []).some(l => l.entryId === x.key)) return '';
-      const ids = split => x.cases.filter(c => c.kind === 'marked-badcase' && c.split === split && isGpt(c) && patternLabel(c)?.confirmed && patternLabel(c)?.entryId === x.key).map(c => '#' + c.n).join('、') || '无';
+      const ids = split => x.cases.filter(c => c.kind === 'marked-badcase' && c.split === split && isGpt(c) && patternLabel(c)?.confirmed && patternLabel(c)?.entryId === x.key && !control(c).confirmation).map(c => '#' + c.n).join('、') || '无';
       return `<section class="bc-notice" data-pattern-targets><b>「${esc(x.title)}」的模式目标</b><p>门槛目标复现题：${ids('gate')}；测试目标复现题：${ids('test')}</p><p class="hint">目标题已确定 ≠ 可评测。目标复现题已经确定；要用于评测，还需要冻结断言、通过回放检查并满足原版复现等条件，具体看上面列出的缺项。这里只确认模式归属，不代表已经可以评测；已分组别不变。</p></section>`;
     }
     function formFor(c) {
@@ -286,7 +284,8 @@
       const what = '<p class="bc-label-what">这一步决定这条用例在哪个模式下分组，以及评测时算哪个模式的目标用例。确认后不能改。</p>';
       const shell = body => `<section class="dehydration-panel bc-label-panel" data-pattern-label="${esc(c.id)}"><h4>${label.confirmed ? '模式标签' : '确认模式标签'}</h4>${what}${body}</section>`;
       if (label.confirmed) {
-        const role = !label.entryId ? label.pendingPatternId ? '还没关联到已通过的模式，评测时暂不算任何模式的目标用例。' : '评测时不算任何模式的目标用例。'
+        const role = control(c).confirmation ? control(c).confirmed ? '已冻结为其他模式候选的防误伤对照，不作本模式目标复现题；原模式身份和组别保留。' : '对照确认已失效，暂不可用于评测；原确认与模式身份保留，不改作本模式目标复现题。'
+          : !label.entryId ? label.pendingPatternId ? '还没关联到已通过的模式，评测时暂不算任何模式的目标用例。' : '评测时不算任何模式的目标用例。'
           : c.split === 'train' ? '训练组用例：参与归纳，不当复现题。' : splitName[c.split] ? `${splitName[c.split]}组用例：评测「${entryTitle(label.entryId)}」的候选时算目标复现题。` : '分组确认后才知道它在评测里的角色。';
         const status = label.source && label.source !== 'badcase-page' ? '沿用已有确认归类：' : '已锁定：';
         return shell(`<p class="pill ok">${status}${esc(labelTitle(label))}</p><p data-pattern-role>${esc(role)}</p>${preBox}`);

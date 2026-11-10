@@ -38,6 +38,47 @@ function setup(t, data, { full = false, onConfirmControl, handler } = {}) {
   return { root, panel, calls, window: dom.window, card: () => root.querySelector('[data-case-id]'),
     click: async selector => { const el = root.querySelector(selector); assert.ok(el, selector); el.click(); await tick(); await tick(); } };
 }
+test('mode overview requires a current confirmed other-mode control, never another reproduction or favorable unconfirmed precheck', t => {
+  const real = fixture(t), data = real.snapshot(), source = data.cases[0], row = data.pipelineStates[0];
+  data.cases = [{ ...source, id: 'target-gate', n: 23 }, { ...source, id: 'target-test', n: 24, split: 'test' }, source];
+  const options = [{ entryId: 'mode-6', title: '目标模式' }, { entryId: 'mode-1', title: '其他模式' }];
+  data.casePatterns = data.cases.map((c, i) => ({ caseId: c.id, confirmed: true, entryId: i === 2 ? 'mode-1' : 'mode-6', patternKey: i === 2 ? 'mode-1' : 'mode-6', options }));
+  data.pipelineStates = data.cases.map((c, i) => ({ ...clone(row), caseId: c.id, inLibrary: true, precheck: { ...clone(row.precheck), reproduced: i !== 2 } }));
+  const h = setup(t, data); h.root.querySelector('[data-bc-pattern="mode-6"]').click();
+  const board = () => h.root.querySelector('[data-board-readiness]').textContent;
+  const external = data.pipelineStates[2];
+  for (const value of [{ status: 'ineligible', confirmed: false }, { status: 'eligible', confirmed: false }, { status: 'stale', confirmed: false }, null]) {
+    external.control = value; h.panel.render(data); assert.match(board(), /尚不能.*已确认.*对照/);
+    h.root.querySelector('[data-bc-pattern="all"]').click();
+    assert.match(h.root.querySelector('[data-pattern-overview] tbody tr').textContent, /尚不能.*已确认.*对照/);
+    h.root.querySelector('[data-bc-pattern="mode-6"]').click();
+  }
+  external.control = { status: 'confirmed', confirmed: true }; h.panel.render(data); assert.match(board(), /^有可用门槛、测试.*已确认/);
+  const oldSplit = source.split; source.split = 'test'; h.panel.render(data); assert.match(board(), /尚不能/); source.split = oldSplit;
+  external.inLibrary = false; h.panel.render(data); assert.match(board(), /尚不能/); external.inLibrary = true;
+  // A control cannot also stand in as the target mode's reproduction.
+  data.pipelineStates[0].precheck.reproduced = false; h.panel.render(data); assert.match(board(), /尚不能.*可用门槛题/);
+  assert.equal(h.calls.length, 0);
+});
+test('run independent precheck can reach library without any legacy raw output; assertions precede precheck in the funnel', t => {
+  const real = require('../helpers/wiki-scene-run.cjs')(t, { scene: false }), data = real.store.read();
+  data.cases[0].split = 'gate'; // Historical grouped case, before creating/hash-binding the precheck.
+  const cache = require(base + 'wiki-pipeline-prechecks').createWikiPipelinePrecheckStore(real.scope);
+  cache.getOrCompute({ level: 'run', traceHash: real.item().traceBundle.hash, decisionHash: real.decision.hash }, () => ({ status: 'supported', cutStep: 29 }));
+  const replayChecks = require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(data, cache);
+  const plan = require(base + 'wiki-original-precheck').createWikiOriginalPrecheckPlan({ state: data, caseId: real.c.id, rubricHash: real.rubric.hash, inputHash: 'd'.repeat(64), replayChecks });
+  const records = require(base + 'wiki-original-precheck-store').createWikiOriginalPrecheckStore(real.scope), r = records.reserve(plan);
+  records.finish(r.id, { status: 'completed', reason: null, runs: Array.from({ length: 5 }, (_, i) => ({ iteration: i + 1, variant: 'original', status: 'fail', artifactId: 'synthetic-' + i, artifactHash: 'e'.repeat(64), usageComplete: true })) });
+  data.pipelineStates = require(base + 'wiki-pipeline').projectWikiPipelineStates({ state: data, originalPrechecks: records.list(), replayChecks });
+  data.cases[0].n = 22; data.casePatterns = require(base + 'wiki-initial-split').projectWikiPatternLabels(data);
+  data.casePatterns[0] = { ...data.casePatterns[0], confirmed: true, entryId: null }; // Display-only historical confirmed identity.
+  assert.equal(data.pipelineStates[0].inLibrary, true);
+  const h = setup(t, data); assert.equal(data.pipelineStates[0].original.outputs, 0);
+  assert.match(h.card().querySelector('.next-line').textContent, /测试用例.*等待候选/);
+  const steps = [...h.root.querySelectorAll('[data-lane="run"] .f-step')];
+  assert.match(steps[2].textContent, /检查已冻结/); assert.match(steps[3].textContent, /原版预检/); assert.equal(steps[3].querySelector('b').textContent, '1');
+  assert.equal(h.calls.length, 0);
+});
 test('precheck approximation disclosure uses recorded markers only, preserving absent and unseeded history', t => {
   const real = fixture(t), data = real.snapshot(), p = data.pipelineStates[0].precheck;
   const h = setup(t, data); assert.equal(h.root.querySelector('[data-goal-approximation]'), null);
@@ -47,6 +88,17 @@ test('precheck approximation disclosure uses recorded markers only, preserving a
   assert.ok(h.root.querySelector('[data-original-precheck]').textContent.includes('e'.repeat(64)));
   p.current.goalExecutions[0].goalState = 'unseeded'; p.history[0].goalExecutions = clone(p.current.goalExecutions); h.panel.render(data);
   assert.equal(h.root.querySelector('[data-goal-approximation]'), null); assert.match(h.root.textContent, /未播种 Goal/);
+  assert.equal(h.calls.length, 0);
+});
+for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} control is not advertised as its own mode target`, t => {
+  const real = fixture(t); real.confirm(); const data = real.snapshot();
+  if (stale) { data.pipelineStates[0].control.status = 'stale'; data.pipelineStates[0].control.confirmed = false; }
+  data.casePatterns[0] = { ...data.casePatterns[0], entryId: 'mode-1', patternKey: 'mode-1', options: [{ entryId: 'mode-1', title: '原归属模式' }] };
+  data.pendingPatternLinks = [{ entryId: 'mode-1' }];
+  const h = setup(t, data), role = h.root.querySelector('[data-pattern-role]');
+  assert.match(role.textContent, stale ? /对照确认已失效/ : /其他模式.*防误伤对照/);
+  assert.doesNotMatch(role.textContent, /时算目标复现题/);
+  assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：无/);
   assert.equal(h.calls.length, 0);
 });
 for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} control makes case assertions read-only without paid draft controls`, async t => {
