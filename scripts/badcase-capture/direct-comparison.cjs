@@ -344,6 +344,9 @@ async function runComparison(config, options = {}) {
           row.goalEvidence = validateEvaluationGoalEvidence(receipt.goalEvidence);
           Object.assign(row, evaluationGoalMarker(row.goalEvidence));
         }
+        // Opt-in trusted retention hook. Legacy results/events stay byte-identical;
+        // prechecks retain the verified native arguments, not parsed shell text.
+        options.onReceipt?.(structuredClone(receipt));
         if (plan.summary.replaySession) row.replaySession = { ...plan.summary.replaySession };
         if (plan.summary.projectResources) row.projectResources = { ...plan.summary.projectResources, verified: true,
           loadedContextFiles: receipt.projectResources.loadedContextFiles, loadedSkills: receipt.projectResources.loadedSkills };

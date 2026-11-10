@@ -2,7 +2,7 @@
 // Trusted local operator ONLY. No HTTP/page route imports this command. Paid
 // execution requires --plan followed by a matching, explicitly approved --run.
 // Run/report adapter: one native worker request per attempt, original only.
-// Trace restoration is deliberately refused until its budgeted adapter is wired.
+// Trace adapter: production sealed executor with a budgeted host-only mailbox.
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
@@ -20,6 +20,7 @@ const { readWikiEligibleJudges, assertWikiEligibleConfiguration } = require(base
 const { redactTraceKnownValues } = require(base + 'wiki-trace');
 const { precheckApprovalHash, createPrecheckBudget } = require('./wiki-precheck-budget.cjs');
 const { CONFIGURATION, createDeepseekWikiJudge } = require('./wiki-judge-deepseek.cjs');
+const { prepareTracePrecheck, executeTracePrecheck } = require('./wiki-precheck-trace.cjs');
 const fail = code => Object.assign(Error(code), { code });
 function argumentsFor(argv) {
   const args = {};
@@ -42,7 +43,7 @@ function readConfig(file) {
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw Error();
     const c = JSON.parse(fs.readFileSync(file, 'utf8')), required = ['kind', 'globalRoot', 'sourceWorktree', 'caseId', 'rubricHash', 'toolset', 'codexAuthFile', 'knownKeySources', 'judgeCredentialDir', 'stopFile', 'limits'];
-    if (!c || Array.isArray(c) || required.some(k => !Object.hasOwn(c, k)) || Object.keys(c).some(k => ![...required, 'policy', 'reportOnly', 'timeoutMs', 'judgeCatalogFile'].includes(k))
+    if (!c || Array.isArray(c) || required.some(k => !Object.hasOwn(c, k)) || Object.keys(c).some(k => ![...required, 'policy', 'reportOnly', 'timeoutMs', 'judgeCatalogFile', 'trace'].includes(k))
       || c.kind !== 'wiki-original-precheck-v1' || !['globalRoot', 'sourceWorktree', 'codexAuthFile', 'judgeCredentialDir', 'stopFile'].every(k => typeof c[k] === 'string' && path.isAbsolute(c[k]))
       || path.basename(c.codexAuthFile) !== 'auth.json' || path.basename(path.dirname(c.codexAuthFile)) !== '.pi-sandbox'
       || !c.knownKeySources || Object.keys(c.knownKeySources).sort().join(',') !== 'jevSource,sandboxRoot'
@@ -65,10 +66,7 @@ function knownValues(config, dependencies) {
 function prepare(config, dependencies, values) {
   const store = (dependencies.createStore || createWikiStore)(config), state = store.read(), item = state.cases.find(c => c.id === config.caseId);
   if (!item) throw fail('wiki_unknown_case');
-  if (item.sealedCheckpointId && !config.reportOnly) throw fail('wiki_original_precheck_trace_adapter_required');
-  const rubric = store.getFrozenRubric(config.caseId, config.rubricHash), bundle = store.readCaseTrace(config.caseId), decision = store.getDehydration(config.caseId)?.decision;
-  const request = buildWikiRunRequest({ item, bundle, decision, toolset: config.toolset, ...(config.reportOnly ? { reportOnly: true, rubricHash: rubric.hash } : {}) });
-  if (redactTraceKnownValues(request, values).count) throw fail('wiki_run_input_contains_known_key');
+  const rubric = store.getFrozenRubric(config.caseId, config.rubricHash);
   const observed = config.reportOnly ? wikiSceneReportChecks(rubric) : rubric;
   let attestation = null;
   if (observed.questions.length) {
@@ -76,10 +74,19 @@ function prepare(config, dependencies, values) {
     assertWikiEligibleConfiguration(CONFIGURATION, eligible);
     attestation = eligible.find(j => j.configurationHash === wikiValueHash(CONFIGURATION));
   }
-  const plan = createWikiOriginalPrecheckPlan({ state, caseId: config.caseId, rubricHash: config.rubricHash, inputHash: wikiRunHash(request), judge: attestation,
+  const binding = observed.questions.length ? bindWikiJudge(CONFIGURATION, rubric) : null;
+  let prepared;
+  if (item.sealedCheckpointId && !config.reportOnly) prepared = prepareTracePrecheck(config, { state, item, rubric, binding }, dependencies, values);
+  else {
+    if (config.trace !== undefined) throw fail('wiki_original_precheck_trace_config_invalid');
+    const bundle = store.readCaseTrace(config.caseId), decision = store.getDehydration(config.caseId)?.decision;
+    prepared = { request: buildWikiRunRequest({ item, bundle, decision, toolset: config.toolset, ...(config.reportOnly ? { reportOnly: true, rubricHash: rubric.hash } : {}) }),
+      scoring: { rubric, binding, task: pageDehydrationCause(bundle).text, expected: item.expected } };
+  }
+  if (redactTraceKnownValues(prepared, values).count) throw fail('wiki_run_input_contains_known_key');
+  const plan = createWikiOriginalPrecheckPlan({ state, caseId: config.caseId, rubricHash: config.rubricHash, inputHash: wikiRunHash(prepared.request), judge: attestation,
     replayChecks: readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(config)), ...(config.policy ? { policy: config.policy } : {}), ...(config.reportOnly ? { reportOnly: true } : {}) });
-  const scoring = { rubric, binding: observed.questions.length ? bindWikiJudge(CONFIGURATION, rubric) : null, task: pageDehydrationCause(bundle).text, expected: item.expected };
-  return { store, plan, request, scoring };
+  return { store, plan, ...prepared };
 }
 function judgeUsage(bytes) {
   try {
@@ -139,34 +146,38 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       catch { fatal = 'wiki_original_precheck_stale'; break; }
       if (fresh.plan.planHash !== fixed.plan.planHash || wikiValueHash(fresh.scoring) !== wikiValueHash(fixed.scoring)) { fatal = 'wiki_original_precheck_stale'; break; }
       let client, cleanupFailed = false;
-      let packet, scored;
+      let packet, scored, traceStatus;
       try {
-        const input = { store: fixed.store, runs: packets, caseId: config.caseId, toolset: config.toolset, approvedRequestHash: fixed.plan.inputHash,
-          // Every precheck attempt gets its own packet execution ID. Outer
-          // iteration/batch identity lives in the immutable precheck result;
-          // this does not widen legacy formal runStore's 15-slot contract.
-          attempt: { planHash: fixed.plan.planHash, executionId: crypto.randomUUID(), iteration: 1 },
-          ...(config.reportOnly || fixed.scoring.rubric.toolCheck ? { rubricHash: config.rubricHash } : {}) };
-        const adapter = { complete: q => budget.request('worker', async signal => {
-          client = await (dependencies.createRunClient || require('./wiki-run-client.cjs').createWikiRunClient)({ authFile: config.codexAuthFile, knownKeyValues: values, signal,
-            timeoutMs: Math.max(1000, Math.min(config.timeoutMs ?? 600000, config.limits.maxDurationMs)) });
-          return client.complete(q);
-        }, result => result?.networkRequests === 1 ? result.message?.usage : null) };
-        // Lazy judge wrapper: report validation needs an adapter before worker
-        // execution, but a tool-first failure never reads a judge credential.
+        // Lazy judge wrapper: a tool-first failure never reads credentials.
         const judgeAdapter = fixed.scoring.binding === null ? undefined : { configuration: CONFIGURATION, evaluate: input => getJudge().evaluate(input) };
-        packet = await (config.reportOnly ? replayWikiRunReport : replayWikiRun)(input, { confirmed: true, knownKeyValues: values, client: adapter, judge: judgeAdapter });
-        const validWire = packet.modelCalls === 1 && verifyWikiRunWireRequest(fixed.request, packet.wireRequest, values);
-        if (!validWire) fatal = packet.modelCalls === 1 ? 'wiki_run_wire_request_mismatch' : 'wiki_run_request_failed';
-        else if (config.reportOnly) scored = packet.report;
-        else if (packet.message && packet.outcome.status !== 'error') {
-          if (fixed.scoring.rubric.toolCheck) scored = await scoreWikiRunChecks({ message: packet.message, ...fixed.scoring }, judgeAdapter);
-          else if (packet.outcome.status === 'reached') scored = { assessment: await scoreWikiRun({ ...fixed.scoring, hardAssertions: [],
-            run: { completed: true, replySource: 'public', publicReply: packet.outcome.reply, task: fixed.scoring.task, expected: fixed.scoring.expected } }, judgeAdapter) };
+        if (fixed.plan.execution.level === 'trace') {
+          const executed = await executeTracePrecheck(fixed, config, dependencies, { values, budget, append, judge: judgeAdapter });
+          packet = executed.packet; traceStatus = executed.status;
+        } else {
+          const input = { store: fixed.store, runs: packets, caseId: config.caseId, toolset: config.toolset, approvedRequestHash: fixed.plan.inputHash,
+            // Every precheck attempt gets its own packet execution ID. Outer
+            // iteration/batch identity lives in the immutable precheck result;
+            // this does not widen legacy formal runStore's 15-slot contract.
+            attempt: { planHash: fixed.plan.planHash, executionId: crypto.randomUUID(), iteration: 1 },
+            ...(config.reportOnly || fixed.scoring.rubric.toolCheck ? { rubricHash: config.rubricHash } : {}) };
+          const adapter = { complete: q => budget.request('worker', async signal => {
+            client = await (dependencies.createRunClient || require('./wiki-run-client.cjs').createWikiRunClient)({ authFile: config.codexAuthFile, knownKeyValues: values, signal,
+              timeoutMs: Math.max(1000, Math.min(config.timeoutMs ?? 600000, config.limits.maxDurationMs)) });
+            return client.complete(q);
+          }, result => result?.networkRequests === 1 ? result.message?.usage : null) };
+          packet = await (config.reportOnly ? replayWikiRunReport : replayWikiRun)(input, { confirmed: true, knownKeyValues: values, client: adapter, judge: judgeAdapter });
+          const validWire = packet.modelCalls === 1 && verifyWikiRunWireRequest(fixed.request, packet.wireRequest, values);
+          if (!validWire) fatal = packet.modelCalls === 1 ? 'wiki_run_wire_request_mismatch' : 'wiki_run_request_failed';
+          else if (config.reportOnly) scored = packet.report;
+          else if (packet.message && packet.outcome.status !== 'error') {
+            if (fixed.scoring.rubric.toolCheck) scored = await scoreWikiRunChecks({ message: packet.message, ...fixed.scoring }, judgeAdapter);
+            else if (packet.outcome.status === 'reached') scored = { assessment: await scoreWikiRun({ ...fixed.scoring, hardAssertions: [],
+              run: { completed: true, replySource: 'public', publicReply: packet.outcome.reply, task: fixed.scoring.task, expected: fixed.scoring.expected } }, judgeAdapter) };
+          }
         }
-      } catch { fatal = 'wiki_original_precheck_attempt_failed'; }
+      } catch (e) { if (!budget.snapshot().reason) fatal = /^(?:wiki|evaluation)_[a-z_]+$/.test(e?.code || '') ? e.code : 'wiki_original_precheck_attempt_failed'; }
       finally { try { await client?.close(); } catch { cleanupFailed = true; fatal = 'wiki_run_client_cleanup_failed'; } }
-      let status = scored?.checks?.status ?? scored?.assessment?.status ?? (['pass', 'fail', 'invalid', 'error'].includes(packet?.outcome?.status) ? packet.outcome.status : 'error');
+      let status = traceStatus ?? scored?.checks?.status ?? scored?.assessment?.status ?? (['pass', 'fail', 'invalid', 'error'].includes(packet?.outcome?.status) ? packet.outcome.status : 'error');
       if (fatal || cleanupFailed) status = 'error';
       const artifact = { iteration, packet: packet ?? null, scoring: scored ?? null, status, reason: fatal }, artifactHash = wikiValueHash(artifact), artifactId = reservation.id + '-attempt-' + iteration;
       // Hash the exact redacted retained packet, not an unsanitized predecessor.

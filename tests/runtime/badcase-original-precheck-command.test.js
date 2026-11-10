@@ -191,8 +191,8 @@ test('CLI rejects ambiguous flags and unsafe paths without reading config or sta
     ['--config', path.resolve('missing'), '--plan', '--confirmed'], ['--config', path.resolve('missing'), '--run', '--confirmed'],
     ['--config', path.resolve('missing'), '--plan', '--plan']]) assert.throws(() => cli().argumentsFor(argv), /wiki_original_precheck_arguments_invalid/);
 });
-test('unsupported trace precheck is rejected offline until its production adapter is connected', async t => {
+test('trace precheck requires explicit trace restoration configuration before auth/model execution', async t => {
   const h = setup(t, { scene: true }); delete h.config.reportOnly; h.write();
-  await assert.rejects(h.plan(), /wiki_original_precheck_trace_adapter_required/);
+  await assert.rejects(h.plan(), /wiki_original_precheck_trace_config_invalid/);
   assert.equal(h.clients(), 0); assert.equal(h.reads(), 0);
 });
