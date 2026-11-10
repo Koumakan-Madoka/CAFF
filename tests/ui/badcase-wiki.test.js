@@ -350,7 +350,7 @@ test('parallel check editor permits tool-only freezing without a judge and re-GE
   assert.ok(panel().querySelector('[data-reply-check]')); assert.ok(panel().querySelector('[data-tool-check]'));
   assert.match(panel().querySelector('[data-tool-preview]').textContent, /suggest-goal.*reason.*1000/);
   assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, false, 'tool-only does not require a judge');
-  assert.match(panel().textContent, /只用于切点上的 report，不用于 trace 评测/);
+  assert.match(panel().textContent, /同时用于 trace 评测和切点报告.*只配工具检查.*也可用于 trace/);
   await h.click('#c-1 [data-save-rubric]');
   assert.equal(h.saved().rubrics[1].questions.length, 0); assert.deepEqual(clone(h.posts()[0].body.toolCheck), toolConfig());
   assert.equal(h.posts()[0].body.scoringModel, null);

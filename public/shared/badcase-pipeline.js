@@ -3,7 +3,7 @@
   const shared = window.CaffShared || (window.CaffShared = {});
   // Loading is read-only. Only explicit guarded actions request a recommendation
   // or freeze a decision; no automatic calls, retries, replay, grading or regrouping.
-  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory, confirm: confirmAction = message => window.confirm(message) }) {
+  shared.createBadcasePipeline = function ({ root, fetchJson, onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory, onConfirmControl, confirm: confirmAction = message => window.confirm(message) }) {
     const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const words = q => String(q || '').slice(0, 512).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 30);
     const matches = (v, ts) => ts.every(t => String(v).toLowerCase().includes(t));
@@ -14,7 +14,7 @@
       return out + esc(s.slice(from));
     }
     const json = v => JSON.stringify(v, null, 2);
-    const labels = ['标记', '现场', '脱水', '归类', '分组', '断言', '回放检查', '原版复现', '入库'];
+    const labels = ['标记', '现场', '脱水', '归类', '分组', '断言', '回放检查', '原版预检', '入库'];
     const names = { you: '等你处理', system: '系统可以继续', library: '已入库', stop: '到此为止' };
     const actorBucket = actor => ['you', 'system', 'library'].includes(actor) ? actor : 'stop';
     const splitName = { train: '训练', gate: '门槛', test: '测试' };
@@ -43,9 +43,9 @@
     const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
     let detailSignature = null, splitConsent = null, linkConsent = null, panelSerial = 0;
     const labelForms = new Map(), labelConsents = new Map(), labelErrors = new Map();
-    const cutForms = new Map(), cutConsents = new Map();
+    const cutForms = new Map(), cutConsents = new Map(), controlConsents = new Map();
     const categoryForms = new Map(), categoryConsents = new Map(), categoryErrors = new Map(), draftForms = new Map(), draftConsents = new Map(), draftErrors = new Map();
-    let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory].some(fn => typeof fn === 'function');
+    let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory, onConfirmControl].some(fn => typeof fn === 'function');
     const dehydration = c => (D.dehydrations || []).findLast(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
     const caseRuns = c => (D.runReplays || []).filter(r => !r.reportOnly && r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
@@ -88,8 +88,9 @@
     const pipeline = c => (D.pipelineStates || []).find(r => r.caseId === c.id) || { assertion: { status: 'missing', version: null, model: null, questions: [] }, replay: { status: 'pending' }, original: { valid: 0, unscored: 0, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
     function assertionText(c) {
       const a = pipeline(c).assertion;
-      const prefix = a.version ? `已冻结 v${a.version} · ${a.questions.length} 条 · ${a.model || '打分模型未记录'}` : '还没有冻结的断言；可去「用例」页起草并确认';
-      return prefix + (a.status === 'incompatible' ? hasScene(c) ? '；trace 级至少需要一个问题，只有工具调用检查不能用于 trace 评测；需另存一版，旧版保留' : '；run 级的问题只能以回复为依据，需另存一版；旧版保留' : a.status === 'stale' ? '；问题或期望已变，需另存一版' : '') + (a.draftVersion ? `；另有 v${a.draftVersion} 草稿待确认` : '');
+      const tool = frozenRubric(c)?.toolCheck;
+      const prefix = a.status !== 'missing' && a.version ? `已冻结 v${a.version} · AI 断言 ${a.questions.length} 条 · ${a.questions.length ? a.model || '打分模型未记录' : '无需 AI 裁判'}${tool ? ' · 工具调用检查已配置（代码判断）' : ''}` : '还没有冻结的断言；可去「用例」页起草并确认';
+      return prefix + (a.status === 'incompatible' ? hasScene(c) ? '；trace 级至少需要一种检查（AI 断言或工具调用检查）；需另存一版，旧版保留' : '；run 级的问题只能以回复为依据，需另存一版；旧版保留' : a.status === 'stale' ? '；问题或期望已变，需另存一版' : '') + (a.draftVersion ? `；另有 v${a.draftVersion} 草稿待确认` : '');
     }
     function replayText(c) {
       const r = pipeline(c).replay;
@@ -101,9 +102,37 @@
       return o.valid ? `原版 ${o.pass}/${o.valid} 通过 · ${o.fail} 不通过 · 无效 ${o.invalid} · 错误 ${o.errors}；${o.reproduced ? '已复现问题（不通过超过有效次数的一半）' : '未达到复现条件（不通过未超过有效次数的一半）'}；仅此批次，不拼接其他执行`
         : `${o.unscored ? `待判分：原版有效输出 ${o.unscored} 次` : '待复现：还没有与当前冻结断言匹配的有效原版判分'}；无效 ${o.invalid} · 请求/评分错误 ${o.errors}${o.unknown ? ' · 结果未知 ' + o.unknown : ''}；有效输出不等于通过`;
     }
+    const precheck = c => pipeline(c).precheck || { status: 'missing', current: null, history: [], reproduced: false };
+    const control = c => pipeline(c).control || { status: 'ineligible', confirmed: false, eligible: false };
+    const percent = v => typeof v === 'number' && Number.isFinite(v) ? Number((v * 100).toFixed(2)) + '%' : '无有效分母';
+    const precheckStatus = s => ({ completed: '已完成', reserved: '结果未知／等待完成', stopped: '已停止', failed: '执行失败' }[s] || s);
+    function precheckText(c) {
+      const p = precheck(c), r = p.current, s = r?.summary;
+      if (!r) return '尚无与当前冻结断言、现场和切点匹配的原版预检；须由受信操作方确认额度后执行，本页不能启动。';
+      return `${precheckStatus(r.status)}${r.reason ? ' · ' + ({ usage_unknown: '用量不明', request_limit: '请求次数上限', token_limit: 'token 停止线', operator_interrupted: '操作方停止' }[r.reason] || r.reason) : ''} · ${s ? `原版通过 ${s.pass} · 失败 ${s.fail} · 无效 ${s.invalid} · 错误 ${s.errors}；已尝试 ${s.attempted}/${s.planned}；失败比例 ${percent(s.failureRatio)}` : '尚无结果，不能作准入证据'}；${p.reproduced ? '已复现' : '未复现'}（失败比例须严格超过 ${percent(r.policy.failureThreshold)}，刚好等于不算；未完成不能复现）。`;
+    }
+    function precheckRecord(r) {
+      const s = r.summary;
+      return `<article data-precheck-record><p><b>v${esc(r.rubricVersion)} · ${esc(precheckStatus(r.status))}</b> · ${r.reportOnly ? '仅切点报告 · 不作准入' : r.current ? '条件匹配' : '历史条件 · 不作当前准入'}</p><p>${s ? `通过 ${esc(s.pass)} · 失败 ${esc(s.fail)} · 无效 ${esc(s.invalid)} · 错误 ${esc(s.errors)}；有效 ${esc(s.valid)}；失败比例 ${esc(percent(s.failureRatio))}；${s.reproduced ? '该批已复现' : '该批未复现'}` : '尚无结果'}</p><p class="hint">计划 ${esc(r.policy.repeats)} 次 · 复现须严格超过 ${esc(percent(r.policy.failureThreshold))} · 对照通过比例至少 ${esc(percent(r.policy.controlThreshold))}（全部样本须有效）</p><p class="hint">${esc(r.createdAt)}${r.finishedAt ? ' → ' + esc(r.finishedAt) : ''} · ${esc(r.execution.level)}${r.execution.cutStep ? ' · 切点第 ' + esc(r.execution.cutStep) + ' 步' : ''}</p><p class="trace-hash mono">记录 ${esc(r.id)}<br>断言 hash ${esc(r.rubricHash)}<br>计划 hash ${esc(r.planHash)}</p></article>`;
+    }
+    function precheckPanel(c) {
+      const p = precheck(c);
+      return `<section class="dehydration-panel" data-original-precheck="${esc(c.id)}"><h4>原版预检（独立证据）</h4><p>${esc(precheckText(c))}</p><p class="hint">预检不进入正式门槛或测试统计；无效和错误不进分母。只跑原版，默认 trace 3 次／run 5 次，可配置。页面不提供启动按钮。</p>${p.history?.length ? `<details data-precheck-history><summary>各版本预检与切点报告（${p.history.length} 批）</summary><p class="hint">各批次独立，不拼接；旧版本、旧现场和报告不作当前准入。</p>${p.history.map(precheckRecord).join('')}</details>` : ''}</section>`;
+    }
+    const canConfirmControl = c => control(c).status === 'eligible' && control(c).eligible && !!control(c).proposalHash;
+    const controlKey = c => json([D.revision, c, pipeline(c), patternLabel(c)]);
+    function controlPanel(c) {
+      const v = control(c), shown = controlConsents.get(c.id) === controlKey(c), disabled = writable && typeof onConfirmControl === 'function' ? '' : 'disabled';
+      const reason = { control_gate_required: '只有门槛组能作对照', control_precheck_required: '当前原版预检尚未达到对照阈值', control_pattern_confirmation_required: '模式身份尚未确认', control_binding_changed: '断言、原版预检或模式身份等绑定已改变' }[v.reason] || '须为门槛组、原版预检达标且模式身份已确认';
+      return `<section class="dehydration-panel" data-gate-control="${esc(c.id)}"><h4>门槛防误伤对照</h4><p>${v.status === 'confirmed' ? '已冻结为对照；用于其他模式候选的防误伤检查，不是该模式的目标复现题。' : v.status === 'stale' ? `对照确认已失效：${esc(reason)}；原确认保留，不能重新确认或覆盖。` : canConfirmControl(c) ? '可作对照：原版预检已达标；经你确认后才能进入其他模式候选的门槛。' : '暂不可作对照：' + esc(reason) + '。'}</p>${canConfirmControl(c) ? shown ? `<div class="bc-confirm-strip" data-control-consent><b>确认 #${esc(c.n)} 为门槛组对照？</b><span>只用于其他模式候选的防误伤检查；冻结当前断言、预检证据和模式身份，核心输入以后不能修改，不能覆盖本次确认。不启动模型或评测，不表示采纳候选。</span><p>${esc(precheckText(c))}</p><details><summary>本次冻结的检查全文</summary><pre class="tl-req">${esc(json({ questions: frozenRubric(c)?.questions || [], toolCheck: frozenRubric(c)?.toolCheck || null, scoringModel: frozenRubric(c)?.scoringModel || null }))}</pre></details><p class="trace-hash mono">确认绑定 hash ${esc(v.proposalHash)}<br>断言 hash ${esc(v.binding?.rubricHash)}<br>预检 ${esc(v.binding?.precheckId)}<br>模式 ${esc(v.binding?.pattern?.entryId || '不归入任何模式')}</p><div class="row-actions"><button type="button" class="btn primary" data-control-lock="${esc(c.id)}" ${disabled}>确认并冻结为对照</button><button type="button" class="btn" data-control-cancel="${esc(c.id)}">取消</button></div></div>` : `<button type="button" class="btn small" data-control-confirm="${esc(c.id)}" ${disabled}>确认为对照…</button>` : ''}${v.confirmation ? `<details><summary>冻结确认记录</summary><p>${esc(v.confirmation.confirmedAt)} · ${esc(v.confirmation.confirmationRecord)}</p><p class="trace-hash mono">${esc(v.confirmation.hash)}</p></details>` : ''}</section>`;
+    }
+    function refreshControlPanel(c) {
+      const host = [...root.querySelectorAll('[data-gate-control]')].find(el => el.dataset.gateControl === c.id);
+      if (host) host.outerHTML = controlPanel(c);
+    }
     function assertionPanel(c) {
       const a = pipeline(c).assertion;
-      return `<section class="dehydration-panel" data-assertion-slot="${esc(c.id)}"><h4>断言 · 评分 v2</h4><p>${esc(assertionText(c))}</p>${a.questions.map(q => `<div class="assertion-readonly"><b>${esc(q.id)}</b> · 依据：${esc({ reply: '回复', trace: '轨迹', files: '文件' }[q.evidence] || q.evidence)}<p>${esc(q.question)}</p></div>`).join('')}<a class="btn small" href="#case-${c.n}">去「用例」页${a.version ? '查看或另存断言' : '起草断言'}</a><p class="hint">这里只读展示冻结版本；跳转不调用模型或启动评测。冻结断言不会自动启动判分；「原版复现」只反映已有评测结果。</p></section>`;
+      return `<section class="dehydration-panel" data-assertion-slot="${esc(c.id)}"><h4>断言 · 评分 v2</h4><p>${esc(assertionText(c))}</p>${a.questions.map(q => `<div class="assertion-readonly"><b>${esc(q.id)}</b> · 依据：${esc({ reply: '回复', trace: '轨迹', files: '文件' }[q.evidence] || q.evidence)}<p>${esc(q.question)}</p></div>`).join('')}<a class="btn small" href="#case-${c.n}">去「用例」页${a.version ? '查看或另存断言' : '起草断言'}</a><p class="hint">这里只读展示冻结版本；跳转不调用模型或启动评测。工具调用检查同时用于 trace 评测和切点报告；只配工具检查也可用于 trace。trace 读取结构化调用记录，不解析 bash、不用 AI 判断参数。冻结断言不会自动启动判分；原版预检独立记录，不拿正式评测代替。</p></section>`;
     }
     function plan(c) {
       const has = hasScene(c), old = sourceOnly(c), other = !isGpt(c), cs = D.caseStates?.find(s => s.caseId === c.id), r = dehydration(c), d = r?.decision;
@@ -116,29 +145,30 @@
         [old || splitName[c.split] ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : splitProposal(c) ? `提议：${splitName[splitProposal(c).proposedSplit]}组，等你确认后冻结` : !splitName[c.split] ? '待分配；模式标签及有效原版证据齐备后，按模式提议分组' : `已有${splitName[c.split]}组保留，不重新分配`],
         [status.assertion.status === 'frozen' ? 'done' : ['incompatible', 'stale'].includes(status.assertion.status) ? 'warn' : 'pending', assertionText(c)],
         [status.replay.status === 'supported' ? 'done' : status.replay.status === 'unsupported' ? 'warn' : 'pending', replayText(c)],
-        [status.original.reproduced ? 'done' : status.original.unscored || status.original.valid ? 'alt' : 'pending', originalText(c)],
-        [status.inLibrary ? 'done' : 'pending', status.inLibrary ? `${splitName[c.split]}组 · ${has ? 'trace' : 'run'} 级 · 已分组、断言冻结、回放检查通过、原版问题已复现；不表示采纳候选` : '尚未入库；须已分组、断言已冻结、回放检查通过且原版问题已复现'],
+        [precheck(c).reproduced || control(c).confirmed ? 'done' : precheck(c).current ? 'alt' : 'pending', precheckText(c)],
+        [status.inLibrary ? 'done' : 'pending', status.inLibrary ? `${splitName[c.split]}组 · ${has ? 'trace' : 'run'} 级 · 已分组、断言冻结、回放检查通过、${control(c).confirmed ? '已确认原版达标对照' : '独立原版预检已复现'}；不表示采纳候选` : '尚未入库；须已分组、断言已冻结、回放检查通过，且独立原版预检已复现或已确认为达标对照'],
       ];
       if (old || other) for (let i = old ? 5 : 2; i < 9; i++) steps[i] = ['skip', old ? '只作旧题来源，不单独入库' : '只报告，不计入 GPT 结论'];
       if (reference) for (let i = 4; i < 9; i++) steps[i] = ['skip', '无现场且非单步型；只作参考和训练组文字材料，不成为测试用例'];
       if (invalidCase && !reference && !old && !other) for (const i of [4, 5, 7, 8]) steps[i] = ['skip', '原版无有效输出：无效测试用例，不进门槛和初筛；不算通过也不算不通过'];
       const labelPending = patternLabel(c) && !patternLabel(c).confirmed;
       const baselinePending = !has && d?.level === 'run' && !status.original.outputs && !status.original.valid && !status.original.unscored && !invalidCase;
-      const needsAssertion = status.assertion.status !== 'frozen' && (has || d?.level === 'run' && !baselinePending);
+      const needsAssertion = status.assertion.status !== 'frozen' && (has || d?.level === 'run');
       const categoryReview = patternLabel(c)?.pendingPatternId && !patternLabel(c)?.entryId && splitName[c.split];
-      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) ? 'you' : categoryReview ? c.split === 'train' ? 'you' : 'system' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
+      const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) || canConfirmControl(c) ? 'you' : categoryReview ? c.split === 'train' ? 'you' : 'system' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
       const next = other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题'
         : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑'
         : r && !d ? has ? '请确认报告切点；仍是 trace 级，身份和组别不变，确认后不可修改' : '请确认能否脱水与切点；确认后不可修改'
         : labelPending ? '请确认模式标签：决定分组所属模式和评测目标用例，确认后不能改'
         : splitProposal(c) ? '请核对并确认此模式的新用例分组'
         : categoryReview ? c.split === 'train' ? '在分组区归纳本类别的模式内容并审核，只给模型训练成员。' : '等待本类别训练成员归纳并审核通过；门槛和测试不参与归纳。'
-        : baselinePending ? '等待受信操作方取得原版有效输出；每批调用前须经规划者向用户确认，本页不启动回放'
+        : canConfirmControl(c) ? '可作对照：请核对原版预检，在下方面板内确认并冻结；不启动模型或评测'
         : needsAssertion ? (has ? sceneNote(c) + '；有现场，走 trace 级；' : '') + assertionText(c)
+        : baselinePending ? precheckText(c)
         : status.inLibrary ? `${splitName[c.split]}组${has ? ' trace' : ' run'} 级测试用例，等待候选；本页不启动评测`
-        : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c))
+        : has ? sceneNote(c) + '；有现场，走 trace 级；' + (status.replay.status !== 'supported' ? replayText(c) : status.assertion.status !== 'frozen' ? assertionText(c) : precheckText(c))
         : !d ? '等待 DeepSeek 推荐，再请你确认'
-        : status.assertion.status !== 'frozen' ? assertionText(c) : originalText(c);
+        : status.assertion.status !== 'frozen' ? assertionText(c) : precheckText(c);
       return { steps, actor, next, action: labelPending || splitProposal(c) || categoryReview && c.split === 'train' ? 'group' : !categoryReview && actor === 'you' && needsAssertion && !(r && !d) ? 'assertion' : null };
     }
     function funnel() {
@@ -328,7 +358,7 @@
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
       const labels = { reached: '有效输出（待判分）', pass: '已判通过（代码判断）', fail: '已判失败（代码判断）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
-      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(validRunOutput).length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。有效输出含待判分与代码已判通过／失败；待判分不表示通过。正式批次判分见「原版复现」，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(validRunOutput).length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。有效输出含待判分与代码已判通过／失败；待判分不表示通过。这些历史单次回放不作预检准入；独立原版预检见上方，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
     }
     const checkLabel = s => ({ pass: '通过', fail: '失败', invalid: '无效', error: '技术错误', unreached: '未判到（不计通过或失败）', unconfigured: '未配置' }[s] || s || '未记录');
     const runReason = s => ({ arguments_unparseable: '参数无法解析', no_check_reached: '没有判到任何检查', tool_rule_failed: '工具参数不符合规则', reply_check_failed: '回复检查失败', empty_output: '空输出', model_failed: '模型未产生有效输出' }[s] || s);
@@ -340,7 +370,7 @@
       if (!reportCut(c)) return '';
       const r = frozenRubric(c), counts = c.runChecks, rows = reportRows(c);
       const current = r && counts?.rubricHash === r.hash && counts.decisionHash === dehydration(c)?.decision?.hash;
-      return `<section class="dehydration-panel" data-run-report="${esc(c.id)}"><h4>切点上的 run 级检查报告</h4><p class="hint">只出报告，不作采纳依据，不进门槛统计；仍是 trace 级，组别不变。工具调用检查只用于切点上的 report，不用于 trace 评测。只统计原版的当前切点 + 最新冻结版本；旧版结果不拼接。</p>${r ? `<p>统计的是 v${esc(r.version)} · 切在第 ${esc(dehydration(c).decision.cutStep)} 步之前</p>${reportScope(r)}<p class="trace-hash mono">断言 hash ${esc(r.hash)}</p>` : '<p>尚无冻结版本；没有可用的检查结果。</p>'}${current ? `<p data-report-counts>通过 ${counts.passed} · 失败 ${counts.failed} · 无效 ${counts.invalid} · 技术错误 ${counts.errors} · 结果未知 ${counts.pending}。无效和技术错误不进有效分母，未知不算通过。</p>${Object.entries(counts.invalidReasons || {}).length ? `<ul>${Object.entries(counts.invalidReasons).map(([reason, n]) => `<li>${esc(runReason(reason))}：${esc(n)}</li>`).join('')}</ul>` : ''}` : '<p>等待读取与当前切点和冻结版本一致的报告统计；不沿用旧版次数。</p>'}${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>原版 · ${esc(r.status === 'reserved' ? '结果未知' : checkLabel(r.status))} · 查看检查结果、完整输出及实际请求</summary><p>模型调用 ${esc(r.modelCalls ?? '未知')} · 工具执行 ${esc(r.toolExecutions ?? '未知')} · 不作采纳依据</p><p>${['json', 'md'].map(format => `<a class="btn small" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出 ${format}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+      return `<section class="dehydration-panel" data-run-report="${esc(c.id)}"><h4>切点上的 run 级检查报告</h4><p class="hint">只出报告，不作采纳依据，不进门槛统计；仍是 trace 级，组别不变。工具调用检查同时用于 trace 评测和切点报告；只配工具检查也可用于 trace。只统计原版的当前切点 + 最新冻结版本；旧版结果不拼接。</p>${r ? `<p>统计的是 v${esc(r.version)} · 切在第 ${esc(dehydration(c).decision.cutStep)} 步之前</p>${reportScope(r)}<p class="trace-hash mono">断言 hash ${esc(r.hash)}</p>` : '<p>尚无冻结版本；没有可用的检查结果。</p>'}${current ? `<p data-report-counts>通过 ${counts.passed} · 失败 ${counts.failed} · 无效 ${counts.invalid} · 技术错误 ${counts.errors} · 结果未知 ${counts.pending}。无效和技术错误不进有效分母，未知不算通过。</p>${Object.entries(counts.invalidReasons || {}).length ? `<ul>${Object.entries(counts.invalidReasons).map(([reason, n]) => `<li>${esc(runReason(reason))}：${esc(n)}</li>`).join('')}</ul>` : ''}` : '<p>等待读取与当前切点和冻结版本一致的报告统计；不沿用旧版次数。</p>'}${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>原版 · ${esc(r.status === 'reserved' ? '结果未知' : checkLabel(r.status))} · 查看检查结果、完整输出及实际请求</summary><p>模型调用 ${esc(r.modelCalls ?? '未知')} · 工具执行 ${esc(r.toolExecutions ?? '未知')} · 不作采纳依据</p><p>${['json', 'md'].map(format => `<a class="btn small" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出 ${format}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
     }
     function reportCheckStatus(packet) {
       const report = packet.result?.report, checks = report?.checks;
@@ -408,7 +438,7 @@
         ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : ''}
         ${dehydration(c)?.decision ? `<details class="more"><summary>脱水决定与推荐记录（已冻结）</summary>${dehydrationPanel(c)}</details>` : dehydrationPanel(c)}
         <div class="bc-detail-grid">${patternPanel(c) || `<section class="bc-card"><h4>九步说明</h4><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></section>`}
-        <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p><p>${esc(originalText(c))}</p><p>${esc(backfill(c))}</p>${reportPanel(c)}${replayPanel(c)}</section></div></div>
+        <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p>${precheckPanel(c)}${controlPanel(c)}<details><summary>历史正式评测／单次回放（不作预检准入）</summary><p>${esc(originalText(c))}</p></details><p>${esc(backfill(c))}</p>${reportPanel(c)}${replayPanel(c)}</section></div></div>
         ${patternLabel(c) ? `<details class="more"><summary>九步说明</summary><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></details>` : ''}
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
@@ -496,7 +526,16 @@
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);
     root.addEventListener('click', e => {
-      const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-lock],[data-dehydration-recommend],[data-dehydration-request-lock],[data-dehydration-cancel],[data-pattern-confirm],[data-pattern-lock],[data-label-cancel],[data-initial-split-confirm],[data-initial-split-lock],[data-split-cancel],[data-pending-link],[data-pending-link-lock],[data-link-cancel],[data-preclassify]'); if (!el || el.disabled) return;
+      const el = e.target.closest('[data-control-confirm],[data-control-lock],[data-control-cancel],[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-lock],[data-dehydration-recommend],[data-dehydration-request-lock],[data-dehydration-cancel],[data-pattern-confirm],[data-pattern-lock],[data-label-cancel],[data-initial-split-confirm],[data-initial-split-lock],[data-split-cancel],[data-pending-link],[data-pending-link-lock],[data-link-cancel],[data-preclassify]'); if (!el || el.disabled) return;
+      if (el.dataset.controlConfirm || el.dataset.controlLock || el.dataset.controlCancel) {
+        const c = D.cases.find(c => c.id === (el.dataset.controlConfirm || el.dataset.controlLock || el.dataset.controlCancel));
+        if (!c) return;
+        if (el.dataset.controlCancel) { controlConsents.delete(c.id); refreshControlPanel(c); return; }
+        if (!writable || !canConfirmControl(c) || typeof onConfirmControl !== 'function') return;
+        if (el.dataset.controlConfirm) { controlConsents.set(c.id, controlKey(c)); refreshControlPanel(c); return; }
+        if (controlConsents.get(c.id) !== controlKey(c)) { controlConsents.delete(c.id); refreshControlPanel(c); return; }
+        controlConsents.delete(c.id); refreshControlPanel(c); onConfirmControl({ caseId: c.id, proposalHash: control(c).proposalHash }); return;
+      }
       if (el.dataset.bcPattern) { const focused = el === document.activeElement; currentPattern = el.dataset.bcPattern; splitConsent = linkConsent = null; draftConsents.clear(); groupingPanel(); renderCards(); if (focused) [...root.querySelectorAll('.pat-seg [data-bc-pattern]')].find(b => b.dataset.bcPattern === currentPattern)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcRow) { const focused = el === document.activeElement; selected = el.dataset.bcRow; renderCards(); if (focused) [...root.querySelectorAll('[data-bc-row]')].find(b => b.dataset.bcRow === selected)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcPick) { pickCase(el.dataset.bcPick); return; }
@@ -640,7 +679,7 @@
       if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); }
     });
     function syncWritable() {
-      for (const [selector, fn] of [['[data-dehydration-confirm],[data-dehydration-lock]', onConfirmDecision], ['[data-dehydration-recommend],[data-dehydration-request-lock]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify], ['[data-propose-categories]', onProposeCategories], ['[data-category-induct]', onInductCategory], ['[data-category-ask],[data-category-lock]', onConfirmCategory], ['[data-category-reject]', onRejectCategory], ['[data-category-approve],[data-category-review-lock],[data-category-reinduct]', onReviewCategory]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-category-stale') || b.hasAttribute('data-category-ask') && !categorySelection(pendingCategoryProposals().find(p => p.hash === b.closest('[data-category-card]').dataset.categoryCard)).members.length || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
+      for (const [selector, fn] of [['[data-control-confirm],[data-control-lock]', onConfirmControl], ['[data-dehydration-confirm],[data-dehydration-lock]', onConfirmDecision], ['[data-dehydration-recommend],[data-dehydration-request-lock]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify], ['[data-propose-categories]', onProposeCategories], ['[data-category-induct]', onInductCategory], ['[data-category-ask],[data-category-lock]', onConfirmCategory], ['[data-category-reject]', onRejectCategory], ['[data-category-approve],[data-category-review-lock],[data-category-reinduct]', onReviewCategory]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-category-stale') || b.hasAttribute('data-category-ask') && !categorySelection(pendingCategoryProposals().find(p => p.hash === b.closest('[data-category-card]').dataset.categoryCard)).members.length || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
       root.querySelectorAll('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id],[data-pattern-name],[data-pattern-scope]').forEach(el => { el.disabled = !writable || typeof onConfirmPatternLabel !== 'function' || el.matches('[data-pattern-pending-mode][value="join"]') && !pendingOptions().length; });
       root.querySelectorAll('[data-dehydration-kind],[data-dehydration-cut]').forEach(el => { el.disabled = !writable || typeof onConfirmDecision !== 'function' || el.hasAttribute('data-dehydration-cut') && el.closest('[data-dehydration]').querySelector('[data-dehydration-kind]').value !== 'single'; });
       root.querySelectorAll('[data-dehydration-cancel]').forEach(el => { el.disabled = !writable; });
@@ -649,8 +688,8 @@
       root.querySelectorAll('[data-category-field]').forEach(el => { el.disabled = !writable || typeof onReviewCategory !== 'function'; });
       root.querySelectorAll('[data-category-cancel],[data-category-review-cancel]').forEach(el => { el.disabled = !writable; });
     }
-    return { setWritable(value) { writable = !!value; syncWritable(); }, render(data) {
-      D = data; splitConsent = linkConsent = null; cutForms.clear(); cutConsents.clear(); labelForms.clear(); labelConsents.clear(); labelErrors.clear(); categoryForms.clear(); categoryConsents.clear(); categoryErrors.clear(); draftForms.clear(); draftConsents.clear(); draftErrors.clear(); detailSignature = null;
+    return { setWritable(value) { writable = !!value; if (!writable && controlConsents.size) { controlConsents.clear(); const c = D.cases.find(c => c.id === selected); if (c) refreshControlPanel(c); } syncWritable(); }, render(data) {
+      D = data; splitConsent = linkConsent = null; controlConsents.clear(); cutForms.clear(); cutConsents.clear(); labelForms.clear(); labelConsents.clear(); labelErrors.clear(); categoryForms.clear(); categoryConsents.clear(); categoryErrors.clear(); draftForms.clear(); draftConsents.clear(); draftErrors.clear(); detailSignature = null;
       const selectedCase = D.cases.find(c => c.id === selected);
       if (currentPattern === 'pending' && !D.cases.some(c => patternKey(c) === 'pending') && selectedCase && patternLabel(selectedCase)?.confirmed) currentPattern = patternKey(selectedCase);
       const linked = D.pendingPatternLinks?.find(l => l.pendingPatternId === currentPattern); if (linked) currentPattern = linked.entryId;

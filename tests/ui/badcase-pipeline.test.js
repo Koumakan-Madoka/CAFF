@@ -26,7 +26,7 @@ test('steps 6–9 and funnels use the actual pipeline projection; frozen asserti
   h.data.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), decision: { level: 'run', kind: 'single', cutStep: 1 }, recommendation: {}, request: { state: { steps: [] } } }];
   h.panel.render(h.data);
   const card = h.root.querySelector('[data-case-id="c1"]');
-  assert.deepEqual([...card.querySelector('.stepper').children].slice(5).map(li => li.className), ['done', 'done', 'done', 'done']);
+  assert.deepEqual([...card.querySelector('.stepper').children].slice(5).map(li => li.className), ['done', 'done', 'pending', 'done']); // Formal history is not independent precheck evidence.
   assert.match(card.textContent, /已冻结 v3.*deepseek\/deepseek-v4-flash/); assert.match(card.textContent, /原版.*0.*10.*已复现/s);
   assert.equal(card.querySelector('[data-assertion-slot] script'), null); assert.match(card.querySelector('[data-assertion-slot]').textContent, /<script>plain conclusion<\/script>/);
   assert.equal(card.querySelector('[data-assertion-slot] a').getAttribute('href'), '#case-1');
@@ -65,7 +65,7 @@ test('unscored run output says awaiting scoring only; freezing or loading never 
   const row = { caseId: 'c1', level: 'run', assertion: { status: 'frozen', version: 4, questions: [{ id: 'q1', question: 'The reply is plain.', evidence: 'reply' }] }, replay: { status: 'supported', cutStep: 1 }, original: { valid: 0, outputs: 1, unscored: 1, invalid: 0, errors: 0, reproduced: false }, inLibrary: false };
   h.data.pipelineStates = [row]; h.panel.render(h.data);
   const card = h.root.querySelector('[data-case-id="c1"]');
-  assert.match(card.querySelector('.next-line').textContent, /待判分/); assert.doesNotMatch(card.textContent, /待复现|已复现问题/);
+  assert.match(card.querySelector('.next-line').textContent, /尚无.*原版预检/); assert.doesNotMatch(card.textContent, /待复现|已复现问题/);
   assert.match(card.querySelector('[data-run-details] summary').textContent, /待判分/);
   assert.notEqual(card.querySelector('.stepper').children[7].className, 'done');
   assert.equal(card.querySelector('.stepper').children[8].className, 'pending');
@@ -105,7 +105,7 @@ test('run panel counts code-only pass/fail as valid without changing invalid/err
   const h = codeOnlyRunPage(t), panel = h.root.querySelector('[data-run-panel]');
   assert.match(panel.textContent, new RegExp(`有效输出 ${h.validOutputs} · 无效 1.*请求失败 1.*结果未知 1`));
   assert.match(panel.textContent, /有效输出含待判分与代码已判通过／失败；待判分不表示通过/);
-  assert.match(panel.textContent, /正式批次判分见「原版复现」，不在本页重新判分/);
+  assert.match(panel.textContent, /历史单次回放不作预检准入.*独立原版预检/);
   assert.doesNotMatch(panel.textContent, /单次原始回放不表示判分通过/);
   assert.equal(panel.querySelectorAll('[data-run-details]').length, 6);
   assert.equal(h.calls.length, 0);
@@ -719,7 +719,7 @@ test('next actor asks the user to freeze missing/incompatible assertions, not a 
   row.assertion.status = 'frozen'; row.inLibrary = true; h.data.casePatterns = [{ caseId: 'c1', confirmed: false, options: [], labelHash: 'a'.repeat(64) }]; h.panel.render(h.data);
   assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you'); assert.match(h.root.querySelector('.next-line').textContent, /确认模式标签/);
   row.inLibrary = false; row.assertion.status = 'missing'; row.original.outputs = row.original.unscored = 0; h.data.casePatterns = []; h.panel.render(h.data);
-  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'system'); assert.match(h.root.querySelector('.next-line').textContent, /原版.*有效输出|受信操作方/);
+  assert.equal(h.root.querySelector('[data-case-id="c1"]').dataset.actor, 'you'); assert.match(h.root.querySelector('.next-line').textContent, /没有冻结.*断言/);
 });
 test('selection rerenders retain keyboard focus and mode/filter radios support arrow navigation', t => {
   const h = setup(t), button = h.root.querySelector('[data-bc-row="c2"]'); button.focus(); button.click();
@@ -822,7 +822,7 @@ test('scene report counts use only current cut and latest frozen version, disclo
   assert.match(panel.textContent, /统计的是 v3/); assert.match(panel.textContent, /通过 1.*失败 1.*无效 1.*错误 1.*未知 1/s);
   assert.match(panel.textContent, /参数无法解析.*1/); assert.match(panel.textContent, /不作采纳依据/);
   assert.match(panel.textContent, /trace.*Trace action is correct.*未判到.*files.*The file has the result.*未判到/s);
-  assert.match(panel.textContent, /工具调用检查只用于切点上的 report，不用于 trace 评测/);
+  assert.match(panel.textContent, /工具调用检查同时用于 trace 评测和切点报告/);
   assert.equal(panel.querySelectorAll('[data-run-details]').length, 5);
   assert.equal(h.root.querySelector('[data-run-panel],[data-run-totals]'), null); assert.doesNotMatch(h.card().textContent, /原版无有效输出/);
   assert.match(h.root.querySelector('[data-lane="trace"]').textContent, /GPT 且有封存现场/);
@@ -833,9 +833,10 @@ test('scene report counts use only current cut and latest frozen version, disclo
   assert.match(h.root.querySelector('[data-run-report]').textContent, /统计的是 v4.*通过 0.*失败 0/s);
   assert.equal(h.calls.length, 0);
 });
-test('trace tool-only incompatibility explains trace questions are missing, not that tool checks must use reply evidence', t => {
-  const h = sceneRunPage(t, { questions: [] }); h.data.pipelineStates[0].assertion.status = 'incompatible'; h.panel.render(h.data);
-  assert.match(h.card().querySelector('[data-assertion-slot]').textContent, /trace 级.*至少.*问题/);
+test('trace tool-only version is usable without a judge and explains structured parameter evidence', t => {
+  const h = sceneRunPage(t, { questions: [] }); h.panel.render(h.data);
+  assert.match(h.card().querySelector('[data-assertion-slot]').textContent, /无需 AI 裁判.*工具调用检查已配置/s);
+  assert.match(h.card().querySelector('[data-assertion-slot]').textContent, /结构化调用记录.*不解析 bash/);
   assert.doesNotMatch(h.card().querySelector('[data-assertion-slot]').textContent, /run 级只能以回复为依据/);
 });
 test('actual store-frozen scene decision and rubric render without invented reportOnly decision fields', t => {

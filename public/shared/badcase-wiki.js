@@ -41,6 +41,7 @@
       onRequestRecommendation: ({ caseId, ...body }) => { void mutate('/api/wikiskill/cases/' + encodeURIComponent(caseId) + '/dehydration/recommend', body, '单次推荐输出已保存；请核对后确认，解析失败不会自动重试。'); },
       onConfirmDecision: body => { void mutate('/api/wikiskill/dehydration-confirm', body, '判断与切点已冻结；未调用模型、改分组或修改冻结轨迹包。'); },
       onConfirmPatternLabel: body => { void mutate('/api/wikiskill/pattern-label-confirm', body, '模式标签已确认；未改变组别或归纳成员。'); },
+      onConfirmControl: body => { void mutate('/api/wikiskill/control-confirm', body, '门槛对照已冻结；只用于其他模式候选的防误伤检查，未启动模型或评测。'); },
       onConfirmInitialSplit: body => { void mutate('/api/wikiskill/initial-split-confirm', body, '此模式的新用例分组已冻结；已有组别不变，未启动评测。'); },
       onLinkPendingPattern: body => { void mutate('/api/wikiskill/pending-pattern-link', body, '关联已锁定；门槛和测试用例按关联模式解析，已有组别不变。'); },
       onPreclassify: () => { if (preclassificationPending().length) void mutate('/api/wikiskill/induct', {}, '预分类及类别提议已保存；请在 Badcase 页核对后确认。'); },
@@ -323,12 +324,12 @@
       if (!t) return '未配置工具调用检查。';
       const error = toolError(t); if (error) return error;
       const rules = t.rules.map(r => `${r.parameter} ${r.kind === 'max-chars' ? `去首尾空白后不超过 ${r.max} 字符（UTF-16）` : `${r.kind === 'allowed-values' ? '只能取' : '不得取'} ${r.values.map(v => JSON.stringify(v)).join('、')}`}`).join('；');
-      return `${t.mode === 'on-call' ? '调用时参数要对' : '不该这样调用'}：${t.target.name}，${rules}。${t.mode === 'on-call' ? '未调用目标工具时此项没判到；多次调用必须每次合规。' : '有效输出中调用目标工具且违规则失败，否则通过。'}目标参数无法解析时无效；只解析，不执行工具。`;
+      return `${t.mode === 'on-call' ? '调用时参数要对' : '不该这样调用'}：${t.target.name}，${rules}。${t.mode === 'on-call' ? '未调用目标工具时此项没判到；多次调用必须每次合规。' : '有效输出中调用目标工具且违规则失败，否则通过。'}trace 从回调记录／原生工具结构化参数判定，不解析 bash、不用 AI 判断参数；run 和切点报告只解析输出、不执行工具。看不到或不能核验参数时为无效。`;
     }
     function reportScope(c, questions) {
       if (!c.sealedCheckpointId) return '';
       const skipped = questions.filter(q => q.evidence !== 'reply');
-      return `<div class="hint" data-report-skipped><p>工具调用检查只用于切点上的 report，不用于 trace 评测；用例仍为 trace 级，组别不变。</p>${!questions.some(q => q.evidence === 'reply') ? '<p>本版本没有回复依据的问题。</p>' : ''}${skipped.length ? `<p>report 不判以下问题（没判到，不计通过或失败）：</p><ul>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)}（${esc(q.evidence)}）</li>`).join('')}</ul>` : ''}</div>`;
+      return `<div class="hint" data-report-skipped><p>工具调用检查同时用于 trace 评测和切点报告；只配工具检查的冻结版本也可用于 trace，无需 AI 裁判。用例仍为 trace 级，组别不变。</p>${!questions.some(q => q.evidence === 'reply') ? '<p>本版本没有回复依据的问题。</p>' : ''}${skipped.length ? `<p>report 不判以下问题（没判到，不计通过或失败）：</p><ul>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)}（${esc(q.evidence)}）</li>`).join('')}</ul>` : ''}</div>`;
     }
     function rubricVersion(r) {
       return `<div class="rubric-version"><p><b>v${esc(r.version)} · ${r.status === 'frozen' ? '已冻结' : '未确认草稿'}</b> · ${esc(r.questions.length ? r.scoringModel?.model || '尚未选打分模型' : '无需 AI 裁判')}</p><div class="rubric-checks"><section><h4>回复检查 / AI 断言</h4>${r.questions.length ? `<ol>${r.questions.map(q => `<li>${esc(q.question)} <span class="hint">依据：${esc({ reply: '公开回复', trace: '轨迹', files: '文件' }[q.evidence])}</span></li>`).join('')}</ol>` : '<p class="hint">本版本没有回复依据的问题，也没有其他 AI 断言。</p>'}</section><section><h4>工具调用检查 · 代码判断</h4><p>${esc(toolPreview(r.toolCheck))}</p></section></div><p class="mono">hash ${esc(r.hash)}</p>${r.status === 'frozen' ? `<p class="hint">${esc(fmt(r.confirmedAt))} · ${esc(r.confirmationRecord)}</p>` : ''}</div>`;
