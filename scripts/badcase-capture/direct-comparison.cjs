@@ -264,10 +264,10 @@ async function runComparison(config, options = {}) {
   emit({ event: 'plan', ...plan.summary, runtimeHash: manifests.original.runtimeHash });
   const runs = []; let stopped = false, modelCallsKnown = 0, callsUnavailable = false;
   const alternating = fixed.executionPolicy === 'alternating-valid-v1';
-  const validCount = v => runs.filter(r=>r.variant===v && r.status!=='error').length;
+  const validCount = v => runs.filter(r=>r.variant===v && r.status!=='error' && r.status!=='invalid').length;
   // Judge retries use the exact saved reply. Once exhausted, that slot is an
   // error; it cannot buy a different (possibly more favorable) worker answer.
-  const slotCount = v => runs.filter(r=>r.variant===v && (r.status!=='error' || isWikiJudgeTechnicalError(r.assessment))).length;
+  const slotCount = v => runs.filter(r=>r.variant===v && (r.status!=='error' && r.status!=='invalid' || isWikiJudgeTechnicalError(r.assessment))).length;
   const legacySlots = variants.flatMap(variant=>Array.from({length:fixed.repeats},(_,i)=>({variant,iteration:i+1})));
   let cursor=0, nextVariant=0, fatal=false;
   while (!stopped) {
@@ -418,6 +418,12 @@ async function runComparison(config, options = {}) {
         if (transport.state().diagnostic) row.environmentDiagnostic = transport.state().diagnostic;
         stopped = !alternating || !(recoverableProxy || recoverableGateway) || fatal; fatal = stopped;
       }
+      // Trace tool checks add non-scoring invalid attempts. Share the existing
+      // five replacements with environment errors, never buy extra valid slots.
+      if (alternating && fixed.scoring?.rubric.toolCheck && [...runs, row]
+        .filter(r => r.status === 'invalid' || r.status === 'error' && !isWikiJudgeTechnicalError(r.assessment)).length >= 5) {
+        stopped = true; row.stopReason = 'replacements_exhausted';
+      }
       if (native && alternating && row.status === 'error' && !isWikiJudgeTechnicalError(row.assessment)
         && runs.filter(r => r.status === 'error' && !isWikiJudgeTechnicalError(r.assessment)).length >= 5) {
         stopped = true; fatal = true; row.stopReason = 'environment_replacements_exhausted';
@@ -429,12 +435,13 @@ async function runComparison(config, options = {}) {
     const rows = runs.filter(r => r.variant === v);
     return [v, { planned: fixed.repeats, attempted: rows.length, passed: rows.filter(r => r.status === 'pass').length,
       failed: rows.filter(r => r.status === 'fail').length, errors: rows.filter(r => r.status === 'error').length,
-      notRun: fixed.repeats - (alternating ? rows.filter(r=>r.status!=='error').length : rows.length) }];
+      ...(fixed.scoring?.rubric.toolCheck ? { invalid: rows.filter(r => r.status === 'invalid').length } : {}),
+      notRun: fixed.repeats - (alternating ? rows.filter(r=>r.status!=='error' && r.status!=='invalid').length : rows.length) }];
   }));
   const measurements = { tokenUsage: tokenUsage(runs.flatMap(r => r.modelCalls), { callsUnavailable }),
     totalExecutorDurationMs: runs.reduce((sum, r) => sum + r.durationMs, 0),
     ...(native ? { hostRequestAttempts: transport.state().requests, remainingQuota: null, quotaBasis: 'reported-tokens-only' } : {}) };
-  const result = { ...plan.summary, supported: true, measurements, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped && !runs.some(r=>isWikiJudgeTechnicalError(r.assessment)), runs, totals, modelCallsKnown, callsUnavailable,
+  const result = { ...plan.summary, supported: true, measurements, completed: alternating ? variants.every(v=>validCount(v)===fixed.repeats) : !stopped && !runs.some(r=>r.status==='invalid' || isWikiJudgeTechnicalError(r.assessment)), runs, totals, modelCallsKnown, callsUnavailable,
     ...(alternating ? {fatal} : {}) };
   emit({ event: 'summary', completed: result.completed, totals, modelCallsKnown, callsUnavailable, measurements });
   return result;
@@ -443,8 +450,8 @@ async function runComparison(config, options = {}) {
 function formatComparison(result) {
   if (!result.supported) return '不可回放：' + (/^replay_[a-z_]+$/.test(result.reason || '') ? result.reason : 'replay_materials_invalid') + '。\n';
   const lines = [...(['sealed-original-replay-v1', 'sealed-original-replay-v2'].includes(result.kind) ? ['原版单边回放：没有候选，不产生采纳结论。'] : []), '模型：' + result.model,
-    result.scoring ? '评分：硬断言＋AI细则裁判；字面指标只作参考。' : '评分：字面规则（旧版）。'];
-  if (result.scoring) lines.push('裁判：' + result.scoring.binding.model + ' / ' + result.scoring.binding.backend + '；每条细则3次取多数。',
+    result.scoring ? result.scoring.binding === null ? '评分：硬断言＋代码工具检查；不调用AI裁判。' : '评分：硬断言＋AI细则裁判；字面指标只作参考。' : '评分：字面规则（旧版）。'];
+  if (result.scoring) lines.push(result.scoring.binding === null ? '裁判：未调用；仅代码工具检查。' : '裁判：' + result.scoring.binding.model + ' / ' + result.scoring.binding.backend + '；每条细则3次取多数。',
     '细则：v' + result.scoring.rubricVersion + ' / ' + result.scoring.rubricHash + '；判分配置：' + result.scoring.configHash + '。');
   if (result.runs?.some(r => r.goalState === 'approximate-minimal-v1')) lines.push('Goal 状态近似：独立最小种子，不还原历史 Goal；仅 Goal 工具返回可见，不写入冻结输入。');
   if (result.dockerBackend) lines.push('Docker：Windows宿主 → WSL(' + result.dockerBackend.distribution + ')；凭据和供应方连接仅在Windows，材料经stdin，容器断网。');

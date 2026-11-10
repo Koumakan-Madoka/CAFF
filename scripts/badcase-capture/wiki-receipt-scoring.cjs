@@ -6,14 +6,15 @@ const { validateWikiRubric, wikiExactKeys, wikiRubricText, wikiValueHash } = req
 const { scoreLiteralFiles, parseLiteralEvidence } = require('./file-literal-rules.cjs');
 const { scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const { evaluationGoalMarker } = require('../../build/server/domain/runtime/badcase-capture/evaluation-goal-evidence');
+const { checkWikiTraceTools } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace-tool-checks');
+const { scoreWikiTraceRun } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace-scoring');
 const fail = code => Object.assign(Error(code), { code });
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 function validateWikiScoring(value, { runChecks = false } = {}) {
   wikiExactKeys(value, ['kind', 'rubric', 'binding', 'task', 'expected']);
   if (value.kind !== 'wiki-score-v2') throw fail('wiki_scoring_config_required');
   validateWikiRubric(value.rubric, true);
-  if (value.rubric.toolCheck && !runChecks && !value.rubric.questions.length) throw fail('wiki_tool_check_run_only');
-  if (runChecks && value.rubric.toolCheck && !value.rubric.questions.length) {
+  if (value.rubric.toolCheck && !value.rubric.questions.length) {
     if (value.binding !== null) throw fail('wiki_scoring_config_required');
   } else validateWikiJudgeBinding(value.binding, value.rubric);
   wikiRubricText(value.task, 32768); wikiRubricText(value.expected, 8192);
@@ -25,7 +26,7 @@ function wikiScoringSummary(value, options) {
     rubricHash: value.rubric.hash, binding: value.binding, inputHash: wikiValueHash({ task: value.task, expected: value.expected }) };
 }
 function assertWikiScoringJudge(value, judge, { runChecks = false } = {}) {
-  if (runChecks && value.rubric.toolCheck && !value.rubric.questions.length && value.binding === null) return;
+  if (value.rubric.toolCheck && !value.rubric.questions.length && value.binding === null) return;
   if (!judge || typeof judge.evaluate !== 'function') throw fail('wiki_judge_adapter_required');
   try { if (wikiValueHash(value.binding) === wikiValueHash(bindWikiJudge(judge.configuration, value.rubric))) return; }
   catch { /* Invalid runtime adapter config is drift, not a provider retry. */ }
@@ -56,8 +57,10 @@ async function scoreWikiReceipt({ receipt, rules, scoring, beforeHash, environme
   if (rules.kind === 'completion-public-reply-v1') {
     if (Object.keys(rules).join(',') !== 'kind') throw fail('evaluation_rules_invalid');
   } else rules = legacy.validateRules(rules);
-  if (!judge || typeof judge.evaluate !== 'function') throw fail('wiki_judge_adapter_required');
-  if (!scoring || !scoring.rubric || !scoring.binding) throw fail('wiki_scoring_config_required');
+  const toolOnly = !!scoring?.rubric?.toolCheck && !scoring.rubric.questions.length;
+  if (!toolOnly && (!judge || typeof judge.evaluate !== 'function')) throw fail('wiki_judge_adapter_required');
+  if (!scoring?.rubric || !scoring.binding && !(toolOnly && scoring.binding === null)) throw fail('wiki_scoring_config_required');
+  const tool = scoring.rubric.toolCheck ? checkWikiTraceTools(receipt, scoring.rubric.toolCheck) : undefined;
   const hardAssertions = [], referenceMetrics = rules.kind === 'completion-public-reply-v1' ? {} : { legacyRuleKind: rules.kind };
   let referenceDetails = null, files;
   if (rules.kind === 'file-literals-v1') {
@@ -86,7 +89,8 @@ async function scoreWikiReceipt({ receipt, rules, scoring, beforeHash, environme
     && receipt.modelCalls.every(c => typeof c?.success === 'boolean') ? receipt.success && receipt.modelCalls.every(c => c.success) : undefined;
   let trace;
   try { trace = traceSummary(receipt, files); } catch { /* Missing evidence is never fabricated. */ }
-  const result = await scoreWikiRun({ rubric: scoring.rubric, binding: scoring.binding, hardAssertions, referenceMetrics,
+  const result = await (tool ? scoreWikiTraceRun : scoreWikiRun)({ rubric: scoring.rubric, binding: scoring.binding, hardAssertions, referenceMetrics,
+    ...(tool ? { tool } : {}),
     run: { completed, replySource: receipt?.replySource, publicReply: receipt?.finalText, task: scoring.task, expected: scoring.expected,
       environmentError: environmentError === true, traceSummary: trace,
       ...(files ? { files: files.filter(f => f.state === 'file').map(f => ({ path: f.path, content: f.text })) } : {}) },

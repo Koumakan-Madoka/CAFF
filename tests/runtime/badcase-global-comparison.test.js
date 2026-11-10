@@ -102,6 +102,32 @@ test('v2 alternating kernel never substitutes judge-error replies and still exec
     assert.equal(JSON.stringify(r).includes('PRIVATE-JUDGE-DETAIL'), false);
   }
 });
+test('trace tool-check alternating slots exclude invalid and share five replacements with environment errors', async t => {
+  for (const capped of [false, true]) {
+    const h = setup(t, { publicReply: true }), execute = h.options.execute;
+    const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+    const rubric = { ...createWikiRubric({ caseId: 'synthetic', version: 1, model: 'deepseek/deepseek-v4-flash', actual: 'Unclear', expected: 'Clear', questions: [], scoringModel: null,
+      toolCheck: { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] } }),
+      status: 'frozen', confirmedAt: '2026-11-10T00:00:00.000Z', confirmationRecord: 'Synthetic tool-only approval' };
+    const scoring = { kind: 'wiki-score-v2', rubric, binding: null, task: 'Report result.', expected: 'Clear' };
+    h.options.execute = async (...args) => {
+      const task = await execute(...args), executionId = crypto.randomUUID();
+      task.receipt.goalEvidence = { kind: 'evaluation-goal-evidence-v1', executionId, goalState: 'unseeded', seed: null, seedHash: sha('null'),
+        calls: capped || h.state.executions === 1 ? [] : [{ executionId, sequence: 1, endpoint: 'goal/suggest', parameters: { action: 'pause', reason: 'valid' }, statusCode: 200, errorCode: null, response: { ok: true } }] };
+      if (!capped && h.state.executions === 2) { task.receipt.success = false; task.receipt.modelCalls[0].success = false; task.receipt.modelCalls[0].httpStatus = 503; }
+      return task;
+    };
+    const r = await runComparison({ ...h.single, repeats: 10, executionPolicy: 'alternating-valid-v1', scoring }, h.options);
+    assert.equal(r.completed, !capped); assert.equal(h.state.executions, capped ? 5 : 22);
+    assert.equal(r.totals.original.invalid + r.totals.candidate.invalid, capped ? 5 : 1);
+    assert.equal(r.totals.original.errors + r.totals.candidate.errors, capped ? 0 : 1);
+    assert.equal(r.totals.original.notRun + r.totals.candidate.notRun, capped ? 20 : 0);
+    if (capped) assert.equal(r.runs.at(-1).stopReason, 'replacements_exhausted');
+    const totals = require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-totals').wikiComparisonTotals([{ rubric, stage: 'gate', runs: r.runs }], 10);
+    assert.equal(totals.original.invalid + totals.candidate.invalid, capped ? 5 : 1);
+    assert.equal(totals.original.scored + totals.candidate.scored, capped ? 0 : 20);
+  }
+});
 test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
   const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
   // Migrations honor the isolated configured data directory. Do not assume

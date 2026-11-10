@@ -19,7 +19,7 @@ const expect = (r, status, reason = null) => assert.deepEqual(r, { status, reaso
 
 test('callback parameters, not bash strings or HTTP success, decide all observed calls', () => {
   expect(result(receipt({ parameters: { reason: 'x'.repeat(1000) } })), 'pass');
-  const rejected = { parameters: { reason: 'x'.repeat(1001) }, statusCode: 400, response: { error: '理由不能超过 1000 字' } };
+  const rejected = { parameters: { reason: 'x'.repeat(1001) }, statusCode: 400, response: { error: 'Goal proposal reason must be 1000 characters or fewer' } };
   expect(result(receipt(rejected)), 'fail', 'tool_rule_failed');
   expect(result(receipt({ parameters: { reason: 'valid' } }, rejected)), 'fail', 'tool_rule_failed');
   expect(result(receipt(rejected, { parameters: { reason: 'valid' } })), 'fail', 'tool_rule_failed');

@@ -22,20 +22,33 @@ function fixture(evidence = 'reply') {
   return { rubric, scoring, receipt, judge, seen, score, publicRules };
 }
 function file(content = 'active') { const bytes = Buffer.from(content); return { path: 'status.txt', state: 'file', base64: bytes.toString('base64'), size: bytes.length, sha256: hash(content) }; }
+function withTool(h, only = false, tool = { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] }) {
+  const { createWikiRubric } = require(base + 'wiki-rubric'), { bindWikiJudge } = require(base + 'wiki-scoring-v2');
+  h.scoring.rubric = { ...createWikiRubric({ ...h.rubric, actual: 'Unclear', expected: 'Clear result', toolCheck: tool,
+    ...(only ? { questions: [], scoringModel: null } : {}) }), status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: h.rubric.confirmationRecord };
+  h.scoring.binding = only ? null : bindWikiJudge(h.judge.configuration, h.scoring.rubric); h.scoring.kind = 'wiki-score-v2';
+  return h;
+}
+function ledger(...reasons) {
+  const executionId = crypto.randomUUID(), seed = null;
+  return { kind: 'evaluation-goal-evidence-v1', executionId, goalState: 'unseeded', seed, seedHash: hash(JSON.stringify(seed)),
+    calls: reasons.map((reason, i) => ({ executionId, sequence: i + 1, endpoint: 'goal/suggest', parameters: { action: 'pause', reason },
+      statusCode: reason.length > 1000 ? 400 : 200, errorCode: null, response: reason.length > 1000 ? { error: 'Goal proposal reason must be 1000 characters or fewer' } : { ok: true } })) };
+}
 const fileRules = { kind: 'file-literals-v1', files: [{ path: 'status.txt', contains: ['active'], notContains: ['confirmationRequired'] }] };
 const readRules = { kind: 'read-only-files-v1', readPaths: ['a.txt'], absentPaths: ['absent.txt'], requiredReplyFragments: ['a legacy lexical fragment'] };
-test('trace scoring only sees questions and is identical with or without a co-frozen tool check, even if the tool rule would fail', async () => {
+test('trace tool rules apply before the AI judge and a violation is decisive with zero judge calls', async () => {
   const h = fixture('trace'), before = JSON.stringify(h.rubric), { createWikiRubric } = require(base + 'wiki-rubric'), { bindWikiJudge } = require(base + 'wiki-scoring-v2');
-  const ordinary = await h.score(), seen = structuredClone(h.seen); h.seen.length = 0;
+  const ordinary = await h.score(); assert.equal(ordinary.status, 'pass'); h.seen.length = 0;
   const rubric = { ...createWikiRubric({ ...h.rubric, actual: 'Unclear', expected: 'Clear result',
     toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'allowed-values', values: ['never-matches'] }] } }),
     status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: h.rubric.confirmationRecord };
   const scoring = { ...h.scoring, rubric, binding: bindWikiJudge(h.judge.configuration, rubric), kind: 'wiki-score-v2' };
   assert.equal(api().validateWikiScoring(scoring).rubric.hash, rubric.hash);
   assert.equal(api().wikiScoringSummary(scoring).rubricHash, rubric.hash);
-  const withTool = await h.score(h.publicRules, { scoring }); assert.equal(withTool.status, 'pass'); assert.deepEqual(h.seen, seen);
-  const semantic = ({ rubricHash, binding, ...r }) => ({ ...r, binding: { ...binding, rubricHash: 'same-version-content' } });
-  assert.deepEqual(semantic(withTool), semantic(ordinary)); assert.equal(JSON.stringify(h.rubric), before);
+  const withTool = await h.score(h.publicRules, { scoring }); assert.equal(withTool.status, 'fail'); assert.equal(withTool.reason, 'tool_rule_failed'); assert.equal(h.seen.length, 0);
+  assert.deepEqual(withTool.tool, { status: 'fail', reason: 'tool_rule_failed' });
+  assert.equal(withTool.votes.length, 0); assert.equal(JSON.stringify(h.rubric), before);
 });
 test('executor receipt bridge treats public literal failures as reference metrics, not pass/fail', async () => {
   const h = fixture(), before = structuredClone(h.publicRules), r = await h.score();
@@ -94,4 +107,61 @@ test('no trace/evidence is invented and environment/model completion keep their 
   assert.equal((await h.score()).status, 'error'); assert.equal(h.seen.length, 0);
   const other = fixture(); other.receipt.success = false; assert.equal((await other.score()).status, 'fail');
   assert.equal((await other.score(other.publicRules, { environmentError: true })).status, 'error');
+});
+
+// Trace D3: the receipt contains callback observations, not parsed bash arguments.
+test('tool-only trace config/summary validates with null binding and never needs a judge adapter', async () => {
+  const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger('x'.repeat(862));
+  assert.equal(api().validateWikiScoring(h.scoring).binding, null);
+  assert.equal(api().wikiScoringSummary(h.scoring).binding, null);
+  assert.doesNotThrow(() => api().assertWikiScoringJudge(h.scoring));
+  const r = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring });
+  assert.equal(r.status, 'pass'); assert.equal(r.binding, null); assert.equal(r.rubricHash, h.scoring.rubric.hash);
+  assert.deepEqual(r.tool, { status: 'pass', reason: null }); assert.deepEqual(r.votes, []); assert.deepEqual(r.judgments, []);
+  assert.deepEqual(r.hardAssertions.map(c => c.status), ['pass', 'pass']); assert.equal(h.seen.length, 0);
+});
+test('recorded parameters decide trace pass/fail for pipeline, heredoc and inline-node shapes, including every retry', async () => {
+  const shapes = require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items;
+  for (const length of [1000, 1001, 862]) for (const shape of shapes) {
+    const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger('x'.repeat(length));
+    h.receipt.toolCalls = shape.toolCalls.map(c => ({ name: c.name, args: c.arguments, isError: length > 1000 }));
+    const r = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring });
+    assert.equal(r.status, length > 1000 ? 'fail' : 'pass'); assert.equal(h.seen.length, 0);
+  }
+  const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger('x'.repeat(1001), 'valid retry');
+  assert.equal((await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring })).status, 'fail');
+});
+test('trace no-check-reached and unavailable/redacted params are invalid, never an AI rescue or a valid denominator', async () => {
+  const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger();
+  let r = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring });
+  assert.equal(r.status, 'invalid'); assert.equal(r.reason, 'no_check_reached');
+  delete h.receipt.goalEvidence;
+  r = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring });
+  assert.equal(r.status, 'invalid'); assert.equal(r.reason, 'tool_evidence_unavailable');
+  const mixed = withTool(fixture()); mixed.receipt.goalEvidence = ledger('redacted');
+  mixed.receipt.goalEvidence.calls[0] = { ...mixed.receipt.goalEvidence.calls[0], parameters: null, redacted: true };
+  r = await mixed.score(); assert.equal(r.status, 'invalid'); assert.equal(mixed.seen.length, 0);
+});
+test('mixed checks retain normal three-vote judging when tools pass or on-call is unreached; judge failures stay errors', async () => {
+  for (const reasons of [[], ['valid']]) {
+    const h = withTool(fixture('trace')); h.receipt.goalEvidence = ledger(...reasons);
+    const r = await h.score(); assert.equal(r.status, 'pass'); assert.equal(h.seen.length, 3);
+    assert(h.seen.every(v => v.questions.length === 2 && v.evidence.traceSummary));
+    assert.equal(JSON.stringify(h.seen).includes('goalEvidence'), false);
+  }
+  const h = withTool(fixture()); h.receipt.goalEvidence = ledger('valid');
+  h.judge.evaluate = async () => { throw Error('synthetic technical failure'); };
+  const r = await h.score(); assert.equal(r.status, 'error'); assert.equal(r.reason, 'judge_backend_failed');
+  assert.equal(require(base + 'wiki-scoring-v2').isWikiJudgeTechnicalError(r), true);
+});
+test('tool checks do not waive trace hard assertions, environment errors, or missing AI evidence', async () => {
+  const h = withTool(fixture(), true); h.receipt.goalEvidence = ledger('valid');
+  h.receipt.replySource = 'internal'; assert.equal((await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring })).reason, 'hard_assertion_failed');
+  h.receipt.replySource = 'public'; h.receipt.success = false;
+  assert.equal((await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring })).status, 'fail');
+  h.receipt.success = true; h.receipt.goalEvidence = ledger('x'.repeat(1001));
+  const r = await api().scoreWikiReceipt({ receipt: h.receipt, scoring: h.scoring, environmentError: true });
+  assert.equal(r.status, 'error'); assert.equal(r.reason, 'environment_failure');
+  const mixed = withTool(fixture('trace')); mixed.receipt.goalEvidence = ledger('valid'); delete mixed.receipt.toolCalls;
+  assert.equal((await mixed.score()).reason, 'judge_evidence_unavailable'); assert.equal(mixed.seen.length, 0);
 });
