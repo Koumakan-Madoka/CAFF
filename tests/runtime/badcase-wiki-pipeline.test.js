@@ -18,7 +18,7 @@ test('pipeline projects frozen assertions, real replay support and one independe
   assert.equal(row.assertion.status, 'frozen'); assert.equal(row.assertion.version, 1); assert.equal(row.assertion.model, 'deepseek/deepseek-v4-flash');
   assert.deepEqual(row.assertion.questions, h.rubric.questions); assert.equal(row.replay.status, 'supported');
   assert.equal(row.original.valid, 3); assert.equal(row.original.pass, 1); assert.equal(row.original.fail, 2); assert.equal(row.original.errors, 1);
-  assert.equal(row.original.reproduced, true); assert.equal(row.original.comparisonId, h.comparison.id); assert.equal(row.inLibrary, true);
+  assert.equal(row.original.reproduced, true); assert.equal(row.original.comparisonId, h.comparison.id); assert.equal(row.inLibrary, false, 'formal scores are historical statistics, not original-precheck admission');
   assert.equal(JSON.stringify(h), before);
 });
 test('scene tool-only and mixed frozen rubrics are compatible with trace and match original counts by the full hash', () => {
@@ -29,7 +29,7 @@ test('scene tool-only and mixed frozen rubrics are compatible with trace and mat
       status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: 'Co-frozen report and trace checks' };
     h.state.rubrics.push(latest); h.comparison.cases[0].rubric = latest;
     const row = project(h); assert.equal(row.level, 'trace'); assert.equal(row.assertion.hash, latest.hash);
-    assert.equal(row.assertion.status, 'frozen'); assert.equal(row.inLibrary, true);
+    assert.equal(row.assertion.status, 'frozen'); assert.equal(row.inLibrary, false, 'compatible assertions still require a separate original precheck');
     assert.equal(row.original.valid, 3);
     assert.equal(row.original.reproduced, true);
   }
@@ -96,7 +96,7 @@ test('trace and run reproduction requires strictly more than half of valid origi
     const before = JSON.stringify(h), row = project(h);
     assert.equal(row.original.valid, pass + fail);
     assert.equal(row.original.reproduced, expected, `${row.level}: pass ${pass}, fail ${fail}`);
-    assert.equal(row.inLibrary, expected, `${row.level}: library eligibility follows reproduction`);
+    assert.equal(row.inLibrary, false, `${row.level}: formal scores cannot replace the new original precheck`);
     assert.equal(JSON.stringify(h), before);
   }
 });
@@ -105,7 +105,7 @@ test('run original raw outputs are unscored, candidate-only/error/reserved recor
   assert.equal(row.original.reproduced, false); assert.equal(row.original.unscored, 1); assert.equal(row.original.invalid, 1); assert.equal(row.original.errors, 1); assert.equal(row.original.valid, 0); assert.equal(row.inLibrary, false);
   for (const rows of [[{ ...h.run, variant: { kind: 'candidate' }, status: 'invalid' }], [{ ...h.run, status: 'error' }], [{ ...h.run, status: 'reserved' }]]) assert.notEqual(project(h, { comparisons: [], runReplays: rows }).stopReason, 'invalid_baseline');
   assert.equal(project(h, { comparisons: [], runReplays: [{ ...h.run, status: 'invalid', baselineStatus: 'no_valid_output' }] }).stopReason, 'invalid_baseline');
-  assert.equal(project(h, { runReplays: [h.run] }).inLibrary, true);
+  assert.equal(project(h, { runReplays: [h.run] }).inLibrary, false, 'raw/formal runs are not independent precheck evidence');
   h.comparison.cases[0].runs = [{ variant: 'original', status: 'error' }];
   const technical = project(h, { runReplays: [h.run] }); assert.equal(technical.original.valid, 0); assert.equal(technical.original.outputs, 1); assert.equal(technical.original.errors, 1);
   h.comparison.cases[0].execution.dehydrationHash = H('e'); assert.equal(project(h, { runReplays: [h.run] }).original.valid, 0);

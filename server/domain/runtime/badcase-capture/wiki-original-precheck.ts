@@ -117,6 +117,22 @@ export function createWikiOriginalPrecheckPlan(input: any): WikiOriginalPrecheck
     policy: policy(input.policy ?? {}, execution.level), reportOnly, ...(Object.hasOwn(input, 'judge') ? { judge: input.judge } : {}) };
   return validateWikiOriginalPrecheckPlan({ ...payload, planHash: wikiValueHash(payload) });
 }
+// Shared immutable-record validation for filesystem reads and pure projections.
+// No current Wiki state or credential lookup: historical bytes stay readable.
+export function validateWikiOriginalPrecheckRecord(reservation: any, result: any) {
+  shape(reservation, ['kind', 'id', 'createdAt', 'plan']);
+  const timestamp = (v: any) => typeof v === 'string' && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v;
+  check(reservation.kind === 'wiki-original-precheck-reservation-v1' && /^precheck-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reservation.id)
+    && timestamp(reservation.createdAt));
+  const plan = validateWikiOriginalPrecheckPlan(reservation.plan);
+  if (result !== null) {
+    shape(result, ['kind', 'id', 'finishedAt', 'planHash', 'status', 'reason', 'runs', 'summary']);
+    check(result.kind === 'wiki-original-precheck-result-v1' && result.id === reservation.id && result.planHash === plan.planHash
+      && timestamp(result.finishedAt) && result.finishedAt >= reservation.createdAt);
+    check(wikiValueHash(result.summary) === wikiValueHash(summarizeWikiOriginalPrecheck(plan, { status: result.status, reason: result.reason, runs: result.runs })));
+  }
+  return structuredClone({ reservation, result });
+}
 export function summarizeWikiOriginalPrecheck(plan: WikiOriginalPrecheckPlan, value: WikiOriginalPrecheckOutcome) {
   validateWikiOriginalPrecheckPlan(plan);
   shape(value, ['status', 'reason', 'runs']);

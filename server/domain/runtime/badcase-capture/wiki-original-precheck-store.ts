@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiValueHash } from './wiki-rubric';
-import { validateWikiOriginalPrecheckPlan, summarizeWikiOriginalPrecheck, type WikiOriginalPrecheckPlan, type WikiOriginalPrecheckOutcome } from './wiki-original-precheck';
+import { validateWikiOriginalPrecheckPlan, validateWikiOriginalPrecheckRecord, summarizeWikiOriginalPrecheck, type WikiOriginalPrecheckPlan, type WikiOriginalPrecheckOutcome } from './wiki-original-precheck';
 const fail = (code = 'wiki_original_precheck_record_invalid') => Object.assign(Error(code), { code });
 function check(v: unknown): asserts v { if (!v) throw fail(); }
 function exact(v: any, keys: string[]) { check(v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).sort().join(',') === keys.sort().join(',')); }
@@ -15,7 +15,6 @@ function identifier(v: any) {
   if (typeof v !== 'string' || !/^precheck-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(v)) throw fail('wiki_original_precheck_invalid');
   return v;
 }
-function timestamp(v: any) { check(typeof v === 'string' && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v); }
 const MAX = 128 * 1024;
 export function createWikiOriginalPrecheckStore(input: any) {
   const scope = resolveWikiStorageOptions(input), root = scope.globalRoot;
@@ -38,16 +37,7 @@ export function createWikiOriginalPrecheckStore(input: any) {
     const reservation = packet(id, 'reservation');
     if (!reservation) throw fail('wiki_original_precheck_not_found');
     try {
-      exact(reservation, ['kind', 'id', 'createdAt', 'plan']); timestamp(reservation.createdAt);
-      check(reservation.kind === 'wiki-original-precheck-reservation-v1');
-      const plan = validateWikiOriginalPrecheckPlan(reservation.plan), result = packet(id, 'result');
-      if (result) {
-        exact(result, ['kind', 'id', 'finishedAt', 'planHash', 'status', 'reason', 'runs', 'summary']); timestamp(result.finishedAt);
-        check(result.kind === 'wiki-original-precheck-result-v1' && result.planHash === plan.planHash && result.finishedAt >= reservation.createdAt);
-        const summary = summarizeWikiOriginalPrecheck(plan, { status: result.status, reason: result.reason, runs: result.runs });
-        check(wikiValueHash(summary) === wikiValueHash(result.summary));
-      }
-      return { reservation: structuredClone(reservation), result: result ? structuredClone(result) : null };
+      return validateWikiOriginalPrecheckRecord(reservation, packet(id, 'result'));
     } catch { throw fail(); }
   }
   function publish(id: string, key: 'reservation' | 'result', value: any) {

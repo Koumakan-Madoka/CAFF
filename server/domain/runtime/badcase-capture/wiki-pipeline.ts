@@ -1,12 +1,13 @@
 // Read-only page projection over already verified Wiki records. No scoring,
-// model calls, regrouping or mutation. A raw reply is not a reproduced failure;
-// only a strict majority of valid original v2 scores failing under the current
-// frozen rubric can prove that. This projects existing results; it starts no checks.
+// model calls, regrouping or mutation. Library reproduction comes ONLY from
+// the latest matching original precheck. Historical formal comparison counts
+// remain separately visible; they are never precheck admission or new samples.
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 import { wikiRubricSourceHash } from './wiki-rubric';
 import { buildDehydrationPrefix } from './wiki-dehydration';
 import { wikiRunHash } from './wiki-run-replay';
+import { projectWikiOriginalPrechecks } from './wiki-original-precheck-projection';
 
 // OFFLINE operator only: trace checks may restore a git snapshot; run checks
 // read/build the frozen prefix. HTTP must use readWikiPipelineInputs/cache only.
@@ -38,14 +39,16 @@ export function inspectWikiPipelineInputs(state: any, readers: any) {
   });
 }
 
-export function projectWikiPipelineStates({ state, comparisons = [], runReplays = [], replayChecks = [] }: any) {
+export function projectWikiPipelineStates({ state, comparisons = [], runReplays = [], replayChecks = [], originalPrechecks = [] }: any) {
+  const prechecks = new Map(projectWikiOriginalPrechecks(state, originalPrechecks, replayChecks).map((r: any) => [r.caseId, r]));
   return state.cases.map((c: any) => {
+    const precheck: any = prechecks.get(c.id);
     const decision = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash)?.decision;
     const source = [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!);
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : decision?.level === 'run' ? 'run' : 'pending';
     const originals = level === 'run' ? runReplays.filter((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
       && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason && !r.reportOnly) : [];
-    const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'pass', 'fail', 'reserved'].includes(r.status));
+    const invalidBaseline = !precheck.current?.summary?.valid && originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'pass', 'fail', 'reserved'].includes(r.status));
     const stopReason = wikiSourceFamily(c) !== 'GPT' ? 'report_only' : source ? 'legacy_source' : level === 'reference' ? 'reference_only' : invalidBaseline ? 'invalid_baseline' : null;
     const versions = (state.rubrics || []).filter((r: any) => r.caseId === c.id).sort((a: any, b: any) => b.version - a.version);
     const frozen = versions.find((r: any) => r.status === 'frozen');
@@ -79,8 +82,8 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
       invalid: (match ? runs : originals).filter((r: any) => r.status === 'invalid').length,
       errors: (match ? runs : originals).filter((r: any) => r.status === 'error').length,
       unknown: match ? 0 : originals.filter((r: any) => r.status === 'reserved').length };
-    return { caseId: c.id, level, stopReason, assertion, replay: replayStatus, original,
+    return { caseId: c.id, level, stopReason, assertion, replay: replayStatus, original, precheck,
       inLibrary: !stopReason && ['train', 'gate', 'test'].includes(c.split) && assertion.status === 'frozen'
-        && replayStatus.status === 'supported' && original.reproduced };
+        && replayStatus.status === 'supported' && precheck.reproduced };
   });
 }
