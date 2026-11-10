@@ -1,11 +1,12 @@
 // Original-only screening is separate from formal gate/test comparisons. Its
 // frozen input identity and policy are deterministic; creating a plan does not
 // restore an archive, invoke a model, or change any Wiki snapshot.
-import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
+import { resolveFrozenWikiRubric, validateWikiScoringModel, wikiValueHash } from './wiki-rubric';
 import { wikiRunHash, WIKI_RUN_MODEL } from './wiki-run-replay';
 import { wikiSourceFamily } from './wiki-evaluation-suite';
 import { wikiGoalCaseNumber } from './wiki-suite';
 import { wikiSceneReportChecks } from './wiki-run-check-scoring';
+import type { WikiEligibleJudge } from './wiki-judge-catalog';
 const fail = (code = 'wiki_original_precheck_invalid') => Object.assign(Error(code), { code });
 function check(value: unknown): asserts value { if (!value) throw fail(); }
 function shape(v: any, required: string[], optional: string[] = []) {
@@ -26,6 +27,9 @@ export interface WikiOriginalPrecheckPlan {
   kind: 'wiki-original-precheck-plan-v1'; caseId: string; variant: 'original'; model: typeof WIKI_RUN_MODEL;
   execution: WikiOriginalPrecheckExecution; split: 'train' | 'gate' | 'test' | null; rubricHash: string; rubricVersion: number; sourceHash: string;
   inputHash: string; policy: WikiOriginalPrecheckPolicy; reportOnly: boolean; planHash: string;
+  // Optional for byte-compatible reads of earlier core records. New trusted
+  // execution always pins a calibrated judge attestation, or explicit null.
+  judge?: WikiEligibleJudge | null;
 }
 // These are references to host-retained, already scored output packets, not an
 // HTTP score submission format. The trusted executor must retain the packet
@@ -47,7 +51,12 @@ function policy(input: any, level: 'run' | 'trace'): WikiOriginalPrecheckPolicy 
   return value;
 }
 export function validateWikiOriginalPrecheckPlan(value: WikiOriginalPrecheckPlan): WikiOriginalPrecheckPlan {
-  shape(value, ['kind', 'caseId', 'variant', 'model', 'execution', 'split', 'rubricHash', 'rubricVersion', 'sourceHash', 'inputHash', 'policy', 'reportOnly', 'planHash']);
+  shape(value, ['kind', 'caseId', 'variant', 'model', 'execution', 'split', 'rubricHash', 'rubricVersion', 'sourceHash', 'inputHash', 'policy', 'reportOnly', 'planHash'], ['judge']);
+  if (value.judge !== undefined && value.judge !== null) {
+    shape(value.judge, ['backend', 'model', 'configurationHash', 'freezeHash', 'promptHash']);
+    validateWikiScoringModel({ backend: value.judge.backend, model: value.judge.model });
+    hash(value.judge.configurationHash); hash(value.judge.freezeHash); hash(value.judge.promptHash);
+  }
   check(value.kind === 'wiki-original-precheck-plan-v1' && value.variant === 'original' && value.model === WIKI_RUN_MODEL
     && typeof value.reportOnly === 'boolean' && (value.split === null || ['train', 'gate', 'test'].includes(value.split)));
   id(value.caseId); hash(value.rubricHash); hash(value.sourceHash); hash(value.inputHash); hash(value.planHash);
@@ -70,7 +79,7 @@ export function validateWikiOriginalPrecheckPlan(value: WikiOriginalPrecheckPlan
   return structuredClone(value);
 }
 export function createWikiOriginalPrecheckPlan(input: any): WikiOriginalPrecheckPlan {
-  shape(input, ['state', 'caseId', 'rubricHash', 'inputHash', 'replayChecks'], ['policy', 'reportOnly']);
+  shape(input, ['state', 'caseId', 'rubricHash', 'inputHash', 'replayChecks'], ['policy', 'reportOnly', 'judge']);
   id(input.caseId); hash(input.inputHash); check(Array.isArray(input.replayChecks));
   check(input.reportOnly === undefined || typeof input.reportOnly === 'boolean');
   const { state, caseId } = input, source = state?.cases?.find((c: any) => c.id === caseId);
@@ -99,9 +108,13 @@ export function createWikiOriginalPrecheckPlan(input: any): WikiOriginalPrecheck
     execution = { level: 'run', traceHash: source.traceBundle.hash, sceneCheckpointId: reportOnly ? source.sealedCheckpointId : null,
       replayId: replay?.id ?? null, checkpointHash: replay?.checkpointHash ?? null, decisionHash, cutStep: decision.cutStep };
   }
+  if (Object.hasOwn(input, 'judge')) {
+    const questions = reportOnly ? wikiSceneReportChecks(rubric).questions : rubric.questions;
+    check(questions.length ? input.judge && input.judge.backend === rubric.scoringModel?.backend && input.judge.model === rubric.scoringModel?.model : input.judge === null);
+  }
   const payload: Omit<WikiOriginalPrecheckPlan, 'planHash'> = { kind: 'wiki-original-precheck-plan-v1', caseId, variant: 'original', model: WIKI_RUN_MODEL,
     execution, split: source.split, rubricHash: rubric.hash, rubricVersion: rubric.version, sourceHash: rubric.sourceHash, inputHash: input.inputHash,
-    policy: policy(input.policy ?? {}, execution.level), reportOnly };
+    policy: policy(input.policy ?? {}, execution.level), reportOnly, ...(Object.hasOwn(input, 'judge') ? { judge: input.judge } : {}) };
   return validateWikiOriginalPrecheckPlan({ ...payload, planHash: wikiValueHash(payload) });
 }
 export function summarizeWikiOriginalPrecheck(plan: WikiOriginalPrecheckPlan, value: WikiOriginalPrecheckOutcome) {

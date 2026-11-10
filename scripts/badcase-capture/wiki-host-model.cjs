@@ -30,7 +30,7 @@ function createWikiMailboxFetch({ exchange } = {}) {
     return new Response(decode(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
   };
 }
-function createWikiHostExchange({ key, expectedBody }, dependencies = {}) {
+function createWikiHostExchange({ key, expectedBody, signal }, dependencies = {}) {
   require('./direct-model.cjs').validKey(key);
   if (!Buffer.isBuffer(expectedBody) || !expectedBody.length || expectedBody.length > LIMITS.maxRequestBytes
     || expectedBody.includes(key) || expectedBody.includes(JSON.stringify(key).slice(1, -1))) throw fail('request_invalid');
@@ -45,7 +45,10 @@ function createWikiHostExchange({ key, expectedBody }, dependencies = {}) {
       if (!Buffer.isBuffer(bytes) || !bytes.equals(expected)) throw fail('request_invalid');
       const controller = new AbortController(); active = controller;
       const timer = setTimeout(() => controller.abort(), 110000); timer.unref?.();
+      const abort = () => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
       try {
+        signal?.throwIfAborted();
         dispatcher = createDispatcher(PROXY);
         const response = await fetch(ENDPOINT, { method: 'POST', redirect: 'error', signal: controller.signal,
           headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key }, body: bytes, dispatcher });
@@ -71,7 +74,7 @@ function createWikiHostExchange({ key, expectedBody }, dependencies = {}) {
       } catch (e) {
         const code = /^wiki_host_[a-z_]+$/.test(e?.code || '') ? e.code : 'wiki_host_proxy_failed';
         throw Object.assign(Error(code), { code });
-      } finally { clearTimeout(timer); active = undefined; }
+      } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); active = undefined; }
     },
     async close() { if (closed) return; closed = true; key = ''; active?.abort(); await dispatcher?.destroy(); },
   };

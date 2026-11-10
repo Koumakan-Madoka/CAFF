@@ -131,6 +131,15 @@ test('immutable records reject modified hashes, recomputed summaries, foreign pl
   const h = fixture(t), store = storage().createWikiOriginalPrecheckStore(h.scope), r = store.reserve(h.plan()), file = path.join(h.scope.globalRoot, 'original-prechecks', r.id + '.json');
   fs.unlinkSync(file); fs.mkdirSync(file); assert.throws(() => store.read(r.id), /wiki_original_precheck_record_invalid/);
 });
+test('judge binding is an optional immutable extension; older plans keep bytes and hashes', t => {
+  const h = fixture(t), old = h.plan(), bytes = JSON.stringify(old);
+  assert.equal(Object.hasOwn(old, 'judge'), false); assert.equal(JSON.stringify(api().validateWikiOriginalPrecheckPlan(old)), bytes);
+  h.input.judge = null; const current = h.plan(); assert.equal(current.judge, null); assert.notEqual(current.planHash, old.planHash);
+  const { judge, planHash, ...legacy } = current; assert.deepEqual({ ...legacy, planHash: require(base + 'wiki-rubric').wikiValueHash(legacy) }, old);
+  assert.equal(JSON.stringify(old), bytes);
+  h.input.judge = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash', configurationHash: H('a'), freezeHash: H('b'), promptHash: H('c') };
+  assert.throws(() => h.plan(), /wiki_original_precheck_invalid/, 'a code-only plan cannot claim a judge');
+});
 test('invalid finish never publishes; scoped storage rejects data inside the source worktree', t => {
   const h = fixture(t), store = storage().createWikiOriginalPrecheckStore(h.scope), r = store.reserve(h.plan());
   assert.throws(() => store.finish(r.id, { status: 'completed', reason: null, runs: rows(['fail']) }), /wiki_original_precheck_invalid/);

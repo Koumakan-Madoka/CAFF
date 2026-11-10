@@ -1,10 +1,10 @@
 // Inert production-shaped scene fixtures. Never restores a scene or executes commands.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const base = '../../build/server/domain/runtime/badcase-capture/';
-module.exports = function setup(t, { reply = false, tool = true, evidence = 'reply' } = {}) {
+module.exports = function setup(t, { reply = false, tool = true, evidence = 'reply', scene = true } = {}) {
  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-scene-report-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
  const scope = { globalRoot: path.join(root, 'wiki'), sourceWorktree: path.join(root, 'source') }, store = require(base + 'wiki-store').createWikiStore(scope);
- const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic-scene', conversationTitle: 'Synthetic scene', messageId: 'mark', agentId: 'role-family-gpt' }, role: 'role-family-gpt', sealedCheckpointId: 'synthetic-checkpoint', actual: 'reason too long', expected: 'reason within limit', message: 'marked reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+ const c = store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic-scene', conversationTitle: 'Synthetic scene', messageId: 'mark', agentId: 'role-family-gpt' }, role: 'role-family-gpt', ...(scene ? { sealedCheckpointId: 'synthetic-checkpoint' } : {}), actual: 'reason too long', expected: 'reason within limit', message: 'marked reply', traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
  const bundle = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source: c.source, origin: 'mark', frozenAt: '2026-11-09T00:00:00Z', complete: false, missingReasons: [], redaction: { policy: 'known_values_only' }, markedStep: 31, markedMessage: c.message, actual: c.actual, expected: c.expected,
   context: { systemPrompt: 'synthetic historical system', systemPromptSource: 'historical_display', priorSessionEntries: [], trigger: { type: 'message', message: { role: 'user', content: 'Continue the task.' } } },
   steps: Array.from({ length: 31 }, (_, i) => ({ step: i + 1, output: { role: 'assistant', content: [{ type: 'text', text: i === 28 ? 'bad tool call at cut' : 'synthetic history ' + i }] }, toolResults: [] })) };

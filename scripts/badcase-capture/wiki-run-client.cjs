@@ -25,7 +25,7 @@ async function loadWikiRunTools({ sourceWorktree, capabilitiesSha }) {
 // Minimal native wire descriptor: no model catalog/network/auth discovery and
 // no inferred prices. The caller's approved ID is sent verbatim (no fallback).
 const { WIKI_RUN_WIRE_MODEL: MODEL } = require('../../build/server/domain/runtime/badcase-capture/wiki-run-wire');
-async function createWikiRunClient({ authFile, knownKeyValues = [], timeoutMs = 600000 }, dependencies = {}) {
+async function createWikiRunClient({ authFile, knownKeyValues = [], timeoutMs = 600000, signal }, dependencies = {}) {
   const transport = (dependencies.createTransport || createCodexTransport)({ authFile, confirmed: true, timeoutMs }, {
     containsKnownValue: bytes => knownKeyValues.some(v => v && (bytes.includes(v) || bytes.includes(JSON.stringify(v).slice(1, -1)))), ...dependencies.transport });
   const { stream } = dependencies.stream ? dependencies : await load(path.join(sdkAi, 'dist/api/openai-codex-responses.js'));
@@ -34,11 +34,16 @@ async function createWikiRunClient({ authFile, knownKeyValues = [], timeoutMs = 
     async complete(request) {
       if (used) throw fail('wiki_run_budget_exhausted'); used = true;
       if (request?.model !== PROFILE.model || request.thinking !== 'xhigh') throw fail('wiki_run_model_invalid');
+      signal?.throwIfAborted();
       let networkRequests = 0, wireRequest;
-      const fetch = async (...args) => { if (++networkRequests !== 1) throw fail('wiki_run_budget_exhausted'); return transport.fetch(...args); };
+      const fetch = async (url, options) => {
+        signal?.throwIfAborted();
+        if (++networkRequests !== 1) throw fail('wiki_run_budget_exhausted');
+        return transport.fetch(url, signal ? { ...options, signal: AbortSignal.any([signal, ...(options.signal ? [options.signal] : [])]) } : options);
+      };
       const start = performance.now();
       const eventStream = stream(MODEL, request.context, { apiKey: CODEX_INERT_KEY, reasoningEffort: 'xhigh', transport: 'sse',
-        maxRetries: 0, cacheRetention: 'none', timeoutMs, signal: AbortSignal.timeout(timeoutMs), fetch,
+        maxRetries: 0, cacheRetention: 'none', timeoutMs, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs), fetch,
         onPayload(body) { wireRequest = structuredClone(body); } });
       const message = await eventStream.result();
       // Native errors can contain upstream diagnostics. Only successful complete
