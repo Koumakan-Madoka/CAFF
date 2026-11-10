@@ -3,7 +3,6 @@
 // explicitly supplied by the host's version-checked loadWikiRunTools helper.
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {buildWikiRunRequest,wikiRunHash}=require(base+'wiki-run-replay');
-const {createWikiRunStore}=require(base+'wiki-run-store');
 const {pageDehydrationCause}=require(base+'wiki-dehydration');
 const {wikiValueHash}=require(base+'wiki-rubric');
 const {wikiScoringSummary}=require('./wiki-receipt-scoring.cjs');
@@ -14,8 +13,9 @@ function prepareProductionRun({config,store,source,item,record,candidate,scoring
  const bundle=store.readCaseTrace(source.id),decision=store.getDehydration(source.id)?.decision;
  const input={item:source,bundle,decision,toolset};
  const original=buildWikiRunRequest(input);
- const originals=createWikiRunStore(config).list(source.id).filter(r=>r.traceHash===source.traceBundle.hash && r.decisionHash===decision.hash && r.variant?.kind==='original');
- if(!originals.some(r=>['reached','pass','fail'].includes(r.status) && r.caseEligibleForGateAndScreen))throw fail('wiki_run_baseline_required');
+ // Admission is the independent original precheck bound by scoringPlan.finish,
+ // not a raw/unscored reply or an old formal comparison. No extra raw run is
+ // required; missing/stale screening still fails before paid execution.
  const replacement={id:candidate.id,targetId:candidate.targetId,baseText:candidate.baseText,baseHash:candidate.baseHash,replacement:candidate.candidateText};
  const changed=buildWikiRunRequest({...input,candidate:replacement});
  const originalRequestHash=wikiRunHash(original),candidateRequestHash=wikiRunHash(changed);

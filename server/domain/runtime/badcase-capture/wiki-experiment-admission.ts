@@ -35,7 +35,8 @@ export function validateWikiExperimentAdmission(value: WikiExperimentAdmission, 
   return structuredClone(value);
 }
 export function createWikiExperimentAdmission(input: {
-  state: any; records: any[]; replayChecks: any[]; targetEntryId: string; definition: WikiExperimentDefinition; catalog: WikiExperimentCase[];
+  state: any; records: any[]; replayChecks: any[]; targetEntryId: string; definition: Pick<WikiExperimentDefinition, 'cases'>;
+  catalog: Pick<WikiExperimentCase, 'id' | 'actual' | 'expected' | 'rubric' | 'execution'>[];
 }): WikiExperimentAdmission {
   wikiExactKeys(input, ['state', 'records', 'replayChecks', 'targetEntryId', 'definition', 'catalog']);
   const { state, records, replayChecks, targetEntryId, definition, catalog } = input;

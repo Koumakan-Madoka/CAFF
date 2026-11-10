@@ -3,6 +3,9 @@
 // operator label) or a whole runtime prompt for the triggering user message.
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiExperimentPlan,assertWikiExperimentPlan,wikiExperimentRunSceneHash}=require(base+'wiki-experiment-plan');
+const {createWikiExperimentAdmission}=require(base+'wiki-experiment-admission');
+const {createWikiOriginalPrecheckStore}=require(base+'wiki-original-precheck-store');
+const {createWikiPipelinePrecheckStore,readWikiPipelineInputs}=require(base+'wiki-pipeline-prechecks');
 const {resolveFrozenWikiRubric,wikiExactKeys,wikiValueHash}=require(base+'wiki-rubric');
 const {bindWikiJudge}=require(base+'wiki-scoring-v2');
 const {readWikiEligibleJudges,assertWikiEligibleConfiguration}=require(base+'wiki-judge-catalog');
@@ -61,8 +64,10 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
     hardAssertions:wikiObjectiveRules(replay.rules),rubric:scoring.rubric});
   },
   finish(){
-   const plan=createWikiExperimentPlan(definition,catalog);
-   if(experiment.plan!==undefined)assertWikiExperimentPlan(experiment.plan,definition,catalog);
+   const admission=createWikiExperimentAdmission({state,definition,catalog,targetEntryId:candidate.entryIds[0],
+    records:createWikiOriginalPrecheckStore(scope).list(),replayChecks:readWikiPipelineInputs(state,createWikiPipelinePrecheckStore(scope))});
+   const plan=createWikiExperimentPlan(definition,catalog,admission);
+   if(experiment.plan!==undefined)assertWikiExperimentPlan(experiment.plan,definition,catalog,admission);
    return plan;
   },
  };
