@@ -45,7 +45,9 @@ for (const count of [1115, 8192, 8193]) {
     const worker = loadVm('direct-sdk-container.cjs', {
       process: linux({ CAFF_BADCASE_MODEL_KEY: 'inert' }),
       require(name) {
-        if (name === 'node:fs') return { existsSync: () => true,
+        if (name === 'node:fs') return { existsSync: p => p !== '/work/evaluation-limits.json',
+          // Non-Codex fixture has no native mailbox configuration. Preserve the
+          // real worker's absence guard instead of claiming every path exists.
           readFileSync: p => JSON.stringify(p.endsWith('evaluation-profile.json') ? 'inert' : prepared),
           mkdirSync() { restoreStarted = true; throw reachedRestoration; } };
         if (name === '/work/direct-model.cjs') return { KEY_ENV: 'CAFF_BADCASE_MODEL_KEY', validKey: v => v, modelProfile: () => ({}) };
