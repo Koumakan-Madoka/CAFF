@@ -14,7 +14,7 @@ function setup(t, guideline = '先核验再用读者能理解的语言说明结�
   return { store, options, input, approve };
 }
 test('declared target catalog reflects each actual tool description without mutating or registering tools', () => {
-  const targets = listWikiTargets(); assert.equal(targets.length, 10);
+  const targets = listWikiTargets(); assert.equal(targets.length, 11);
   assert.equal(targets[0].kind, 'global-system-prompt');
   const extension = require('../../lib/pi-extensions/caff-capabilities.mjs'), tools = [];
   extension.default({ registerTool: definition => tools.push(definition) });

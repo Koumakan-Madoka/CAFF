@@ -32,6 +32,7 @@ const {
 } = require('../conversation/room-workspace-authorization');
 const {
   createConversationCapabilityDefinitions,
+  createGoalActionCapabilityDefinitions,
   createPiCapabilityBridge,
   createRoomWorkspaceCapabilityDefinitions,
   createRoomDirectoryCapabilityDefinitions,
@@ -1593,6 +1594,11 @@ export function createAgentToolBridge(options: any = {}) {
 
     piCapabilityBridge = createPiCapabilityBridge({
       capabilities: [
+        ...createGoalActionCapabilityDefinitions((input: any) => handleSuggestGoal({
+          invocationId: input.context.invocationId,
+          callbackToken: input.context.callbackToken,
+          ...input.arguments,
+        })),
         ...createConversationCapabilityDefinitions({
           notify(input: any) {
             return handleConversationDelivery(
