@@ -79,11 +79,11 @@ test('new evaluation cannot silently downgrade to legacy/literal plans or accept
     const h = fixture(t); mutate(h); assert.throws(h.plan); assert.equal(h.calls.length, 0);
   }
 });
-test('CLI stays fail-closed before output/model sends until v4 immutable result publication is wired', async t => {
+test('CLI rejects an unpinned confirmation before creating output or sending models', async t => {
   const h = fixture(t), p = h.plan(); h.config.experiment.plan = p.summary.experiment;
   const pinned = h.plan(), events = [], options = { ...h.options,
-    onEvent: e => events.push(e), runProductionComparison: () => assert.fail('No execution before publication support') };
+    onEvent: e => events.push(e), runProductionComparison: () => assert.fail('No execution before exact confirmation') };
   const config = path.join(h.root, 'holdout-config.json'), output = path.join(h.root, 'never-created-output.jsonl'); fs.writeFileSync(config, JSON.stringify(h.config));
-  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config', config, '--run', '--confirmed', '--expected-plan', pinned.summary.planHash, '--output', output], options), { code: 'wiki_holdout_publication_not_ready' });
+  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config', config, '--run', '--confirmed', '--expected-plan', 'f'.repeat(64), '--output', output], options), { code: 'evaluation_batch_confirmation_required' });
   assert.deepEqual(events, []); assert.equal(fs.existsSync(h.config.codexAuthFile), false); assert.equal(fs.existsSync(output), false);
 });

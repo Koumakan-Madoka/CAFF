@@ -27,10 +27,7 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, { ...runtimeOptions, allowDraftCandidate: args['--plan'] === true });
   if (args['--plan']) { process.stdout.write(JSON.stringify({ preparedOnly: true, dockerVerified: false, ...plan.summary }, null, 2) + '\n'); return; }
   if (plan.summary.planHash !== args['--expected-plan']) throw fail('evaluation_batch_confirmation_required');
-  // Keep CLI/model operation closed until v4's immutable result and progress
-  // validators are in place; never spend a batch then fail its publication.
-  if (plan.summary.kind === 'wiki-mode-holdout-comparison-v1') throw fail('wiki_holdout_publication_not_ready');
-  const progress = plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1' ? createWikiBatchExecutionStore(config) : null;
+  const progress = ['d15-frozen-v1', 'mode-holdout-frozen-v1'].includes(plan.summary.evaluation?.splitPolicy) ? createWikiBatchExecutionStore(config) : null;
   const fd = fs.openSync(args['--output'], 'wx', 0o600);
   let record, timer, publicationFailed = false;
   const append = event => { for (const chunk of jsonChunks(event)) fs.writeSync(fd, chunk); fs.writeSync(fd, '\n'); fs.fsyncSync(fd); };

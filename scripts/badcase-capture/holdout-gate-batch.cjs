@@ -1,5 +1,5 @@
-// Trusted v4 gate kernel. The CLI remains fail-closed until versioned result
-// publication is wired. This module never decides validation or adoption.
+// Trusted v4 gate kernel. Versioned publication independently rechecks its
+// evidence. This module never decides validation or adoption.
 const crypto=require('node:crypto');
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {decideWikiHoldoutExperimentGate,validateWikiHoldoutExperimentPlan}=require(base+'wiki-holdout-plan');

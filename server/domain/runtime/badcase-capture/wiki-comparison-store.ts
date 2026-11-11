@@ -7,6 +7,7 @@ import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
+import { saveWikiHoldoutComparison } from './wiki-holdout-publication';
 import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
@@ -38,7 +39,7 @@ function ids(values: any) {
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
 function projectResult(input: any): any {
-  if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2'].includes(input?.kind)) return projectStagedResult(input, wikiComparisonTotals);
+  if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2', 'wiki-mode-holdout-comparison-v1'].includes(input?.kind)) return projectStagedResult(input, wikiComparisonTotals);
   check(input?.kind === 'wiki-global-batch-comparison-v1' && input.scope === 'global' && input.model === 'deepseek/deepseek-v4-flash');
   const repeats = count(input.repeats); check(repeats >= 1 && repeats <= 20);
   const candidate = input.candidate;
@@ -108,6 +109,7 @@ export function createWikiComparisonStore(options: any) {
     },
     save(input: any) {
       const payload = projectResult(input), contentHash = hash(payload), name = contentHash + '.json';
+      if (payload.kind === 'wiki-mode-holdout-comparison-v1') return saveWikiHoldoutComparison(options, payload);
       const record = withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
         // Exact existing bytes need no NEW admission. Still validate referenced
         // run packets/actual wire proofs below; idempotency cannot hide damaged
