@@ -32,6 +32,8 @@ async function runSingleCallComparison(config,options={}){
  if(config?.kind!=='wikiskill-run-comparison-v1'||config.modelProfile!=='openai-codex/gpt-6.1-sol'
   ||!/^[a-f0-9]{64}$/.test(options.experimentPlanHash||'')
   ||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(options.executionId||''))throw fail('wiki_run_confirmation_required');
+ const validation=Object.hasOwn(config,'repeats'),repeats=validation?config.repeats:10;
+ if(validation&&(!Number.isSafeInteger(repeats)||repeats<1||repeats>20))throw fail('wiki_run_validation_repeats_invalid');
  const fixed=structuredClone(config),scoring=validateWikiScoring(fixed.scoring,{runChecks:true}),values=knownValues(fixed,options);
  if(scoring.rubric.questions.some(q=>q.evidence!=='reply'))throw fail('wiki_rubric_run_evidence_invalid');
  assertWikiScoringJudge(scoring,options.judge,{runChecks:true});
@@ -50,8 +52,8 @@ async function runSingleCallComparison(config,options={}){
  verify();
  const runs=[],attempts={original:0,candidate:0},slots={original:0,candidate:0};
  let next='original',replacements=0,fatal=false,modelCallsKnown=0,callsUnavailable=false;
- while(slots.original<10||slots.candidate<10){
-  if(slots[next]===10)next=next==='original'?'candidate':'original';
+ while(slots.original<repeats||slots.candidate<repeats){
+  if(slots[next]===repeats)next=next==='original'?'candidate':'original';
   const variant=next,iteration=++attempts[variant];verify();
   emit({event:'run_start',variant,iteration});
   // Client construction/auth occurs lazily INSIDE complete, after replayWikiRun
@@ -63,7 +65,7 @@ async function runSingleCallComparison(config,options={}){
    packet=await replayWikiRun({store,runs:packets,caseId:fixed.caseId,toolset:fixed.toolset,
     ...(scoring.rubric.toolCheck?{rubricHash:scoring.rubric.hash}:{}),
     ...(variant==='candidate'?{candidate:fixed.candidate}:{}),approvedRequestHash:fixed[variant+'RequestHash'],
-    attempt:{planHash:options.experimentPlanHash,executionId:options.executionId,iteration}},
+    attempt:{planHash:options.experimentPlanHash,executionId:options.executionId,iteration,...(validation?{validationRepeats:repeats}:{})}},
    {knownKeyValues:values,client:{complete:async request=>{
     try{
      client=await (options.createRunClient||createWikiRunClient)({authFile:fixed.codexAuthFile,knownKeyValues:values,...(fixed.timeoutMs===undefined?{}:{timeoutMs:fixed.timeoutMs})});
@@ -110,6 +112,6 @@ async function runSingleCallComparison(config,options={}){
   next=variant==='original'?'candidate':'original';
   if(fatal||replacements>=5)break;
  }
- return {kind:fixed.kind,completed:['original','candidate'].every(v=>runs.filter(r=>r.variant===v&&['pass','fail'].includes(r.status)).length===10),fatal,runs,modelCallsKnown,callsUnavailable};
+ return {kind:fixed.kind,completed:['original','candidate'].every(v=>runs.filter(r=>r.variant===v&&['pass','fail'].includes(r.status)).length===repeats),fatal,runs,modelCallsKnown,callsUnavailable};
 }
 module.exports={runSingleCallComparison};

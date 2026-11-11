@@ -48,6 +48,34 @@ function fixture(t, { expired = false, providerStatus = 200 } = {}) {
   };
   return { config, options, state, input, access, authFile, originalAuth, expire: () => { now += 600000; } };
 }
+test('trusted native request cap is opt-in, plan-bound, forwarded to staging and launcher, and bounded before auth', async t => {
+  const f = fixture(t), legacy = prepareComparison(f.config, f.options);
+  assert.equal(Object.hasOwn(legacy.summary, 'nativeMaxRequests'), false);
+  const stage = f.options.stage, execute = f.options.executeCodex;
+  const config = { ...f.config, nativeMaxRequests: 64 };
+  assert.equal(prepareComparison(config, f.options).summary.nativeMaxRequests, 64);
+  let staged = 0, launched = 0;
+  const result = await runComparison(config, { ...f.options,
+    stage: (...args) => { assert.equal(args[5], 64); staged++; return stage(...args); },
+    executeCodex: (...args) => { assert.equal(args[2].maxRequests, 64); launched++; return execute(...args); } });
+  assert.equal(result.completed, true); assert.equal(result.nativeMaxRequests, 64);
+  assert.equal(launched, 4); assert.equal(staged, 6);
+  for (const nativeMaxRequests of [0, 65, null, '64', 1.5]) {
+    assert.throws(() => prepareComparison({ ...config, nativeMaxRequests }, f.options), /evaluation_codex_mailbox_limits_invalid/);
+  }
+  assert.throws(() => prepareComparison({ ...f.config, modelProfile: undefined, keySource: undefined, codexAuthFile: undefined, nativeMaxRequests: 64 }, f.options), /evaluation_config_invalid/);
+  const g = fixture(t); fs.unlinkSync(g.authFile);
+  await assert.rejects(runComparison({ ...g.config, nativeMaxRequests: 65 }, g.options), /evaluation_codex_mailbox_limits_invalid/);
+  assert.equal(g.state.transports.length, 0); assert.equal(g.state.nativeRuns, 0);
+  assert.equal(JSON.stringify(prepareComparison(f.config, f.options).summary), JSON.stringify(legacy.summary));
+});
+test('native comparison forwards an optional precheck signal to its verified launcher', async t => {
+  const f = fixture(t), controller = new AbortController(), execute = f.options.executeCodex;
+  const r = await runComparison(f.config, { ...f.options, signal: controller.signal, executeCodex: async (image, files, options) => {
+    assert.equal(options.signal, controller.signal); return execute(image, files, options);
+  } });
+  assert.equal(r.completed, true); assert.equal(f.state.nativeRuns, 4);
+});
 test('Codex plan is credential/Docker-free, config is explicit and summary pins only public model settings', async t => {
   const f = fixture(t); fs.unlinkSync(f.authFile);
   const plan = prepareComparison(f.config, f.options); assert.equal(plan.supported, true);

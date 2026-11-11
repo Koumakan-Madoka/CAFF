@@ -26,10 +26,28 @@ export function projectWikiScoringSummary(v: any, rubric: WikiRubric, binding: W
     binding: structuredClone(v.binding), inputHash: digest(v.inputHash) };
 }
 export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJudgeBinding, extraIds: string[]): any {
+  return projectAssessment(v, source, binding, extraIds, false);
+}
+export function projectWikiTraceAssessment(v: any, source: WikiRubric, binding: WikiJudgeBinding | null, extraIds: string[]): any {
+  return projectAssessment(v, source, binding, extraIds, true);
+}
+function projectAssessment(v: any, source: WikiRubric, binding: WikiJudgeBinding | null, extraIds: string[], structuredTrace: boolean): any {
   const rubric = validateWikiRubric(source, true);
-  wikiExactKeys(v, ['kind', 'status', 'reason', 'binding', 'rubricHash', 'hardAssertions', 'votes', 'judgments', 'referenceMetrics', ...(Object.hasOwn(v, 'referenceDetails') ? ['referenceDetails'] : [])]);
-  check(v.kind === 'wiki-score-v2' && ['pass', 'fail', 'error'].includes(v.status) && v.rubricHash === rubric.hash && same(v.binding, binding));
-  validateWikiJudgeBinding(v.binding, rubric);
+  wikiExactKeys(v, ['kind', 'status', 'reason', 'binding', 'rubricHash', 'hardAssertions', 'votes', 'judgments', 'referenceMetrics',
+    ...(structuredTrace ? ['tool'] : []), ...(Object.hasOwn(v, 'referenceDetails') ? ['referenceDetails'] : [])]);
+  check(v.kind === 'wiki-score-v2' && ['pass', 'fail', 'error', ...(structuredTrace ? ['invalid'] : [])].includes(v.status) && v.rubricHash === rubric.hash && same(v.binding, binding));
+  if (structuredTrace && !rubric.questions.length) check(rubric.toolCheck && binding === null);
+  else validateWikiJudgeBinding(v.binding, rubric);
+  let tool: { status: string; reason: string | null } | undefined;
+  if (structuredTrace) {
+    check(rubric.toolCheck);
+    wikiExactKeys(v.tool, ['status', 'reason']);
+    const reasons: Record<string, (string | null)[]> = { pass: [null], fail: ['tool_rule_failed'],
+      invalid: ['arguments_unparseable', 'tool_evidence_unavailable'], unreached: ['target_not_called'] };
+    check(Object.hasOwn(reasons, v.tool.status) && reasons[v.tool.status].includes(v.tool.reason)
+      && (v.tool.status !== 'unreached' || rubric.toolCheck.mode === 'on-call'));
+    tool = { status: v.tool.status, reason: v.tool.reason };
+  }
   check(Array.isArray(v.hardAssertions) && v.hardAssertions.length >= 2 && v.hardAssertions.length <= 130);
   const hardAssertions = v.hardAssertions.map((a: any) => {
     wikiExactKeys(a, ['id', 'status']);
@@ -61,8 +79,13 @@ export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJ
   const failed = hardAssertions.some((a: any) => a.status === 'fail'), missing = hardAssertions.some((a: any) => a.status === 'error');
   let status: string, reason: string | null;
   if (v.reason === 'environment_failure') { status = 'error'; reason = v.reason; check(votes.length === 0); }
+  else if (tool?.status === 'fail') { status = 'fail'; reason = tool.reason; check(votes.length === 0); }
   else if (failed) { status = 'fail'; reason = 'hard_assertion_failed'; check(votes.length === 0); }
   else if (missing) { status = 'error'; reason = 'hard_evidence_missing'; check(votes.length === 0); }
+  else if (tool?.status === 'invalid') { status = 'invalid'; reason = tool.reason; check(votes.length === 0); }
+  else if (tool && !rubric.questions.length) {
+    status = tool.status === 'pass' ? 'pass' : 'invalid'; reason = status === 'pass' ? null : 'no_check_reached'; check(votes.length === 0);
+  }
   else if (votes.length < 3) {
     status = 'error'; reason = v.reason;
     check(typeof reason === 'string' && ['judge_evidence_unavailable', 'judge_backend_failed', 'judge_output_invalid'].includes(reason) && (reason !== 'judge_evidence_unavailable' || votes.length === 0));
@@ -74,7 +97,8 @@ export function projectWikiAssessment(v: any, source: WikiRubric, binding: WikiJ
     && Buffer.byteLength(JSON.stringify(referenceMetrics)) <= 16384 && !containsSecretSentinel(JSON.stringify(referenceMetrics)));
   for (const [key, value] of Object.entries(referenceMetrics)) check(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(key)
     && (value === null || ['string', 'boolean'].includes(typeof value) || typeof value === 'number' && Number.isFinite(value)));
-  return { kind: v.kind, status, reason, binding: structuredClone(binding), rubricHash: rubric.hash, hardAssertions, votes, judgments, referenceMetrics: structuredClone(referenceMetrics) };
+  return { kind: v.kind, status, reason, binding: structuredClone(binding), rubricHash: rubric.hash, hardAssertions, votes, judgments,
+    referenceMetrics: structuredClone(referenceMetrics), ...(tool ? { tool } : {}) };
 }
 export function wikiComparisonDisplay(record: any): any {
   return { ...record, scoringKind: record.kind === 'wiki-staged-batch-comparison-v2' ? 'wiki-score-v2' : 'literal-rules-v1',

@@ -16,7 +16,7 @@ function prepareBatch(config, options = {}) {
   if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
   if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation', 'modelProfile', 'keySource', 'codexAuthFile', 'knownKeySources', 'dockerBackend', 'experiment'] : [])].includes(k))
-    || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
+    || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > (['wikiskill-holdout-gate-v1','wikiskill-mode-holdout-v1'].includes(config.evaluation?.kind)?1000:20)
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
@@ -79,6 +79,8 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, { ...options, allowDraftCandidate: false });
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
+  if (plan.summary.kind==='wiki-mode-holdout-comparison-v2') return require('./holdout-validation-batch.cjs').runHoldoutValidationBatch(fixed, plan, options);
+  if (plan.summary.kind==='wiki-mode-holdout-comparison-v1') return require('./holdout-gate-batch.cjs').runHoldoutGateBatch(fixed, plan, options);
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;
@@ -136,8 +138,8 @@ async function runBatch(config, options = {}) {
     modelCallsKnown: results.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable: results.some(c => c.callsUnavailable) };
   emit({ event: 'batch_summary', ...result }); return result;
 }
-function formatBatch(result) {
-  if (result.evaluation) return require('./staged-batch.cjs').formatStagedBatch(result);
+function formatBatch(result, sourceCases) {
+  if (result.evaluation) return require('./staged-batch.cjs').formatStagedBatch(result, sourceCases);
   const lines = [result.scope === 'global' ? 'WikiSkill 全局提示词批量对照（不保证提分）' : 'GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
     '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length + '；补充训练来源 ' + result.additionalTrainingCaseIds.length,
     '已记录模型请求 ' + result.modelCallsKnown + (result.callsUnavailable ? '（存在未知/不完整调用记录）' : ''),

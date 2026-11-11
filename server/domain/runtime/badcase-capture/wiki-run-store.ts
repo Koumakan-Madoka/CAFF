@@ -7,20 +7,25 @@ import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { wikiRunHash } from './wiki-run-replay';
 const fail = (code: string) => Object.assign(Error(code), { code });
 const MAX = 128 * 1024 * 1024;
-export interface WikiRunAttempt { planHash: string; executionId: string; iteration: number }
+// Validation has its own repeat-bound identity/cap; omitting the extension
+// preserves legacy attempt-v1 ids, bytes and the original 15-slot limit.
+export interface WikiRunAttempt { planHash: string; executionId: string; iteration: number; validationRepeats?: number }
 function reservationId(request: any, attempt?: WikiRunAttempt) {
   const requestHash = wikiRunHash(request);
   if (attempt === undefined) return requestHash;
-  if (!attempt || Object.keys(attempt).sort().join('|') !== 'executionId|iteration|planHash'
+  const validation = attempt && Object.hasOwn(attempt, 'validationRepeats');
+  if (!attempt || Object.keys(attempt).sort().join('|') !== (validation ? 'executionId|iteration|planHash|validationRepeats' : 'executionId|iteration|planHash')
     || typeof attempt.planHash !== 'string' || !/^[a-f0-9]{64}$/.test(attempt.planHash)
     || typeof attempt.executionId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(attempt.executionId)
-    || !Number.isSafeInteger(attempt.iteration) || attempt.iteration < 1 || attempt.iteration > 15
+    || validation && (!Number.isSafeInteger(attempt.validationRepeats) || attempt.validationRepeats! < 1 || attempt.validationRepeats! > 20)
+    || !Number.isSafeInteger(attempt.iteration) || attempt.iteration < 1 || attempt.iteration > (validation ? attempt.validationRepeats! + 5 : 15)
     || typeof request.metadata?.caseId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.metadata.caseId)
     || !['original', 'candidate'].includes(request.variant?.kind)) throw fail('wiki_run_attempt_invalid');
   // The logical slot, not mutable request content, owns the claim. A changed
   // request cannot silently obtain a second send for an already claimed slot.
-  return wikiRunHash({ kind: 'wiki-run-attempt-v1', planHash: attempt.planHash, executionId: attempt.executionId,
-    caseId: request.metadata.caseId, variant: request.variant.kind, iteration: attempt.iteration });
+  return wikiRunHash({ kind: validation ? 'wiki-run-validation-attempt-v1' : 'wiki-run-attempt-v1', planHash: attempt.planHash, executionId: attempt.executionId,
+    caseId: request.metadata.caseId, variant: request.variant.kind, iteration: attempt.iteration,
+    ...(validation ? { validationRepeats: attempt.validationRepeats } : {}) });
 }
 // Current B7 accounting is a read-only projection. In particular, legacy
 // unreached/countAsFailure results keep their original bytes and hashes.

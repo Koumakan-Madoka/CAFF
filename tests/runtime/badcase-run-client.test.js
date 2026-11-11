@@ -1,4 +1,5 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), os = require('node:os'), zlib = require('node:zlib');
+const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
 const { createWikiRunClient, loadWikiRunTools } = require('../../scripts/badcase-capture/wiki-run-client.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-run-client-')), dir = path.join(root, '.pi-sandbox'); fs.mkdirSync(dir);
@@ -13,7 +14,7 @@ function sse() {
 const request = () => ({ model: 'openai-codex/gpt-6.1-sol', thinking: 'xhigh', context: { systemPrompt: 'frozen system [REDACTED]', messages: [{ role: 'user', content: 'frozen input', timestamp: 1 }], tools: [{ name: 'write', description: 'not executable', parameters: { type: 'object', properties: { content: { type: 'string' } } } }] } });
 test('native serializer/parser makes exactly one proxied SSE request with xhigh and schemas; auth file stays byte-identical', async t => {
   const f = fixture(t); let calls = 0, wire;
-  const client = await createWikiRunClient({ authFile: f.authFile }, { transport: { createDispatcher(uri) { assert.equal(uri, 'http://127.0.0.1:17890'); return { destroy: async () => {} }; }, async fetch(url, options) {
+  const client = await createWikiRunClient({ authFile: f.authFile }, { transport: { createDispatcher(uri) { assert.equal(uri, hostProxy.url); return { destroy: async () => {} }; }, async fetch(url, options) {
     calls++; assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses'); assert.equal(options.headers.get('authorization'), 'Bearer ' + f.access); assert.equal(options.redirect, 'error');
     const bytes = options.headers.get('content-encoding') === 'zstd' ? zlib.zstdDecompressSync(options.body) : options.body; wire = JSON.parse(String(bytes));
     return new Response(sse(), { headers: { 'content-type': 'text/event-stream' } });

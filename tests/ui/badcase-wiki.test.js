@@ -350,7 +350,7 @@ test('parallel check editor permits tool-only freezing without a judge and re-GE
   assert.ok(panel().querySelector('[data-reply-check]')); assert.ok(panel().querySelector('[data-tool-check]'));
   assert.match(panel().querySelector('[data-tool-preview]').textContent, /suggest-goal.*reason.*1000/);
   assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, false, 'tool-only does not require a judge');
-  assert.match(panel().textContent, /只用于切点上的 report，不用于 trace 评测/);
+  assert.match(panel().textContent, /同时用于 trace 评测和切点报告.*只配工具检查.*也可用于 trace/);
   await h.click('#c-1 [data-save-rubric]');
   assert.equal(h.saved().rubrics[1].questions.length, 0); assert.deepEqual(clone(h.posts()[0].body.toolCheck), toolConfig());
   assert.equal(h.posts()[0].body.scoringModel, null);
@@ -925,7 +925,7 @@ test('new pattern proposal remains a normal editable draft; review approval conf
 test('target page preserves readable candidate comparison, generation and hash-bound confirmation without unified diff', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="targets"]');
   const page = h.root.querySelector('#target-page'), text = page.textContent;
-  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '每题原版本和候选各跑 10 次', '先跑门槛', '接受才跑测试']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '门槛每题每版 10 次', '门槛通过后才跑', '验证，默认每题每版 5 次']) assert.ok(text.includes(literal), literal);
   for (const marker of ['--- a/x', '+++ b/x', '@@', 'No newline']) assert.equal(text.includes(marker), false);
   assert.equal(page.querySelector('.orig').open, false);
   h.accept(false); await h.click('[data-confirm-candidate="candidate-global"]'); assert.equal(h.posts().length, 0);

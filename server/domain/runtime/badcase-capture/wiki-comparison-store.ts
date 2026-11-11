@@ -7,6 +7,7 @@ import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
 import { projectStagedResult } from './wiki-staged-result';
+import { saveWikiHoldoutComparison } from './wiki-holdout-publication';
 import { planWikiEvaluationSuite } from './wiki-evaluation-suite';
 import { resolveSampleReplayVersion } from './wiki-sample-replay-version';
 import { readWikiComparisonRecord } from './wiki-comparison-record';
@@ -16,6 +17,9 @@ import { extractWikiLiteralObservations } from './wiki-experience';
 import { WIKI_COMPARISON_V2_MAX_BYTES, wikiObjectiveRules, wikiObjectiveAssertionIds } from './wiki-comparison-scoring';
 import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
 import { verifyWikiRunPublication } from './wiki-run-comparison-verification';
+import { createWikiExperimentAdmission } from './wiki-experiment-admission';
+import { createWikiOriginalPrecheckStore } from './wiki-original-precheck-store';
+import { createWikiPipelinePrecheckStore, readWikiPipelineInputs } from './wiki-pipeline-prechecks';
 export { wikiComparisonTotals } from './wiki-comparison-totals';
 
 const variants = ['original', 'candidate'];
@@ -35,7 +39,7 @@ function ids(values: any) {
 // Allowlist projection: never serialize arbitrary worker text, paths, file bytes,
 // usage objects, Docker inspect, or caller-supplied aggregate counters.
 function projectResult(input: any): any {
-  if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2'].includes(input?.kind)) return projectStagedResult(input, wikiComparisonTotals);
+  if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2', 'wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(input?.kind)) return projectStagedResult(input, wikiComparisonTotals);
   check(input?.kind === 'wiki-global-batch-comparison-v1' && input.scope === 'global' && input.model === 'deepseek/deepseek-v4-flash');
   const repeats = count(input.repeats); check(repeats >= 1 && repeats <= 20);
   const candidate = input.candidate;
@@ -105,7 +109,18 @@ export function createWikiComparisonStore(options: any) {
     },
     save(input: any) {
       const payload = projectResult(input), contentHash = hash(payload), name = contentHash + '.json';
+      if (['wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(payload.kind)) {
+        const record = saveWikiHoldoutComparison(options, payload);
+        // Like the legacy hook below, release the result lock first. A draft
+        // failure can be recovered by re-publication, not paid re-execution.
+        if (record.kind === 'wiki-mode-holdout-comparison-v2') wiki.recordComparisonExperience({ comparisonId: record.id, observations: extractWikiLiteralObservations(input) });
+        return record;
+      }
       const record = withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
+        // Exact existing bytes need no NEW admission. Still validate referenced
+        // run packets/actual wire proofs below; idempotency cannot hide damaged
+        // artifacts. Nothing upgrades or rewrites historical qualification.
+        const target = path.join(directory, name), existing = fs.existsSync(target);
         const state = wiki.read(), candidate = state.candidates.find((c: any) => c.id === payload.candidate.id);
         check(candidate?.kind === 'global-wiki-candidate-v1' && candidate.status === 'confirmed' && candidate.target.kind === 'global-system-prompt');
         for (const k of Object.keys(payload.candidate)) check(JSON.stringify(candidate[k]) === JSON.stringify(payload.candidate[k]));
@@ -119,6 +134,21 @@ export function createWikiComparisonStore(options: any) {
             const saved = payload.cases.find((c: any) => c.sourceCaseId === record.sourceCaseId);
             for (const key of ['split', 'stage', 'category', 'family', 'reportOnly', 'targetReproduction', 'classification']) check(JSON.stringify(record[key]) === JSON.stringify(saved?.[key]));
           }
+        }
+        if (payload.kind === 'wiki-staged-batch-comparison-v2' && !existing) {
+          try {
+            check(payload.experiment.admission && payload.experiment.admission.targetEntryId === payload.evaluation.targetEntryId);
+            const catalog = payload.experiment.cases.map((selected: any) => {
+              const row = payload.cases.find((c: any) => c.sourceCaseId === selected.caseId), source = state.cases.find((c: any) => c.id === selected.caseId);
+              check(row && source);
+              return { id: source.id, actual: source.actual, expected: source.expected, rubric: row.rubric,
+                ...(selected.execution?.level === 'run' ? { execution: selected.execution } : {}) };
+            });
+            const admission = createWikiExperimentAdmission({ state, definition: { cases: payload.experiment.cases }, catalog,
+              targetEntryId: payload.evaluation.targetEntryId, records: createWikiOriginalPrecheckStore(options).list(),
+              replayChecks: readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(options)) });
+            check(wikiValueHash(admission) === wikiValueHash(payload.experiment.admission));
+          } catch { throw fail(); }
         }
         for (const c of payload.cases) {
           const source = state.cases.find((s: any) => s.id === c.sourceCaseId);
@@ -160,8 +190,7 @@ export function createWikiComparisonStore(options: any) {
           const entry=version?.entries.find((e:any)=>e.id===candidate.entryIds[0]);
           check(entry && JSON.stringify(e.targetReproductionCaseIds)===JSON.stringify(payload.cases.filter((c:any)=>c.stage==='gate' && c.category==='reproduction' && entry.caseIds.includes(c.sourceCaseId)).map((c:any)=>c.sourceCaseId).sort()));
         }
-        const target = path.join(directory, name);
-        if (fs.existsSync(target)) return readFile(name);
+        if (existing) return readFile(name);
         const record = { id: 'comparison-' + contentHash, createdAt: new Date().toISOString(), ...payload };
         const bytes = JSON.stringify({ schemaVersion: 1, checksum: hash(record), record }) + '\n';
         check(!containsSecretSentinel(bytes) && Buffer.byteLength(bytes) <= (payload.kind === 'wiki-staged-batch-comparison-v2' ? WIKI_COMPARISON_V2_MAX_BYTES : MAX_BYTES));

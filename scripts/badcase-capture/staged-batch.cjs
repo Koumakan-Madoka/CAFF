@@ -12,6 +12,10 @@ const {wikiObjectiveAssertionIds}=require('../../build/server/domain/runtime/bad
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
+  // Never send v4 through the legacy gate/test policy. The versioned kernel
+  // also enforces its own confirmation and fresh current-evidence checks.
+  if(plan.summary.kind==='wiki-mode-holdout-comparison-v2')return require('./holdout-validation-batch.cjs').runHoldoutValidationBatch(config,plan,options);
+  if(plan.summary.kind==='wiki-mode-holdout-comparison-v1')return require('./holdout-gate-batch.cjs').runHoldoutGateBatch(config,plan,options);
   const judgeFor=item=>config.experiment?.definition?.kind==='wiki-experiment-v2'
     ? (Object.hasOwn(options.judges || {},item.sourceCaseId)?options.judges[item.sourceCaseId]:undefined) : options.judge;
   if(plan.summary.experiment){
@@ -77,7 +81,9 @@ async function runStagedBatch(config, plan, options) {
     modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
   emit({event:'batch_summary',...result}); return result;
 }
-function formatStagedBatch(result) {
+function formatStagedBatch(result, sourceCases) {
+  if(result.kind==='wiki-mode-holdout-comparison-v2')return require('./holdout-validation-batch.cjs').formatHoldoutValidationBatch(result, sourceCases);
+  if(result.kind==='wiki-mode-holdout-comparison-v1')return require('./holdout-gate-batch.cjs').formatHoldoutGateBatch(result, sourceCases);
   const labels={gate:'门槛',test:'测试'}, categories={reproduction:'复现题',probe:'探针题',control:'防误伤题'};
   const native=result.model===CODEX_PROFILE;
   const d=result.gateDecision, lines=[native?'WikiSkill 生产配置单模式两阶段对照':'WikiSkill 单模式两阶段对照（不作为采纳依据）','计划 '+result.planHash,
@@ -85,6 +91,7 @@ function formatStagedBatch(result) {
     `门槛判定：${{accepted:'接受',rejected:'拒绝',indeterminate:'无法判定'}[d.outcome]}`,
     `修好：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue ?? 'N/A'} < 0.05；${d.repair.passed?'满足':'不满足'}`,
     `无误伤：原版 ${d.noHarm.original.passed}/${d.noHarm.original.total}，候选 ${d.noHarm.candidate.passed}/${d.noHarm.candidate.total}；少通过 ${d.noHarm.loss} 次，容许 ${d.noHarm.allowedLoss} 次；${d.noHarm.passed?'满足':'不满足'}`];
+  if(result.cases?.some(c=>c.runs?.some(r=>r.goalState==='approximate-minimal-v1')))lines.push('Goal 状态近似：独立最小种子，不还原历史 Goal；仅 Goal 工具返回可见，冻结输入不变。');
   if(d.byLevel)for(const level of ['trace','run']){
     const t=d.byLevel[level];lines.push(`${level} 级门槛：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);
   }
@@ -92,7 +99,7 @@ function formatStagedBatch(result) {
     lines.push('评分：硬断言＋AI 裁判；字面指标仅供参考','实验 '+result.experiment.planHash);
     for(const c of result.experiment.cases)lines.push('断言 '+c.caseId+' / '+c.rubricHash+(c.judge?'；裁判 '+c.judge.backend+' / '+c.judge.model
       +' / modelHash '+c.judge.modelHash+' / promptHash '+c.judge.promptHash:'；仅工具检查，无需裁判')
-      +(c.execution?.level==='run'?'':'；工具调用检查不用于 trace 级'));
+      +(c.traceToolCheck==='structured-v1'?'；工具调用检查按结构化记录判定':c.execution?.level==='run'?'':'；本计划未启用 trace 工具调用检查'));
   }else lines.push('评分：字面规则');
   for(const stage of ['gate','test']) {
     lines.push(labels[stage]+'（单独统计）','用例\t题型\t状态\t原版通过/有效(错误/未执行)\t候选通过/有效(错误/未执行)');

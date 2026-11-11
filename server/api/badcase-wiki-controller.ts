@@ -21,6 +21,8 @@ import { WIKI_RUBRIC_MODEL } from '../domain/runtime/badcase-capture/wiki-rubric
 import { planWikiInitialSplit, projectWikiPatternLabels } from '../domain/runtime/badcase-capture/wiki-initial-split';
 import { projectWikiPipelineStates } from '../domain/runtime/badcase-capture/wiki-pipeline';
 import { createWikiPipelinePrecheckStore, readWikiPipelineInputs } from '../domain/runtime/badcase-capture/wiki-pipeline-prechecks';
+import { createWikiOriginalPrecheckStore } from '../domain/runtime/badcase-capture/wiki-original-precheck-store';
+import { assertWikiControlCaseMutable } from '../domain/runtime/badcase-capture/wiki-gate-control';
 
 import { wikiCategoryTrainingCases, assertWikiCategoryDraftAvailable } from '../domain/runtime/badcase-capture/wiki-category-induction';
 import { preparePageDehydration, pageRecommendationAvailability } from '../domain/runtime/badcase-capture/wiki-dehydration-runner';
@@ -38,6 +40,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_collection_too_large: 422, wiki_record_invalid: 409, wiki_write_failed: 503, capture_writer_busy: 409,
     wiki_trace_invalid: 409, wiki_trace_association_mismatch: 409, wiki_trace_missing: 404,
     wiki_run_record_invalid: 409, wiki_run_not_found: 404,
+    wiki_original_precheck_record_invalid: 503,
+    wiki_control_case_ineligible: 409, wiki_control_case_stale: 409, wiki_control_case_frozen: 409, wiki_control_case_record_invalid: 503,
     wiki_dehydration_frozen: 409, wiki_dehydration_stale: 409, wiki_dehydration_recommendation_required: 409,
     wiki_dehydration_ineligible: 422, wiki_dehydration_cut_invalid: 422, wiki_dehydration_prefix_unavailable: 422,
     wiki_dehydration_busy: 409, wiki_dehydration_recommendation_exists: 409, wiki_case_deleted: 409,
@@ -74,7 +78,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     const recommendMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/dehydration\/recommend$/);
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|category-propose|category-confirm|category-reject|category-induct))?$/)
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|control-confirm|category-propose|category-confirm|category-reject|category-induct))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : recommendMatch ? [pathname, 'dehydration-recommend'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
@@ -103,6 +107,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'pattern-label-confirm': ['confirmed', 'caseId', 'entryId', 'pendingPattern', 'labelHash', 'expectedRevision'],
         'pending-pattern-link': ['confirmed', 'pendingPatternId', 'entryId', 'expectedRevision'],
         'initial-split-confirm': ['confirmed', 'proposalHash', 'patternKey', 'expectedRevision'],
+        'control-confirm': ['confirmed', 'caseId', 'proposalHash', 'expectedRevision'],
         'dehydration-recommend': ['confirmed', 'expectedRevision', 'traceHash', 'retryOf'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -130,6 +135,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
             confirmationRecord: 'WikiSkill 页面明确确认回复检查、工具调用检查全文及所选打分模型（同 OS 用户管理边界）。' }, input.expectedRevision);
         } else {
           if (!state.cases.some((c: any) => c.id === input.caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
+          assertWikiControlCaseMutable(state, input.caseId);
           if (match[1] === 'rubric') {
             if (input.scoringModel != null) assertWikiEligibleModel(input.scoringModel, eligibleJudges);
             store.saveRubricDraft({ caseId: input.caseId, questions: input.questions, scoringModel: input.scoringModel ?? null, model: WIKI_RUBRIC_MODEL,
@@ -200,6 +206,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         await options.runCategoryInduction({ store, pendingPatternId: input.pendingPatternId, expectedRevision: input.expectedRevision });
       }
       if (match[1] === 'initial-split-confirm') store.confirmInitialSplit(input);
+      if (match[1] === 'control-confirm') store.confirmGateControl(input);
       if (match[1] === 'review') store.review(input);
       if (match[1] === 'comparison-review') store.reviewComparison(input);
       if (match[1] === 'experience') {
@@ -237,7 +244,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       });
       const comparisons = createWikiComparisonStore(scope).read().map(wikiComparisonDisplay);
       const replayChecks = readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(scope));
-      const pipelineStates = projectWikiPipelineStates({ state, comparisons, runReplays, replayChecks });
+      const originalPrechecks = createWikiOriginalPrecheckStore(scope).list();
+      const pipelineStates = projectWikiPipelineStates({ state, comparisons, runReplays, replayChecks, originalPrechecks });
       sendJson(res, 200, { ...state, cases, caseStates: store.getCaseStates(), casePatterns: projectWikiPatternLabels(state), categoryProposalViews: store.getCategoryProposals(), initialSplitProposal: planWikiInitialSplit(state, runReplays), runReplays, pipelineStates, comparisons, executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';

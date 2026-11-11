@@ -38,7 +38,13 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
   try { ({ manifest } = require('/work/caff-runtime-bootstrap.cjs').verifyCaffRuntimeStage({ replayWorkspace: true })); }
   finally { if (!codex) process.env[direct.KEY_ENV] = key; }
   const selected = direct.modelProfile(profile);
-  if (codex) process.env[direct.KEY_ENV] = key;
+  let nativeLimits;
+  if (codex) {
+    const value = fs.existsSync('/work/evaluation-limits.json') ? JSON.parse(fs.readFileSync('/work/evaluation-limits.json')) : { maxRequests: 32 };
+    assert.ok(value && Object.keys(value).join(',') === 'maxRequests');
+    nativeLimits = require('/work/codex-mailbox.cjs').codexMailboxLimits(value.maxRequests);
+    process.env[direct.KEY_ENV] = key;
+  } else assert.equal(fs.existsSync('/work/evaluation-limits.json'), false);
   const input = JSON.parse(fs.readFileSync('/work/replay-input.json'));
   assert.equal(input.kind, 'prepared-caff-turn-v1'); assert.equal(typeof input.prompt, 'string');
   if (input.recordedModelConfig !== undefined) {
@@ -155,8 +161,9 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       assert.equal(JSON.parse(sessionText.split('\n')[0]).cwd, cwd);
       write(sessionPath, sessionText);
     }
-    const providerFetch = codex ? require('/work/codex-mailbox.cjs').createCodexMailboxFetch({ callbackUrl: callback?.apiUrl, callbackFetch: originalFetch }) : originalFetch;
-    observer = direct.observeDirectFetch(providerFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl });
+    const providerFetch = codex ? require('/work/codex-mailbox.cjs').createCodexMailboxFetch({ callbackUrl: callback?.apiUrl, callbackFetch: originalFetch, maxRequests: nativeLimits.maxRequests }) : originalFetch;
+    observer = direct.observeDirectFetch(providerFetch, { baseUrl, profile, callbackUrl: callback?.apiUrl,
+      ...(codex ? { maxRequests: nativeLimits.maxRequests } : {}) });
     globalThis.fetch = observer.fetch;
     const sdk = await loadModule('/work/runtime/dist/bundle/index.js'); assert.equal(sdk.VERSION, '0.85.1');
     const host = await loadModule('/work/build/lib/pi-sdk-host.mjs');
@@ -198,6 +205,7 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
     receipt = { kind: 'direct-caff-turn-v1', inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash,
       success: !threw && final?.stopReason === 'stop' && observer.calls.length > 0 && observer.calls.every(c => c.success),
       historyMessages: initialHistory.length, historyHash: hash(JSON.stringify(initialHistory)), tools, toolCalls,
+      ...(callback?.readGoalEvidence ? { goalEvidence: callback.readGoalEvidence() } : {}),
       modelCalls: observer.calls, finalText, replySource, beforeHash, afterHash: treeHash(),
       ...(codex ? { modelConfig: { api: selected.api, thinking: session.thinkingLevel, fast: false, transport: session.agent.transport, credentialDelivery: 'host-only-mailbox' } } : {}),
       ...(input.recordedModelConfig ? { recordedModelConfig: input.recordedModelConfig } : {}),

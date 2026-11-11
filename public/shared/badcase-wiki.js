@@ -41,6 +41,7 @@
       onRequestRecommendation: ({ caseId, ...body }) => { void mutate('/api/wikiskill/cases/' + encodeURIComponent(caseId) + '/dehydration/recommend', body, '单次推荐输出已保存；请核对后确认，解析失败不会自动重试。'); },
       onConfirmDecision: body => { void mutate('/api/wikiskill/dehydration-confirm', body, '判断与切点已冻结；未调用模型、改分组或修改冻结轨迹包。'); },
       onConfirmPatternLabel: body => { void mutate('/api/wikiskill/pattern-label-confirm', body, '模式标签已确认；未改变组别或归纳成员。'); },
+      onConfirmControl: body => { void mutate('/api/wikiskill/control-confirm', body, '门槛对照已冻结；只用于其他模式候选的防误伤检查，未启动模型或评测。'); },
       onConfirmInitialSplit: body => { void mutate('/api/wikiskill/initial-split-confirm', body, '此模式的新用例分组已冻结；已有组别不变，未启动评测。'); },
       onLinkPendingPattern: body => { void mutate('/api/wikiskill/pending-pattern-link', body, '关联已锁定；门槛和测试用例按关联模式解析，已有组别不变。'); },
       onPreclassify: () => { if (preclassificationPending().length) void mutate('/api/wikiskill/induct', {}, '预分类及类别提议已保存；请在 Badcase 页核对后确认。'); },
@@ -319,16 +320,11 @@
       }
       return new TextEncoder().encode(JSON.stringify(t)).length > 32768 ? '请先修正工具检查：内容超过32KiB。' : '';
     }
-    function toolPreview(t) {
-      if (!t) return '未配置工具调用检查。';
-      const error = toolError(t); if (error) return error;
-      const rules = t.rules.map(r => `${r.parameter} ${r.kind === 'max-chars' ? `去首尾空白后不超过 ${r.max} 字符（UTF-16）` : `${r.kind === 'allowed-values' ? '只能取' : '不得取'} ${r.values.map(v => JSON.stringify(v)).join('、')}`}`).join('；');
-      return `${t.mode === 'on-call' ? '调用时参数要对' : '不该这样调用'}：${t.target.name}，${rules}。${t.mode === 'on-call' ? '未调用目标工具时此项没判到；多次调用必须每次合规。' : '有效输出中调用目标工具且违规则失败，否则通过。'}目标参数无法解析时无效；只解析，不执行工具。`;
-    }
+    function toolPreview(t) { return toolError(t) || shared.wikiToolCheckPreview(t); }
     function reportScope(c, questions) {
       if (!c.sealedCheckpointId) return '';
       const skipped = questions.filter(q => q.evidence !== 'reply');
-      return `<div class="hint" data-report-skipped><p>工具调用检查只用于切点上的 report，不用于 trace 评测；用例仍为 trace 级，组别不变。</p>${!questions.some(q => q.evidence === 'reply') ? '<p>本版本没有回复依据的问题。</p>' : ''}${skipped.length ? `<p>report 不判以下问题（没判到，不计通过或失败）：</p><ul>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)}（${esc(q.evidence)}）</li>`).join('')}</ul>` : ''}</div>`;
+      return `<div class="hint" data-report-skipped><p>工具调用检查同时用于 trace 评测和切点报告；只配工具检查的冻结版本也可用于 trace，无需 AI 裁判。用例仍为 trace 级，组别不变。</p>${!questions.some(q => q.evidence === 'reply') ? '<p>本版本没有回复依据的问题。</p>' : ''}${skipped.length ? `<p>report 不判以下问题（没判到，不计通过或失败）：</p><ul>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)}（${esc(q.evidence)}）</li>`).join('')}</ul>` : ''}</div>`;
     }
     function rubricVersion(r) {
       return `<div class="rubric-version"><p><b>v${esc(r.version)} · ${r.status === 'frozen' ? '已冻结' : '未确认草稿'}</b> · ${esc(r.questions.length ? r.scoringModel?.model || '尚未选打分模型' : '无需 AI 裁判')}</p><div class="rubric-checks"><section><h4>回复检查 / AI 断言</h4>${r.questions.length ? `<ol>${r.questions.map(q => `<li>${esc(q.question)} <span class="hint">依据：${esc({ reply: '公开回复', trace: '轨迹', files: '文件' }[q.evidence])}</span></li>`).join('')}</ol>` : '<p class="hint">本版本没有回复依据的问题，也没有其他 AI 断言。</p>'}</section><section><h4>工具调用检查 · 代码判断</h4><p>${esc(toolPreview(r.toolCheck))}</p></section></div><p class="mono">hash ${esc(r.hash)}</p>${r.status === 'frozen' ? `<p class="hint">${esc(fmt(r.confirmedAt))} · ${esc(r.confirmationRecord)}</p>` : ''}</div>`;
@@ -344,8 +340,10 @@
       return `<div class="muted-note"><b>${consent.action === 'freeze' ? `确认共同冻结本题 v${r.version} 的回复检查、工具调用检查及打分模型？` : consent.action === 'draft' ? '确认调用 DeepSeek 起草评分断言？将新增草稿，不自动选择模型、冻结或评测；本地未保存编辑仍保留。' : '确认放弃本地未保存的两种检查和模型编辑？已保存版本不删除。'}</b>${consent.action === 'freeze' ? rubricVersion(r) + reportScope(c, r.questions) : ''}<p>修改只能另存新版本，旧版本和结果不变，不启动回放。</p><div class="row-actions"><button type="button" class="btn small primary" data-rubric-lock>确认${consent.action === 'freeze' ? '冻结' : consent.action === 'draft' ? '起草' : '放弃编辑'}</button><button type="button" class="btn small" data-rubric-cancel>取消</button></div></div>`;
     }
     function clearRubricConsent(c) { rubricConsents.delete(c.id); root.querySelector(`[data-rubric-panel="${c.id}"] [data-rubric-consent]`)?.replaceChildren(); }
+    const controlFrozen = c => !!c && ((D?.controlConfirmations || []).some(r => r.caseId === c.id) || (D?.pipelineStates || []).some(r => r.caseId === c.id && r.control?.confirmation));
     function rubricPanel(c) {
       const all = rubricsFor(c), r = all.at(-1), editing = r?.status !== 'frozen' || rubricEdits.has(c.id), edit = rubricEdit(c), models = eligibleJudges();
+      if (controlFrozen(c)) return `<details class="rubric-panel" data-rubric-panel="${esc(c.id)}"><summary>评分断言 · 对照已锁定</summary><p class="muted-note">本题已冻结为对照，断言等核心输入不能修改；即使预检绑定后来失效，也不能覆盖或重新确认。只读查看不启动模型或评测。</p>${all.slice().reverse().map(rubricVersion).join('')}</details>`;
       const evidenceOptions = [['reply', '公开回复'], ['trace', '轨迹']];
       if (replayBySource.get(c.id)?.rules?.kind === 'file-literals-v1') evidenceOptions.push(['files', '文件']);
       return `<details class="rubric-panel" data-rubric-panel="${esc(c.id)}" ${r?.status === 'draft' || rubricEdits.has(c.id) ? 'open' : ''}><summary>评分断言 · ${r ? `v${esc(r.version)} ${r.status === 'frozen' ? '已冻结' : '草稿待确认'}` : '尚未起草'}</summary><p class="hint">两种检查各自可选，也可同时配置；都不配可存草稿但不能判分。AI 断言最多4条陈述句，逐条判成立／不成立。两种检查一起进入 hash 并冻结，修改另存新版本，旧版本和结果不变，不启动评测。</p>${reportScope(c, editing ? edit.questions : r.questions)}${!editing ? `${rubricVersion(r)}<button type="button" class="btn small" data-edit-rubric>基于此版编辑</button>` : `<div class="rubric-editor"><button type="button" class="btn small ghost" data-discard-rubric-edit ${rubricEdits.has(c.id) ? '' : 'hidden'}>放弃未保存编辑，查看最新保存版本</button><div class="rubric-checks"><section data-reply-check><h4>回复检查 / AI 断言（可选）</h4><p class="hint">run 级只判公开回复；有现场的 trace 评测仍按每条断言的依据判分，report 只看回复依据。</p>${edit.questions.map(q => `<div class="assertion-field" data-criterion="${esc(q.id)}"><label>断言 ${esc(q.id)}<textarea rows="3" data-rubric-question>${esc(q.question)}</textarea></label><div class="row-actions"><label>判断依据 <select data-rubric-evidence>${evidenceOptions.map(([key, label]) => `<option value="${key}" ${q.evidence === key ? 'selected' : ''}>${label}</option>`).join('')}</select></label><button type="button" class="btn small ghost" data-remove-assertion="${esc(q.id)}">删除此条</button></div></div>`).join('') || '<p class="hint">未配置 AI 断言；只配工具调用检查时无需裁判。</p>'}<button type="button" class="btn small" data-add-assertion ${edit.questions.length >= 4 ? 'disabled' : ''}>添加断言</button><label class="field">本题打分模型（仅校准达标）<select data-rubric-model><option value="">请选择达标模型</option>${models.map(j => `<option value="${esc(j.backend)}" ${edit.scoringModel?.backend === j.backend && edit.scoringModel?.model === j.model ? 'selected' : ''}>${esc(j.model)}</option>`).join('')}</select></label>${!models.length ? '<p class="hint">尚无校准达标模型；含 AI 断言的版本只能编辑草稿，不能冻结。只配工具检查不受此限。由操作方配置校准冻结目录。</p>' : '<p class="hint">所选裁判的校准范围以冻结记录为准，不代表每个任务领域均单独校准。</p>'}</section>${toolEditor(edit)}</div><div class="row-actions"><button type="button" class="btn small" data-save-rubric>保存为新草稿版本</button><button type="button" class="btn small primary" data-freeze-rubric aria-describedby="rubric-freeze-reason-${c.n}">确认并冻结已保存版本</button><span class="hint" id="rubric-freeze-reason-${c.n}" data-freeze-rubric-reason role="status" aria-live="polite" hidden></span></div><p class="hint">先保存两种检查和模型，再确认同一份全文／hash；未保存的修改不能冻结。</p>${r ? `<p class="mono">已保存 v${esc(r.version)} hash ${esc(r.hash)}</p>` : ''}</div>`}<div class="row-actions"><button type="button" class="btn small" data-draft-rubric>AI 一键起草</button></div><p class="hint">起草会调用 DeepSeek，只生成待确认草稿；输入为实际问题、期望表现及可读取的原触发消息，缺原消息则明确缺失，不以来源回复替代。不会自动继承工具检查，请核对新版本。</p><div data-rubric-consent>${rubricConsent(c)}</div>${all.length ? `<details class="rubric-history"><summary>已保存版本（${all.length}）</summary>${all.slice().reverse().map(rubricVersion).join('')}</details>` : ''}</details>`;
@@ -381,11 +379,11 @@
     }
     /* Optimization targets */
     function candidateCard(candidate, target) {
-      const rejected = (D.comparisonReviews || []).some(r => r.candidateHash === candidate.candidateHash && r.targetId === candidate.targetId && r.decision === 'not-adopted');
+      const rejected = (D.comparisonReviews || []).find(r => r.candidateHash === candidate.candidateHash && r.targetId === candidate.targetId && r.decision === 'not-adopted');
       const adopted = (D.comparisonReviews || []).some(r => r.candidateHash === candidate.candidateHash && r.targetId === candidate.targetId && r.decision === 'adopted');
       const deprecated = candidate.status === 'deprecated', confirmed = candidate.status === 'confirmed', isGlobal = target.kind === 'global-system-prompt';
       const sources = candidate.entryIds.map(id => findEntry(id, candidate.versionId)).filter(x => x.entry);
-      const foot = adopted ? '<p>用户明确采纳为评测基线；不会自动修改生产，仍由用户手动合入。</p>' : rejected ? '<p>未采纳，基线未改变；相同改动不重复提出，同类改动可以换个写法再提。原文、diff 和结果保留，不进生产提示词。</p>' : deprecated ? `<button type="button" class="btn" data-confirm-candidate="${esc(candidate.id)}" disabled>已废弃，不能确认</button>` : `<button type="button" class="btn primary" data-confirm-candidate="${esc(candidate.id)}" ${confirmed || pending || !writable ? 'disabled' : ''}>${confirmed ? '已确认' : '确认此候选'}</button><p>${isGlobal ? `确认只固定此候选；计划按已冻结组别生成，何时执行另须用户批准。每题原版本和候选各跑 10 次真实模型、交替执行；先跑门槛，接受才跑测试，拒绝则不跑测试。结果记入评测记录，不修改生产提示词。` : '工具描述的候选本期只展示，确认后不会自动评测，也不会修改生产配置。'}</p>`;
+      const foot = adopted ? '<p>用户明确采纳为评测基线；不会自动修改生产，仍由用户手动合入。</p>' : rejected ? `<p>${esc(reviewReason(rejected.reason))}；基线未改变，相同改动不重复提出，同类改动可以换个写法再提。原文、diff 和结果保留，不进生产提示词。</p>` : deprecated ? `<button type="button" class="btn" data-confirm-candidate="${esc(candidate.id)}" disabled>已废弃，不能确认</button>` : `<button type="button" class="btn primary" data-confirm-candidate="${esc(candidate.id)}" ${confirmed || pending || !writable ? 'disabled' : ''}>${confirmed ? '已确认' : '确认此候选'}</button><p>${isGlobal ? `确认只固定此候选；何时执行另须用户批准。v4 先跑本模式留出题，门槛每题每版 10 次，原版与候选交替执行；门槛通过后才跑其他模式已确认对照题的验证，默认每题每版 5 次。未覆盖不等于验证通过；结果记入评测记录，不修改生产提示词。` : '工具描述的候选本期只展示，确认后不会自动评测，也不会修改生产配置。'}</p>`;
       return `<section class="cand${deprecated ? ' is-dep' : ''}"><header class="cand-head"><h3>候选</h3>${pill(CAND_STATUS, adopted ? 'adopted' : rejected ? 'not-adopted' : candidate.status)}<time>${fmt(candidate.createdAt)} 生成</time></header>${deprecated ? `<p class="dep-note">${candidate.deprecationReason === 'multiple_patterns' ? '旧稿合并了多个模式的准则；本轮一次只改一个模式，旧稿已废弃。' : '目标选错了：list_rooms 是列出房间的工具，和“汇报先给结论”这类准则无关。'}原文、diff 和记录保留，不能确认。</p>` : ''}<p class="basis">依据 ${sources.length} 条模式 ${sources.map(({ entry, version }) => entryChip(entry.id, version.id)).join('')}</p><div class="compare"><details class="orig"><summary>原文 ${[...(candidate.target?.baseText || target.baseText || '')].length} 字 · 不改动（展开查看）</summary><pre class="text">${esc(candidate.target?.baseText || target.baseText || '')}</pre></details><div class="added"><h4>在原文末尾新增 ${sources.length} 条准则</h4><ol>${sources.map(({ entry, version }) => `<li><p>${esc(entry.guideline)}</p><a class="src-link" href="#${esc(entry.id)}" data-entry="${esc(entry.id)}" data-version="${esc(version.id)}">来自模式 ${(version.entries.findIndex(e => e.id === entry.id) + 1)} · ${esc(entry.title)}</a></li>`).join('')}</ol></div></div><footer class="cand-foot">${foot}</footer>${candidate.experienceInputs?.length ? `<details class="more"><summary>已审核经验输入（${candidate.experienceInputs.length} 条，版本已固定）</summary>${candidate.experienceInputs.map(e => `<p class="hint">经验 v${esc(e.version)}</p><pre class="text">${esc(e.methods)}</pre><pre class="text">${esc(e.positiveExamples)}</pre>`).join('')}<p class="hint">作为本候选的生成依据，不把评测统计直接追加到生产提示词。</p></details>` : ''}<details class="more"><summary>完整文本 · ${rejected ? '未采纳，仅供历史查看' : adopted ? '已采纳，供手动合入' : '待评测/采纳，不是生产建议'}</summary><pre class="text" data-final-text="${esc(candidate.id)}">${esc(candidate.candidateText)}</pre><button type="button" class="btn small" data-copy-candidate="${esc(candidate.id)}">复制完整文本</button><p class="hint">只复制，不修改生产提示词、采纳状态或基线。</p></details><details class="more"><summary>技术详情</summary><dl class="kv"><div><dt>候选 ID</dt><dd class="mono">${esc(candidate.id)}</dd></div><div><dt>来源版本</dt><dd class="mono">${esc(candidate.versionId)}</dd></div><div><dt>内容 hash</dt><dd class="mono">${esc(candidate.candidateHash)}</dd></div>${candidate.experienceHash?`<div><dt>经验输入 hash</dt><dd class="mono">${esc(candidate.experienceHash)}</dd></div>`:''}</dl></details></section>`;
     }
     function renderTargets() {
@@ -402,6 +400,17 @@
     }
     function approvedEntriesForSelection() { return entries().filter(e => e.status === 'approved'); }
     /* Evaluation and evolution */
+    function holdoutExecutionCard(r) {
+      const s = r.summary, stages = r.plan.kind === 'wiki-mode-holdout-comparison-v2' ? ['gate', 'validation'] : ['gate'];
+      const counts = totals => ['original','candidate'].map(v => { const t = totals[v]; return `${v === 'original' ? '原版' : '候选'}：通过 ${t.passed}/${t.planned}，失败 ${t.failed}，无效 ${t.invalid ?? 0}，错误 ${t.errors}，未完成 ${t.notRun}`; }).join('；');
+      const current = r.current ? `${stageName(r.current.stage)} · ${caseNumber(r.current.sourceCaseId)} · ${r.current.variant === 'original' ? '原版' : '候选'}第 ${r.current.iteration} 次尝试` : '等待下一步';
+      const reason = r.reason === 'wiki_validation_prior_degradation' ? '已有劣化而停止；剩余验证题 not-run，不表示未劣化。' : r.reason;
+      return `<section class="command-execution"><h3>正式批量 · ${esc({ running: '执行中', completed: '执行完成', stopped: '执行未完成', failed: '执行失败' }[r.status] || '状态未知')} · 已记录 ${s.completedRuns}/${s.plannedRuns} 次尝试</h3><p>${esc(r.plan.model)} · thinking ${esc(r.plan.modelConfig.thinking)} · ${esc(r.plan.modelConfig.transport)} · Fast关闭</p><p>${esc(current)}</p><p class="hint">门槛每题每版 10 次；${stages.includes('validation') ? `验证每题每版 ${esc(r.plan.validationRepeats)} 次；门槛通过后才跑。` : '验证尚未规划。'}错误／无效可替补，两版每题共最多 5 次；判分：硬断言＋AI 裁判。进度不等于采纳结论。</p>
+        ${r.status === 'running' && Date.now() - new Date(r.updatedAt).getTime() > 20000 ? '<p class="hint">进度心跳已过期，可能中断；不自动重跑。</p>' : ''}
+        ${stages.map(stage => `<p><b>${stageName(stage)}</b> ${esc(counts(s.byStage[stage]))}${stage === 'validation' && ['rejected','indeterminate'].includes(r.gateOutcome) ? '；门槛未通过，验证不运行。' : ''}</p>`).join('')}
+        <ul>${r.cases.map(c => `<li>${esc(caseNumber(c.sourceCaseId))} · ${stageName(c.stage)}：${esc(counts(c.totals))}${c.status === 'not-run' ? ' · not-run' : ''}${c.reason === 'wiki_validation_prior_degradation' ? '（已有劣化而停止）' : ''}</li>`).join('')}</ul>
+        ${s.byLevel ? ['trace','run'].map(level => `<p>${level} 级：${esc(counts(s.byLevel[level]))}</p>`).join('') : ''}<p class="hint">最后更新 ${esc(fmt(r.updatedAt))}；已知 token ${s.knownTokens ?? '未知'}${s.usageComplete ? '' : '（可能不完整）'}；账号剩余额度未知。</p>${reason ? `<p>${esc(reason)}</p>` : ''}</section>`;
+    }
     function batchExecutionCard(r) {
       const s = r.summary, label = { running: '执行中', completed: '执行完成', stopped: '执行未完成', failed: '执行失败' }[r.status] || '状态未知';
       const caseLabel = id => `用例 #${caseById.get(id)?.n || '未关联'}`;
@@ -413,6 +422,7 @@
     function renderExecutionProgress() {
       const records = D?.executions || [];
       $('#execution-progress').innerHTML = `<h2>命令执行进度</h2><p class="hint">由受信命令启动，页面只读；每5秒更新此区域，不会启动模型或覆盖知识库编辑。${progressError ? '进度更新失败，以下保留最后一次记录，请核对命令输出。' : ''}</p>${records.length ? records.map(r => {
+        if (isHoldout(r.plan)) return holdoutExecutionCard(r);
         if (['wiki-staged-batch-comparison-v1', 'wiki-staged-batch-comparison-v2'].includes(r.plan.kind)) return batchExecutionCard(r);
         const s = r.summary, config = r.plan.modelConfig, original = r.plan.variants.length === 1;
         const source = D.cases.find(c => c.sealedCheckpointId && c.sealedCheckpointId === r.plan.checkpointId);
@@ -466,20 +476,66 @@
     function comparisonReview(result) {
       const review = (D.comparisonReviews || []).find(r => r.comparisonId === result?.id);
       if (!review) return '';
-      return `<section class="comparison-review"><h3>人工裁决：${review.decision === 'adopted' ? '已采纳 · 已叠加为评测基线（生产仍须手动合入）' : '未采纳 · 基线未改变'}</h3><p class="hint">门槛判定不等于采纳；此裁决不改评分、规则或原始结果。</p><p class="review-interpretation">${esc(review.interpretation)}</p></section>`;
+      return `<section class="comparison-review"><h3>人工裁决：${review.decision === 'adopted' ? '已采纳 · 已叠加为评测基线（生产仍须手动合入）' : '未采纳 · 基线未改变'}</h3><p class="hint">门槛判定不等于采纳；此裁决不改评分、规则或原始结果。</p><p>${esc(review.decision === 'not-adopted' ? reviewReason(review.reason) : '用户明确采纳')}</p><p class="review-interpretation">${esc(review.interpretation)}</p></section>`;
     }
     function stageSummary(totals) {
       if (!totals) return '<p class="hint">尚无本阶段的正式统计。</p>';
       return `<div class="stage-rates">${['original','candidate'].map(v=>{const t=totals[v];return `<p><b>${v==='original'?'原版':'候选'}</b> ${t.passed}/${t.planned} 通过 · 不通过 ${t.failed} · 错误 ${t.errors}${t.invalid === undefined ? '' : ` · 无效 ${t.invalid}`} · 未运行 ${t.notRun}；有效 ${t.scored}，通过率 ${t.passRate==null?'N/A':(100*t.passRate).toFixed(1)+'%'}</p>`;}).join('')}</div>`;
     }
-    const isScoringV2 = result => result?.kind === 'wiki-staged-batch-comparison-v2' || result?.scoringKind === 'wiki-score-v2';
+    const isHoldout = result => ['wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(result?.kind);
+    const isScoringV2 = result => isHoldout(result) || result?.kind === 'wiki-staged-batch-comparison-v2' || result?.scoringKind === 'wiki-score-v2';
+    const stageName = stage => ({ gate: '门槛（本模式）', validation: '验证（其他模式对照题）' }[stage] || SPLIT[stage]);
+    const holdoutOutcome = outcome => ({ 'gate-rejected': '门槛未通过', 'validation-passed': '门槛通过、验证通过', 'validation-degraded': '门槛通过、验证劣化',
+      'validation-uncovered': '门槛通过、验证全部未覆盖', 'validation-partial-coverage': '门槛通过、验证部分未覆盖', indeterminate: '无法判定' }[outcome] || '验证尚未规划');
+    const reviewReason = reason => ({ gate_rejected: '门槛未通过、未采纳', validation_degraded: '门槛通过、验证劣化、未采纳', user_declined: '用户拒绝、未采纳', test_not_passed: '门槛接受、测试未通过、未采纳' }[reason] || '用户未采纳');
+    const caseNumber = id => `#${caseById.get(id)?.n || '编号不可用'}`;
+    function levelReports(levels, stage) {
+      return ['trace', 'run'].map(level => { const t = levels?.[level]; return t ? `<p>${level} 级${stage === 'gate' ? '门槛' : '验证'}：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；失败 ${t.original.failed}/${t.candidate.failed}，无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}。</p>` : ''; }).join('');
+    }
+    function holdoutRows(result, stage) {
+      const v = result.validation;
+      return `<div class="table-wrap"><table class="runs"><thead><tr><th>用例 / 层级</th><th>对应模式</th><th>原版通过/计划</th><th>候选通过/计划</th>${stage === 'validation' ? '<th>逐题判定</th>' : ''}</tr></thead><tbody>${result.cases.filter(c => c.stage === stage).map(c => {
+        const check = v?.cases?.find(r => r.caseId === c.sourceCaseId), source = caseById.get(c.sourceCaseId);
+        const reason = c.reason === 'wiki_validation_prior_degradation' ? 'not-run（已有劣化而停止）' : check?.degraded === true ? `劣化（少通过 ${check.loss} 次）`
+          : check?.degraded === false ? `未劣化（少通过 ${Math.max(0, check.loss)} 次）` : c.status === 'not-run' ? 'not-run（未运行）' : '未完成，无法判定';
+        const entryId = stage === 'gate' ? result.evaluation.targetEntryId : check?.entryId;
+        return `<tr><td><a href="#case-${esc(source?.n || '')}" data-case="${esc(source?.n || '')}">用例 ${esc(caseNumber(c.sourceCaseId))}</a><p class="hint">${esc(source?.actual || '原始用例已作废')} · ${c.execution?.level === 'run' ? 'run 级（冻结前缀单次决策）' : 'trace 级'}</p></td><td>${entryId ? entryChip(entryId, undefined, true) : '模式未关联'}</td><td>${scoreCell(c, 'original')}</td><td>${scoreCell(c, 'candidate')}</td>${stage === 'validation' ? `<td>${esc(reason)}</td>` : ''}</tr>`;
+      }).join('')}</tbody></table></div>`;
+    }
+    function renderHoldoutImpact(result) {
+      const d = result.gateDecision, v = result.validation, interrupted = interruptedComparison(result);
+      const aggregate = d.repair, selection = result.experiment?.gate;
+      const ignoredReason = { non_gpt_report_only: '非GPT来源，仅报告', precheck_missing: '缺当前预检', precheck_incomplete: '预检未完成', precheck_not_reproduced: '当前预检未复现' };
+      const validationNote = v.status === 'not-planned' ? '验证尚未规划；本门槛结果不可提交采纳。' : d.outcome !== 'accepted' ? '门槛未通过；验证未运行。'
+        : v.status === 'over-limit' ? '用量估算超上限；验证未运行。由操作方决定是否跳过最贵的题，不自动跳题。'
+        : v.status === 'usage-unknown' ? '历史用量未知；验证未运行。' : v.status === 'degraded' ? (result.cases.some(c => c.stage === 'validation' && c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation') ? '已有验证题劣化，停止后续题；未运行不表示未劣化。' : '已有验证题劣化；验证不通过。')
+        : v.status === 'incomplete' ? '验证未完成；错误和未运行不表示没有劣化。' : '逐题检查，不合并统计判定；任何一题劣化即不通过。';
+      const coverage = (v.uncovered || []).map(c => `${entryChip(c.entryId, undefined, true)}（${c.reason === 'operator-skipped' ? '操作方跳过' : '无已确认对照题'}）`).join('、');
+      $('#impact-runs').innerHTML = `${comparisonHistory(result)}<p class="scoring-label"><b>判分：硬断言＋AI 裁判</b> · 字面指标只作参考；仅工具检查时不调用裁判。</p>
+        <p class="hint">${esc(fmt(result.createdAt))} · ${esc(result.model)} · thinking ${esc(result.modelConfig?.thinking)} · 已记录 ${esc(result.modelCallsKnown)} 次模型请求。仅使用本次执行，不拼接其他执行；${interrupted ? '中断，不计入判定。' : result.completed ? '完整执行；不表示获准采纳。' : '执行不完整；错误和未运行不算通过。'}</p>
+        ${shared.wikiGoalNotes(result.cases.flatMap(c => c.runs || []))}<p class="holdout-outcome"><b>结果：${esc(holdoutOutcome(result.outcome))}</b> · ${result.adoptionEligible ? '可提交人工评审；是否采纳由人决定。' : '不可提交采纳。'}</p>${comparisonReview(result)}
+        <section class="evaluation-stage" data-evaluation-stage="gate"><h3>门槛（本模式）</h3><p class="hint">只用本模式留出题（原门槛组和测试组），当前预检已复现才参与判定。每题每版 10 次有效输出，原版与候选交替执行；门槛内不做逐题劣化检查。</p>
+        <div class="gate-decision"><h3>${interrupted ? '中断观察（不计入正式判定）' : '门槛判定：' + ({ accepted: '通过', rejected: '未通过', indeterminate: '无法判定' }[d.outcome] || '待运行')}</h3><p>合计：原版 ${aggregate.original.passed}/${aggregate.original.total}，候选 ${aggregate.candidate.passed}/${aggregate.candidate.total}；单侧 Fisher p=${aggregate.pValue == null ? 'N/A' : esc(Number(aggregate.pValue).toPrecision(4))}（阈值 0.05）；要求 p&lt;0.05 且候选合计通过数大于原版，${aggregate.passed ? '满足' : '不满足'}。</p>${(d.warnings || []).map(w => `<p>${esc(w)}</p>`).join('')}</div>
+        ${holdoutRows(result, 'gate')}${stageSummary(result.byStage?.gate)}${levelReports(d.byLevel, 'gate')}
+        ${d.ignoredCaseIds?.length ? `<p class="hint">未参与判定：${d.ignoredCaseIds.map(id => `${esc(caseNumber(id))}（${esc(ignoredReason[selection?.cases.find(c => c.caseId === id)?.reason] || '未满足当前准入')}）`).join('、')}</p>` : ''}
+        ${result.cases.filter(c => c.stage === 'gate').map(assertionResults).join('')}</section>
+        <section class="evaluation-stage" data-evaluation-stage="validation"><h3>验证（其他模式对照题）</h3><p class="hint">门槛通过后才跑；其他模式每模式最多一道已确认对照题，优先 run 级，再按历史单次用量和固定种子选取。</p>
+        ${v.repeats ? `<p>每题每版 ${esc(v.repeats)} 次有效输出；少通过 ${esc(v.degradationThreshold)} 次及以上算劣化。</p><p class="hint">总 token 估算 ${v.estimatedTokens == null ? '未知' : esc(v.estimatedTokens)}；上限 ${esc(v.maxEstimatedTokens)}。</p>` : ''}<p>${validationNote}</p>
+        ${holdoutRows(result, 'validation')}${stageSummary(result.byStage?.validation)}${levelReports(v.byLevel, 'validation')}<p data-validation-uncovered><b>未覆盖：</b>${coverage || (v.status === 'not-planned' ? '尚未规划' : '无')}。未覆盖不等于验证通过。</p>
+        ${result.cases.filter(c => c.stage === 'validation').map(assertionResults).join('')}</section>
+        <p class="hint">trace 与 run 分开报告通过、失败、无效和错误；无效与错误不进有效分母。结论绑定本次模型和配置，变更后须重跑；提示词仍须用户手动合入。</p>${result.experiment ? `<details><summary>实验计划标识</summary><p class="mono">${esc(result.experiment.planHash)}</p></details>` : ''}`;
+      renderTimeline();
+    }
+    function goalMarkerNote(run) {
+      return shared.wikiGoalNotes(run ? [run] : []);
+    }
     function assertionResults(record) {
       if (!record?.rubric) return '';
       const r = record.rubric, binding = record.comparison?.scoring?.binding;
       const evidence = quote => `<figure class="judge-quote"><figcaption>${esc({ reply: '公开回复原文', trace: '轨迹摘要原文', file: '文件原文' }[quote.source] || quote.source)}${quote.path ? ' · ' + esc(quote.path) : ''}</figcaption><blockquote>${esc(quote.text)}</blockquote></figure>`;
       return `<details class="assertion-results"><summary>用例 #${esc(caseById.get(record.sourceCaseId)?.n || '未关联')} · 逐次断言判定与依据</summary><p class="hint">按这次执行保存的断言 v${esc(r.version)} 显示，不使用当前编辑器版本。三票逐条取多数；没有完整三票时保留技术 error，不冒充不成立。</p><p>${esc(r.scoringModel?.model || binding?.model || '')}</p><p class="mono">断言 hash ${esc(r.hash)}${binding ? `\n裁判提示词 hash ${esc(binding.promptHash)}\n裁判模型／设置 hash ${esc(binding.modelHash)}` : ''}</p>${(record.runs || []).map(run => {
         const a = run.assessment;
-        return `<details class="assertion-run"><summary>${run.variant === 'original' ? '原版' : '候选'} · 第 ${esc(run.iteration)} 次 · ${esc({ pass: '通过', fail: '不通过', error: 'error（不进有效分母）', invalid: '无效（不进有效分母）' }[run.status] || run.status)}</summary>${!a ? `<p class="hint">本次无裁判结果 · ${esc(run.reason || '未记录')}</p>` : `<p class="hint">${esc(a.reason || '硬断言和全部评分断言均通过')}</p><h4>硬断言</h4><ul>${a.hardAssertions.map(h => `<li>${esc(h.id)}：${esc({ pass: '通过', fail: '不通过', error: '证据缺失／error' }[h.status] || h.status)}</li>`).join('')}</ul><ol class="assertion-judgments">${r.questions.map(q => {
+        return `<details class="assertion-run"><summary>${run.variant === 'original' ? '原版' : '候选'} · 第 ${esc(run.iteration)} 次 · ${esc({ pass: '通过', fail: '不通过', error: 'error（不进有效分母）', invalid: '无效（不进有效分母）' }[run.status] || run.status)}</summary>${goalMarkerNote(run)}${!a ? `<p class="hint">本次无裁判结果 · ${esc(run.reason || '未记录')}</p>` : `<p class="hint">${esc(a.reason || '硬断言和全部评分断言均通过')}</p><h4>硬断言</h4><ul>${a.hardAssertions.map(h => `<li>${esc(h.id)}：${esc({ pass: '通过', fail: '不通过', error: '证据缺失／error' }[h.status] || h.status)}</li>`).join('')}</ul><ol class="assertion-judgments">${r.questions.map(q => {
           const majority = a.judgments.find(j => j.criterionId === q.id);
           return `<li><p><b>${esc(q.question)}</b></p><p>${majority ? `多数判定：${majority.verdict === 'satisfied' ? '成立' : '不成立'}` : '本条未形成三票多数判定（硬断言未过或技术故障）'}</p>${a.votes.map((vote, i) => { const j = vote.find(j => j.criterionId === q.id); return j ? `<details class="judge-vote" ${i === 0 ? 'open' : ''}><summary>第 ${i + 1} 票 · ${j.verdict === 'satisfied' ? '成立' : '不成立'}</summary><p>${esc(j.reason)}</p>${j.evidence.length ? j.evidence.map(evidence).join('') : '<p class="hint">没有引用；理由说明缺少的证据。</p>'}</details>` : ''; }).join('')}</li>`;
         }).join('')}</ol><h4>参考字面指标（只显示，不决定通过）</h4><dl class="kv">${Object.entries(a.referenceMetrics).map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(value === null ? '未取得' : value)}</dd></div>`).join('') || '<div><dt>指标</dt><dd>本次无参考指标</dd></div>'}</dl>`}</details>`;
@@ -488,6 +544,7 @@
     function renderImpact() {
       renderExecutionProgress();
       const order = { reproduction: 0, probe: 1, control: 2 }, result = selectedComparison();
+      if (isHoldout(result)) { renderHoldoutImpact(result); return; }
       const production = result?.evaluation?.splitPolicy === 'd15-frozen-v1';
       const reps = (result?.evaluation ? result.cases.map(record => D.replayCases.find(r => r.sourceCaseId === record.sourceCaseId)
         || { sourceCaseId: record.sourceCaseId, category: record.category, split: record.split, task: record.reportOnly ? '原始用例（仅报告，不回放）' : record.execution?.level === 'run' ? 'run 级（冻结前缀单次决策）' : '未登记可回放封存' }) : D.replayCases.slice())
@@ -499,7 +556,7 @@
         const note=stage==='gate'?'先执行；每题原/候选各10次有效，交替执行。':d?.outcome==='rejected'?'门槛拒绝，测试未运行。':d?.outcome==='indeterminate'?'门槛无法判定，测试未运行。':'只有门槛接受后才执行一次；每题原/候选各10次有效。';
         return `<section class="evaluation-stage" data-evaluation-stage="${stage}"><h3>${SPLIT[stage]} · ${selected.length} 题</h3><p class="hint">${note}</p><div class="table-wrap"><table class="runs"><thead><tr><th>回放题</th><th>类型</th><th>对应模式</th><th class="n">原版通过/计划</th><th class="n">候选通过/计划</th></tr></thead><tbody>${rows}</tbody></table></div>${stageSummary(result?.byStage?.[stage])}${isScoringV2(result) ? (result.cases || []).filter(c => c.stage === stage && !c.reportOnly).map(assertionResults).join('') : ''}</section>`;
       }).join('');
-      $('#impact-runs').innerHTML = `${comparisonHistory(result)}${result ? `<p class="scoring-label"><b>判分：${isScoringV2(result) ? '硬断言＋AI 裁判' : '字面规则'}</b>${isScoringV2(result) ? ' · 字面指标只作参考' : ' · 旧结果原样保留，不重判'}</p>${result.experiment ? `<p class="mono">实验计划 hash ${esc(result.experiment.planHash)}</p>` : ''}` : ''}${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? '请确认全局提示词候选；每题每版10次，先跑门槛，接受才跑测试。' : '确认候选后由操作方执行；页面加载不会启动评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)}${result.modelConfig?` · thinking ${esc(result.modelConfig.thinking)} · ${esc(result.modelConfig.api)}`:''} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '完整执行；仅使用本次执行的结果，不拼接其他执行；不表示获准采纳。' : interruptedComparison(result) ? '中断，不计入判定；以下仅为中断时的观察，保留记录，不与重跑结果拼接。' : '执行不完整；错误和未运行不算通过。'}${!result.evaluation?' 此为历史结果，不是本轮两阶段评测。':''}</p>`}${result?.disclosures?.includes('post_observation_snapshot_head_rule_revision')?'<p class="hint">看过结果后发现，所有已保存回复都会引用现场快照 SHA，这条规则无法区分原版和候选，因此按用户裁决修正规则；旧轮作废，不计入判定。仅放行各题封存现场记录 HEAD 的7–40位前缀，两版本共用新规则，旧规则与结果保留。</p>':''}${(result?.cases||[]).filter(c=>c.topicExemption).map(c=>`<p class="hint">新轮主题编号豁免 用例 #${esc(caseById.get(c.sourceCaseId)?.n || '未关联')}：${esc(c.topicExemption.patterns.join(', '))}；${esc(c.topicExemption.reason)}；两版本同规则，旧轮不改分。</p>`).join('')}${decisionText(result?.gateDecision, interruptedComparison(result))}${comparisonReview(result)}${stages}<ul class="legend"><li><b>复现题</b>目标模式的门槛复现题检验能否修好</li><li><b>探针题</b>只报告，不影响判定</li><li><b>防误伤题</b>原版本来做得对，看候选会不会改坏</li><li><b>错误与未运行</b>环境错误每题两版共最多补5次；模型循环、超时或超调用上限计不通过，补不齐则无法判定</li><li><b>解读边界</b>${production ? `结论绑定本次生产模型和配置，配置变更后须重跑；${isScoringV2(result) ? '硬断言全过且每条AI断言多数成立才通过，字面指标不决定通过' : '字面规则不是语义判断'}，小样本不保证提分。非GPT来源、探针及其他模式不计入GPT修好结论，提示词仍须用户手动合入。` : '代理模型 DeepSeek、小样本、原基线筛题有挑题偏差；只复现了汇报难懂一类，不作为采纳依据，不保证提分。'}</li></ul>`;
+      $('#impact-runs').innerHTML = `${comparisonHistory(result)}${shared.wikiGoalNotes((result?.cases || []).flatMap(c => c.runs || []))}${result ? `<p class="scoring-label"><b>判分：${isScoringV2(result) ? '硬断言＋AI 裁判' : '字面规则'}</b>${isScoringV2(result) ? ' · 字面指标只作参考' : ' · 旧结果原样保留，不重判'}</p>${result.experiment ? `<p class="mono">实验计划 hash ${esc(result.experiment.planHash)}</p>` : ''}` : ''}${!result ? `<div class="empty-state"><p><b>还没有评测结果。</b>${ready ? '请确认全局提示词候选；每题每版10次，先跑门槛，接受才跑测试。' : '确认候选后由操作方执行；页面加载不会启动评测。'}</p>${ready ? `<button type="button" class="btn small" data-go="targets" data-target="${esc(global.id)}">去确认候选</button>` : ''}</div>` : `<p class="hint">${esc(result.createdAt)} · ${esc(result.model)}${result.modelConfig?` · thinking ${esc(result.modelConfig.thinking)} · ${esc(result.modelConfig.api)}`:''} · 已记录 ${result.modelCallsKnown} 次模型请求。${result.completed ? '完整执行；仅使用本次执行的结果，不拼接其他执行；不表示获准采纳。' : interruptedComparison(result) ? '中断，不计入判定；以下仅为中断时的观察，保留记录，不与重跑结果拼接。' : '执行不完整；错误和未运行不算通过。'}${!result.evaluation?' 此为历史结果，不是本轮两阶段评测。':''}</p>`}${result?.disclosures?.includes('post_observation_snapshot_head_rule_revision')?'<p class="hint">看过结果后发现，所有已保存回复都会引用现场快照 SHA，这条规则无法区分原版和候选，因此按用户裁决修正规则；旧轮作废，不计入判定。仅放行各题封存现场记录 HEAD 的7–40位前缀，两版本共用新规则，旧规则与结果保留。</p>':''}${(result?.cases||[]).filter(c=>c.topicExemption).map(c=>`<p class="hint">新轮主题编号豁免 用例 #${esc(caseById.get(c.sourceCaseId)?.n || '未关联')}：${esc(c.topicExemption.patterns.join(', '))}；${esc(c.topicExemption.reason)}；两版本同规则，旧轮不改分。</p>`).join('')}${decisionText(result?.gateDecision, interruptedComparison(result))}${comparisonReview(result)}${stages}<ul class="legend"><li><b>复现题</b>目标模式的门槛复现题检验能否修好</li><li><b>探针题</b>只报告，不影响判定</li><li><b>防误伤题</b>原版本来做得对，看候选会不会改坏</li><li><b>错误与未运行</b>环境错误每题两版共最多补5次；模型循环、超时或超调用上限计不通过，补不齐则无法判定</li><li><b>解读边界</b>${production ? `结论绑定本次生产模型和配置，配置变更后须重跑；${isScoringV2(result) ? '硬断言全过且每条AI断言多数成立才通过，字面指标不决定通过' : '字面规则不是语义判断'}，小样本不保证提分。非GPT来源、探针及其他模式不计入GPT修好结论，提示词仍须用户手动合入。` : '代理模型 DeepSeek、小样本、原基线筛题有挑题偏差；只复现了汇报难懂一类，不作为采纳依据，不保证提分。'}</li></ul>`;
       renderTimeline();
     }
     function renderTimeline() {
@@ -517,11 +574,15 @@
       for (const result of D.comparisons || []) {
         const label=executionLabel(result), interrupted=interruptedComparison(result);
         if (interrupted) events.push({at:result.createdAt,kind:'中断',text:`${label}：中断，不计入判定；记录保留，不与完整重跑拼接。`});
+        else if (isHoldout(result)) {
+          events.push({ at: result.createdAt, kind: '留出评测', text: `${label}：${holdoutOutcome(result.outcome)}；合计单侧 Fisher p=${result.gateDecision.repair.pValue == null ? 'N/A' : Number(result.gateDecision.repair.pValue).toPrecision(4)}。候选保留，不自动采纳。` });
+          if (result.validation.uncovered?.length) events.push({ at: result.createdAt, kind: '未覆盖', text: result.validation.uncovered.map(c => findEntry(c.entryId).entry?.title || '历史模式').join('、') + '；未覆盖不等于验证通过。' });
+        }
         else if (result.gateDecision) events.push({ at:result.createdAt,kind:'门槛判定',text:`${label}：门槛判定：${outcomeText(result.gateDecision.outcome)}；修好${result.gateDecision.repair.passed?'满足':'不满足'}、无误伤${result.gateDecision.noHarm.passed?'满足':'不满足'}。候选和 diff 保留，不自动采纳。` });
-        for (const stage of ['gate','test']) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:interrupted?'中断观察':'评测',text:`${label} · ${SPLIT[stage]}${interrupted?'观察（不计入判定）':'结果'}：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
+        for (const stage of (isHoldout(result) ? ['gate','validation'] : ['gate','test'])) {const t=result.byStage?.[stage];if(t)events.push({at:result.createdAt,kind:interrupted?'中断观察':'评测',text:`${label} · ${isHoldout(result) ? stageName(stage) : SPLIT[stage]}${interrupted?'观察（不计入判定）':'结果'}：原版 ${t.original.passed}/${t.original.planned}，候选 ${t.candidate.passed}/${t.candidate.planned}；错误 ${t.original.errors}/${t.candidate.errors}，未运行 ${t.original.notRun}/${t.candidate.notRun}`});}
         if (!result.byStage) events.push({at:result.createdAt,kind:'历史评测',text:`${label}：历史单阶段结果已保存，不作为本轮两阶段判定。`});
       }
-      for (const review of D.comparisonReviews || []) events.push({ at: review.createdAt, kind: '采纳裁决', text: `${review.decision === 'adopted' ? '用户明确采纳；已叠加为评测基线，生产提示词仍须手动合入。' : `${review.reason === 'test_not_passed' ? '门槛接受、测试未通过、未采纳' : review.reason === 'gate_rejected' ? '门槛拒绝、未采纳' : '用户未采纳'}；基线未改变。相同改动不重复提出，同类改动可以换个写法再提。`}${review.interpretation}` });
+      for (const review of D.comparisonReviews || []) events.push({ at: review.createdAt, kind: '采纳裁决', text: `${review.decision === 'adopted' ? '用户明确采纳；已叠加为评测基线，生产提示词仍须手动合入。' : `${reviewReason(review.reason)}；基线未改变。相同改动不重复提出，同类改动可以换个写法再提。`}${review.interpretation}` });
       for (const e of D.experiences || []) events.push({ at: e.reviewedAt || e.createdAt, kind: '经验', text: `模式经验 v${e.version}：${e.status === 'approved' ? '审核通过，两栏可用于候选；不改生产提示词' : e.status === 'rejected' ? '已驳回，历史原文保留' : '草稿待审核，不用于候选'}；旧版本不覆盖。` });
       const explicit = new Set();
       for (const event of D.events || []) {
@@ -565,7 +626,7 @@
           if (reason) { reason.textContent = pending ? '正在读取，请稍候。' : '当前不可写；请刷新核对后再操作。'; reason.hidden = false; }
           return;
         }
-        const r = latestRubric(c), edit = rubricEdit(c), locked = pending || !writable;
+        const r = latestRubric(c), edit = rubricEdit(c), locked = pending || !writable || controlFrozen(c);
         panel.querySelectorAll('input,textarea,select,button').forEach(el => { el.disabled = locked; });
         const discard = panel.querySelector('[data-discard-rubric-edit]'); if (discard) discard.hidden = !rubricEdits.has(c.id);
         const add = panel.querySelector('[data-add-assertion]'); if (add) add.disabled = locked || edit.questions.length >= 4;
@@ -634,7 +695,7 @@
       const rubricPanelElement = el.closest('[data-rubric-panel]');
       if (rubricPanelElement) {
         const c = caseById.get(rubricPanelElement.dataset.rubricPanel);
-        if (pending || !writable) return;
+        if (pending || !writable || controlFrozen(c)) return;
         if (el.hasAttribute('data-rubric-cancel')) { clearRubricConsent(c); return; }
         if (el.hasAttribute('data-rubric-lock')) {
           const consent = rubricConsents.get(c.id);
@@ -700,7 +761,8 @@
     });
     function updateRubricField(el) {
       const panel = el.closest('[data-rubric-panel]'); if (!panel || pending || !writable) return;
-      const c = caseById.get(panel.dataset.rubricPanel), edit = ensureRubricEdit(c), id = el.closest('[data-criterion]')?.dataset.criterion;
+      const c = caseById.get(panel.dataset.rubricPanel); if (!c || controlFrozen(c)) return;
+      const edit = ensureRubricEdit(c), id = el.closest('[data-criterion]')?.dataset.criterion;
       clearRubricConsent(c);
       if (el.hasAttribute('data-tool-enabled')) { edit.toolCheck = el.checked ? defaultToolCheck() : null; renderCases(); controls(); return; }
       const t = edit.toolCheck, rule = t?.rules[Number(el.closest('[data-tool-rule]')?.dataset.toolRule)];

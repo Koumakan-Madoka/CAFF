@@ -60,7 +60,7 @@ async function runPageDehydration(input, { configFile } = {}, dependencies = {})
   const knownKeyValues = [...(dependencies.readKnownValues || require('./wiki-diagnostics.cjs').readDiagnosticValues)(env), key];
   const { buildDehydrationRequest } = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration');
   const built = buildDehydrationRequest({ caseRecord: input.store.read().cases.find(c => c.id === input.caseId), bundle: input.store.readCaseTrace(input.caseId), cause: prepared.cause, knownKeyValues });
-  const dispatcher = (dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri })))('http://127.0.0.1:17890');
+  const dispatcher = (dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri })))(require('./host-proxy.cjs').url);
   try {
     const client = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration-client').createDehydrationClient({ key, maxRequests: 1,
       fetchImpl: (url, options) => (dependencies.fetch || require('undici').fetch)(url, { ...options, dispatcher }) });

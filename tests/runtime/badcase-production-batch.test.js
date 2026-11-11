@@ -7,7 +7,7 @@ const {getGlobalPromptTarget}=require('../../build/lib/agent-prompt-targets');
 const {prepareBatch,runBatch}=require('../../scripts/badcase-capture/batch-comparison.cjs');
 const PROFILE='openai-codex/gpt-6.1-sol',digest='a'.repeat(64),controlId='text-7364c69567dcfaa751e631b7dc90ac48f03c9ce3e5d12a0588f7ea93c94338ac';
 const sha=v=>crypto.createHash('sha256').update(v).digest('hex');
-function fixture(t,{controlFiles=false,bareReplies=false}={}){
+function fixture(t,{controlFiles=false,bareReplies=false,modern=false,controlTarget=false}={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'production-batch-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const scope={globalRoot:path.join(root,'global'),sourceWorktree:path.join(root,'source')},store=createWikiStore(scope);
  const train=store.addTextCases(Array.from({length:4},(_,n)=>({source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'room',messageId:'m'+n,agentId:'role-family-gpt'},role:'GPT',actual:'jargon',expected:'unique expected '+n,message:'',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}))).cases;
@@ -19,15 +19,19 @@ function fixture(t,{controlFiles=false,bareReplies=false}={}){
  // These are already-frozen historical groups, not a request to auto-assign
  // newly classified cases (M1 now requires separate user split confirmation).
  // Keep this legacy execution fixture independent of the new-allocation UI.
+ const modernControl=modern?store.addMarkedCase({source:{projectId:'p1',conversationId:'sample-room',conversationTitle:'Synthetic modern control',messageId:'sample-msg',agentId:'role-family-gpt'},role:'role-family-gpt',actual:'Unclear',expected:'Clear',message:'',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false,sealedCheckpointId:'cp-4'}).case:null;
+ const selectedControlId=modernControl?.id??controlId;
  const s=store.read();for(const [i,c] of marks.entries())s.cases.find(v=>v.id===c.id).split=i%2?'test':'gate';
- // Trusted historical sample fixture, with the exact grandfathered display ID.
- s.revision++;s.cases.push({id:controlId,kind:'text-only',role:'GPT',split:'train',source:{agentId:'role-family-gpt'},createdAt:'2026-01-01T00:00:00.000Z'});fs.writeFileSync(path.join(scope.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
+ // Literal fixtures retain their grandfathered historical sample. NEW scored
+ // experiments use a real marked-badcase gate control with confirmed identity.
+ s.revision++;if(modern)s.cases.find(c=>c.id===selectedControlId).split='gate';else s.cases.push({id:controlId,kind:'text-only',role:'GPT',split:'train',source:{agentId:'role-family-gpt'},createdAt:'2026-01-01T00:00:00.000Z'});fs.writeFileSync(path.join(scope.globalRoot,'snapshots',String(s.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(s)),record:s}));
  const rules={kind:'public-reply-literals-v1',leadChars:120,conclusionMarkers:['结论'],forbiddenTerms:[],forbiddenPatterns:['priority-code','adr-number','detached-head','commit-hash','acceptance-decision-code']};
- for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===controlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules:controlFiles&&i===4?{kind:'file-literals-v1',files:[{path:'REPORT.md',contains:['DONE'],notContains:['TODO']}]}:bareReplies?{kind:'completion-public-reply-v1'}:rules,checkpointHash:digest});
- const config={...scope,repoRoot:root,dependencyRoot:root,image:{imageId:'sha256:'+'1'.repeat(64)},candidateId:candidate.id,modelProfile:PROFILE,keySource:'caff-codex-access',codexAuthFile:path.join(root,'.pi-sandbox','auth.json'),knownKeySources:{sandboxRoot:path.join(root,'.pi-sandbox'),jevSource:'TYPESAFE_API_KEY'},repeats:10,evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1'},cases:[...marks.map(c=>({sourceCaseId:c.id,category:'reproduction',repository:{sourceRoot:root,head:'b'.repeat(40)},dependencies:{kind:'npm-ci-linux-v1',cacheRoot:path.join(root,'cache')}})),{sourceCaseId:controlId,category:'control'}]};
+ for(const [i,c]of [...marks,store.read().cases.find(c=>c.id===selectedControlId)].entries())store.addReplayCase({sourceCaseId:c.id,category:i<4?'reproduction':'control',task:'Synthetic task',fixture:{commit:'b'.repeat(40),sourceCommit:'b'.repeat(40),sourceSubdirectory:'sample',filesHash:digest},request:{captureRoot:path.join(root,'capture-'+i),association:{projectId:'p1',conversationId:i<4?'room-'+i:'sample-room',messageId:i<4?'msg-'+i:'sample-msg',checkpointId:'cp-'+i,turnId:'turn-'+i,agentId:i<2||i===4?'role-family-gpt':'role-family-deepseek',taskId:'task-'+i,runId:1},flagId:'flag-'+sha('p1\0'+(i<4?'msg-'+i:'sample-msg'))},rules:controlFiles&&i===4?{kind:'file-literals-v1',files:[{path:'REPORT.md',contains:['DONE'],notContains:['TODO']}]}:bareReplies?{kind:'completion-public-reply-v1'}:rules,checkpointHash:digest});
+ const config={...scope,repoRoot:root,dependencyRoot:root,image:{imageId:'sha256:'+'1'.repeat(64)},candidateId:candidate.id,modelProfile:PROFILE,keySource:'caff-codex-access',codexAuthFile:path.join(root,'.pi-sandbox','auth.json'),knownKeySources:{sandboxRoot:path.join(root,'.pi-sandbox'),jevSource:'TYPESAFE_API_KEY'},repeats:10,evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1'},cases:[...marks.map(c=>({sourceCaseId:c.id,category:'reproduction',repository:{sourceRoot:root,head:'b'.repeat(40)},dependencies:{kind:'npm-ci-linux-v1',cacheRoot:path.join(root,'cache')}})),{sourceCaseId:selectedControlId,category:'control',...(modern?{repository:{sourceRoot:root,head:'b'.repeat(40)},dependencies:{kind:'npm-ci-linux-v1',cacheRoot:path.join(root,'cache')}}:{})}]};
  const calls=[];const options={collectProductionCandidateFiles:()=>[],prepareProductionComparison:c=>{calls.push(c);return {supported:true,summary:{checkpointHash:digest,checkpointId:c.request.association.checkpointId,rulesHash:sha(JSON.stringify(c.rules)),model:PROFILE,modelConfig:{api:'openai-codex-responses',thinking:'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'}}};}};
  const confirm=c=>store.assignCase({caseId:c.id,entryId:'entry-1',expectedRevision:store.read().revision});
- return {store,marks,candidate,config,options,calls,confirm,plan:()=>prepareBatch(config,options)};
+ if(modern){const label=require('../../build/server/domain/runtime/badcase-capture/wiki-initial-split').projectWikiPatternLabels(store.read()).find(c=>c.caseId===selectedControlId);store.confirmPatternLabel({caseId:selectedControlId,entryId:controlTarget?'entry-1':null,labelHash:label.labelHash,expectedRevision:store.read().revision});}
+ return {store,marks,candidate,config,options,calls,confirm,controlId:selectedControlId,plan:()=>prepareBatch(config,options)};
 }
 test('production planner blocks every unconfirmed holdout before kernel/auth; confirmed raw GPT roles become target rows',t=>{
  const h=fixture(t);assert.throws(h.plan,/wiki_classification_confirmation_required/);assert.equal(h.calls.length,0);
@@ -277,14 +281,10 @@ test('only reviewed experience becomes candidate input; revisions preserve appro
  h.store.addTextCases([{source:{origin:'http://127.0.0.1:3100',projectId:'old',conversationId:'feedback-room',messageId:'train-after-approval',agentId:'role-family-gpt'},role:'GPT',actual:'new symptom',expected:'new expectation',message:'TRAIN-ONLY-AFTER-APPROVAL',traceExcerpt:'',traceState:'missing',messageTruncated:false,traceTruncated:false}]);const induction=require('../../scripts/badcase-capture/wiki-induction.cjs').prepareWikiInduction(h.store).files[0].bytes.toString();assert.doesNotMatch(induction,/positiveExamples|有效：先说明结果/);
  assert.throws(()=>h.store.reviewExperience({experienceId:next.id,expectedRevision:h.store.read().revision,decision:'approved'}),/wiki_experience_conflict/);
 });
-function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
- const h=fixture(t,{controlFiles:true,bareReplies});for(const c of h.marks)h.confirm(c);
- // This grandfathered synthetic control had no annotation; populate only this
- // test snapshot, not real wiki records or any historical production reply.
- const state=h.store.read(),control=state.cases.find(c=>c.id===controlId);control.actual='Unclear';control.expected='Clear';state.revision++;
- fs.writeFileSync(path.join(h.config.globalRoot,'snapshots',String(state.revision).padStart(12,'0')+'.json'),JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(state)),record:state}));
+function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false,screening=true,controlConfirmed=true,controlTarget=false}={}) {
+ const h=fixture(t,{controlFiles:true,bareReplies,modern:true,controlTarget});for(const c of h.marks)h.confirm(c);
  const suite=h.plan().prepared.filter(c=>!c.reportOnly),questions=[{id:'q1',question:'The result is clear.',evidence:'reply'},{id:'q2',question:'The next step is clear.',evidence:'reply'}];
- const modelFor=id=>perCaseModels&&id===controlId?{backend:'jev',model:'jev-latest'}:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'};
+ const modelFor=id=>perCaseModels&&id===h.controlId?{backend:'jev',model:'jev-latest'}:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'};
  const configuration=id=>({...modelFor(id),settings:{},promptHash:require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash('synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend)});
  for(const row of suite){const rubric=h.store.saveRubricDraft({caseId:row.sourceCaseId,model:'deepseek/deepseek-v4-flash',scoringModel:modelFor(row.sourceCaseId),questions},h.store.read().revision);h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic user approval'},h.store.read().revision);h.config.cases.find(c=>c.sourceCaseId===row.sourceCaseId).rubricHash=rubric.hash;}
  const definition={kind:perCaseModels?'wiki-experiment-v2':'wiki-experiment-v1',variants:[{id:'original',promptHash:h.candidate.baseHash},{id:'candidate',promptHash:h.candidate.candidateHash}],
@@ -293,15 +293,33 @@ function scoringV2Fixture(t,{bareReplies=false,perCaseModels=false}={}) {
   ...(!perCaseModels?{judge:configuration(suite[0].sourceCaseId)}:{}),
   cases:suite.map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction,...(perCaseModels?{judge:configuration(c.sourceCaseId)}:{})}))};
  const catalogRoot=path.join(h.config.repoRoot,'judges');fs.mkdirSync(catalogRoot);
- const catalog=require('../helpers/wiki-judge-catalog.cjs')(catalogRoot,[suite[0].sourceCaseId,...(perCaseModels?[controlId]:[])].map(id=>({configuration:configuration(id),prompt:'synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend})));
+ const catalog=require('../helpers/wiki-judge-catalog.cjs')(catalogRoot,[suite[0].sourceCaseId,...(perCaseModels?[h.controlId]:[])].map(id=>({configuration:configuration(id),prompt:'synthetic-descriptor-not-a-judge-prompt-'+modelFor(id).backend})));
  const previous=process.env.CAFF_WIKISKILL_JUDGES_CONFIG;process.env.CAFF_WIKISKILL_JUDGES_CONFIG=catalog.configFile;
  t.after(()=>{if(previous===undefined)delete process.env.CAFF_WIKISKILL_JUDGES_CONFIG;else process.env.CAFF_WIKISKILL_JUDGES_CONFIG=previous;});
  h.config.experiment={definition};h.options.prepareProductionTask=()=> 'ACTUAL-TRIGGERING-USER-TASK';
- const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.scoring=require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring);return p;};
+ const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);if(c.scoring)p.summary.scoring=require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring);return p;};
  const adapter=c=>({configuration:structuredClone(c),evaluate:async()=>{throw Error('No real judge call in batch fakes');}});
  const judge=adapter(configuration(suite[0].sourceCaseId)),judges=Object.fromEntries(suite.map(c=>[c.sourceCaseId,adapter(configuration(c.sourceCaseId))]));
- return {...h,judge,judges,definition,catalog,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
+ const screen=require('../helpers/wiki-experiment-screening.cjs')(h.store,h.config,suite,definition);
+ if(screening)screen(undefined,{confirm:controlConfirmed});
+ return {...h,judge,judges,definition,catalog,screen,pin:()=>{h.config.experiment.plan=h.plan().summary.experiment;return h.plan();}};
 }
+for(const perCaseModels of [false,true])test(`trusted production plan admits trace tool-only marked-badcase with ${perCaseModels?'per-case':'shared'} judge selection`,t=>{
+ const h=scoringV2Fixture(t,{perCaseModels}),source=h.store.read().cases.find(c=>c.id===h.marks[0].id);
+ assert.equal(source.kind,'marked-badcase');assert.equal(source.role,'role-family-gpt');assert.ok(source.sealedCheckpointId);
+ const rubric=h.store.saveRubricDraft({caseId:source.id,model:'deepseek/deepseek-v4-flash',questions:[],scoringModel:null,
+  toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
+ const frozen=h.store.confirmRubric({rubricId:rubric.id,hash:rubric.hash,confirmationRecord:'Synthetic trace-tool approval'},h.store.read().revision);
+ h.config.cases.find(c=>c.sourceCaseId===source.id).rubricHash=frozen.hash;
+ h.screen([source.id]);
+ if(perCaseModels)delete h.definition.cases.find(c=>c.caseId===source.id).judge;
+ let executions=0;h.options.readKey=()=>{executions++;throw Error('No auth in planning');};h.options.runProductionComparison=()=>{executions++;throw Error('No execution in planning');};
+ const before=JSON.stringify(h.store.read()),p=h.pin(),selected=p.summary.experiment.cases.find(c=>c.caseId===source.id),item=p.prepared.find(c=>c.sourceCaseId===source.id);
+ assert.equal(selected.traceToolCheck,'structured-v1');assert.equal(selected.judge,null);assert.equal(selected.rubricHash,frozen.hash);
+ assert.equal(item.comparisonConfig.scoring.binding,null);assert.equal(item.comparisonConfig.scoring.rubric.hash,frozen.hash);
+ assert.equal(JSON.stringify(h.store.read()),before,'trusted plan reads do not alter frozen data');
+ assert.equal(executions,0);
+});
 function runBatchFixture(t,{baseline=true,slot=true}={}) {
  const h=scoringV2Fixture(t,{perCaseModels:true}),sourceCaseId=h.marks[0].id;
  const s=h.store.read();delete s.cases.find(c=>c.id===sourceCaseId).sealedCheckpointId;s.replayCases=s.replayCases.filter(r=>r.sourceCaseId!==sourceCaseId);s.revision++;
@@ -319,7 +337,7 @@ function runBatchFixture(t,{baseline=true,slot=true}={}) {
  const request=buildWikiRunRequest({item:item(),bundle,decision,toolset}),runs=require('../../build/server/domain/runtime/badcase-capture/wiki-run-store').createWikiRunStore(h.config);
  if(baseline){const claim=runs.reserve(request);runs.finish(claim.id,{outcome:{status:baseline==='invalid'?'invalid':'reached',reply:baseline==='invalid'?null:'synthetic original reply'},message:null,modelCalls:1,toolExecutions:0});}
  const selection=h.config.cases.find(c=>c.sourceCaseId===sourceCaseId);delete selection.repository;delete selection.dependencies;
- h.options.runToolset=toolset;h.calls.length=0;
+ h.options.runToolset=toolset;h.screen([sourceCaseId]);h.calls.length=0;
  return {...h,sourceCaseId,item,bundle,decision,toolset,task,request,requestHash:wikiRunHash(request)};
 }
 test('production preflight plans no-scene run with frozen prefix and trusted tools, without requiring a replay or restore sources',t=>{
@@ -339,6 +357,7 @@ function toolRunFixture(t,{reply=false}={}){
  const rubric=h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Synthetic tool consent'},h.store.read().revision);
  h.config.cases.find(c=>c.sourceCaseId===source.id).rubricHash=rubric.hash;
  if(!reply){delete h.definition.cases.find(c=>c.caseId===source.id).judge;delete h.judges[source.id];}
+ h.screen([source.id]);
  return {...h,rubric};
 }
 function toolMixedExecution(h,{invalid=false,judgeFault}={}){
@@ -398,8 +417,8 @@ test('run preflight accepts the Badcase-page pattern label without legacy precla
  assert.equal(row.supported,true);assert.equal(row.targetReproduction,true);assert.equal(row.classification.source,'manual');assert.deepEqual(h.store.read(),before);
  assert.ok(!before.versions.some(v=>v.caseIds.includes(h.sourceCaseId)));
 });
-test('run preflight rejects missing/invalid original output, tools, candidate slot, or scene-only options before model/auth',t=>{
- for(const baseline of [false,'invalid']){const h=runBatchFixture(t,{baseline});assert.throws(h.plan,{code:'wiki_run_baseline_required'});}
+test('run preflight uses independent screening rather than raw output, and still rejects bad tools/slot/scene options before model/auth',t=>{
+ for(const baseline of [false,'invalid']){const h=runBatchFixture(t,{baseline});assert.doesNotThrow(h.plan,'independent reproduced precheck replaces the raw-run prerequisite');}
  const slot=runBatchFixture(t,{slot:false});assert.throws(slot.plan,{code:'wiki_run_candidate_invalid'});
  const noTools=runBatchFixture(t);delete noTools.options.runToolset;assert.throws(noTools.plan,{code:'wiki_run_tools_invalid'});
  for(const patch of [{repository:{}},{dependencies:{}},{replayVersionId:'not-a-run-version'}]){const h=runBatchFixture(t);Object.assign(h.config.cases.find(c=>c.sourceCaseId===h.sourceCaseId),patch);assert.throws(h.plan,{code:'evaluation_batch_cases_invalid'});}
@@ -551,19 +570,19 @@ test('v2 batch binds independent experiment and frozen rubrics before execution;
  assert.equal(p.summary.kind,'wiki-staged-batch-comparison-v2');assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v1');assert.deepEqual(h.store.read(),before);
  assert.equal(p.summary.disclosures.includes('literal_rules_not_semantic_judgment'),false);assert.ok(p.summary.disclosures.includes('literal_metrics_reference_only'));
  for(const row of p.prepared.filter(c=>c.supported)){assert.equal(row.comparisonConfig.scoring.task,'ACTUAL-TRIGGERING-USER-TASK');assert.equal(row.comparisonConfig.scoring.rubric.hash,row.comparison.scoring.rubricHash);assert.equal(row.comparisonConfig.scoring.expected,h.store.read().cases.find(c=>c.id===row.sourceCaseId).expected);}
- const control=p.prepared.find(c=>c.sourceCaseId===controlId);assert.equal(control.comparisonConfig.rules.kind,'file-literals-v1');assert.equal(p.summary.experiment.cases.find(c=>c.caseId===controlId).hardAssertionsHash,require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(control.comparisonConfig.rules));
+ const control=p.prepared.find(c=>c.sourceCaseId===h.controlId);assert.equal(control.comparisonConfig.rules.kind,'file-literals-v1');assert.equal(p.summary.experiment.cases.find(c=>c.caseId===h.controlId).hardAssertionsHash,require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(control.comparisonConfig.rules));
  assert.equal(JSON.stringify(p.summary).includes('ACTUAL-TRIGGERING-USER-TASK'),false);assert.equal(JSON.stringify(p.summary).includes('The result is clear.'),false);
  for(const mutate of [x=>x.definition.runner.settings.thinking='low',x=>x.definition.variants[1].promptHash='f'.repeat(64),x=>x.definition.cases[0].stage=x.definition.cases[0].stage==='test'?'gate':'test',x=>x.config.cases[0].topicExemption={},x=>x.config.cases[0].rulesRevision='snapshot-head-exemption-v1']){const x=scoringV2Fixture(t);mutate(x);assert.throws(x.plan);}
 });
 test('formal planning refuses uncalibrated settings/prompt even when adapters and a self-pinned plan match',async t=>{
  for(const perCaseModels of [false,true])for(const field of ['settings','promptHash']){
   const h=scoringV2Fixture(t,{perCaseModels}),p=h.pin();h.calls.length=0;
-  const selected=perCaseModels?h.definition.cases.find(c=>c.caseId===controlId).judge:h.definition.judge;
+  const selected=perCaseModels?h.definition.cases.find(c=>c.caseId===h.controlId).judge:h.definition.judge;
   if(field==='settings')selected.settings.temperature=1;else selected.promptHash=sha('uncalibrated prompt');
-  const changed=require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').bindWikiJudge(selected,h.store.read().rubrics.find(r=>r.caseId===(perCaseModels?controlId:h.definition.cases[0].caseId)));
+  const changed=require('../../build/server/domain/runtime/badcase-capture/wiki-scoring-v2').bindWikiJudge(selected,h.store.read().rubrics.find(r=>r.caseId===(perCaseModels?h.controlId:h.definition.cases[0].caseId)));
   // A caller can rehash its own plan; this must not replace calibration authority.
   const plan=structuredClone(p.summary.experiment);
-  for(const c of plan.cases)if(!perCaseModels||c.caseId===controlId){c.judge={...changed,rubricHash:c.rubricHash};h.judges[c.caseId].configuration=structuredClone(selected);}
+  for(const c of plan.cases)if(!perCaseModels||c.caseId===h.controlId){c.judge={...changed,rubricHash:c.rubricHash};h.judges[c.caseId].configuration=structuredClone(selected);}
   const {planHash,...payload}=plan;plan.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(payload);h.config.experiment.plan=plan;
   if(!perCaseModels)h.judge.configuration=structuredClone(selected);
   assert.throws(h.plan,{code:'wiki_judge_not_eligible'});assert.equal(h.calls.length,0);
@@ -586,13 +605,13 @@ test('formal planning rejects missing/unreadable catalogs and rechecks eligibili
 test('per-case models route to the frozen adapter for both variants, publish mixed judges and print each configuration',async t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true});const p=h.pin();assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v2');
  const f=v2Execution(h),r=await f.run();assert.equal(r.gateDecision.outcome,'accepted');assert.equal(f.calls.length,3);
- for(const c of r.cases.filter(c=>!c.reportOnly)){const expected=c.sourceCaseId===controlId?'jev':'deepseek';assert.ok(c.runs.every(run=>run.assessment.binding.backend===expected));assert.equal(new Set(c.runs.map(run=>JSON.stringify(run.assessment.binding))).size,1);}
+ for(const c of r.cases.filter(c=>!c.reportOnly)){const expected=c.sourceCaseId===h.controlId?'jev':'deepseek';assert.ok(c.runs.every(run=>run.assessment.binding.backend===expected));assert.equal(new Set(c.runs.map(run=>JSON.stringify(run.assessment.binding))).size,1);}
  const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);assert.deepEqual(saved.experiment,r.experiment);
  const output=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved);assert.match(output,/jev-latest/);assert.match(output,/deepseek-v4-flash/);
 });
 test('per-case missing or wrong adapter refuses before any event or paid replay, never falls back to a global judge',async t=>{
  for(const mode of ['missing','wrong','hash']){const h=scoringV2Fixture(t,{perCaseModels:true});h.pin();const f=v2Execution(h);
-  if(mode==='missing')delete f.options.judges[controlId];else if(mode==='wrong')f.options.judges[controlId]=h.judge;else f.options.judges[controlId].configuration.promptHash='f'.repeat(64);
+  if(mode==='missing')delete f.options.judges[h.controlId];else if(mode==='wrong')f.options.judges[h.controlId]=h.judge;else f.options.judges[h.controlId].configuration.promptHash='f'.repeat(64);
   await assert.rejects(f.run(),/wiki_(judge_adapter_required|judge_binding_changed)/);assert.equal(f.calls.length,0);assert.equal(f.events.length,0);}
 });
 test('v2 registers and plans new reply-only cases without inventing keyword rules or exemptions',t=>{
@@ -614,7 +633,7 @@ test('v2 frozen experiment rejects drift in task, rubric, scene and judge config
   if(change==='rubric'){const d=h.store.saveRubricDraft({caseId:h.marks[0].id,model:'deepseek/deepseek-v4-flash',scoringModel:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'},questions:[{id:'a',question:'New assertion.',evidence:'reply'},{id:'b',question:'Another assertion.',evidence:'reply'}]},h.store.read().revision);h.store.confirmRubric({rubricId:d.id,hash:d.hash,confirmationRecord:'Synthetic approval'},h.store.read().revision);h.config.cases[0].rubricHash=d.hash;}
   if(change==='scene'){const prepare=h.options.prepareProductionComparison;h.options.prepareProductionComparison=c=>{const p=prepare(c);p.summary.checkpointHash='f'.repeat(64);return p;};}
   if(change==='judge')h.definition.judge.promptHash='f'.repeat(64);
-  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed|wiki_judge_not_eligible/);assert.equal(h.store.read().candidates.length,1);
+  assert.throws(h.plan,/wiki_experiment_changed|evaluation_batch_input_changed|wiki_judge_not_eligible|wiki_experiment_precheck_required/);assert.equal(h.store.read().candidates.length,1);
  }
 });
 function v2Execution(h,settings={}){
@@ -638,15 +657,17 @@ function v2Execution(h,settings={}){
  };
  return f;
 }
-test('scene trace planning rejects a latest tool-only rubric before judge selection or execution',t=>{
+test('scene trace planning selects the latest tool-only frozen rubric with no judge',t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true}),c=h.marks[0];
  const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',questions:[],scoringModel:null,
   toolCheck:{method:'code',target:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',rules:[{parameter:'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
  h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Tool-only scene report'},h.store.read().revision);
  h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=draft.hash;delete h.definition.cases.find(r=>r.caseId===c.id).judge;
- assert.throws(h.plan,{code:'wiki_tool_check_run_only'});
+ h.screen([c.id]);
+ const p=h.plan(),selected=p.summary.experiment.cases.find(r=>r.caseId===c.id);
+ assert.equal(selected.rubricHash,draft.hash);assert.equal(selected.judge,null);assert.equal(selected.traceToolCheck,'structured-v1');
 });
-test('scene gate/test trace v2 plans and immutable receipts accept one mixed rubric; tool check stays out of trace judgments',async t=>{
+test('scene gate/test trace v2 plans publish host-scored mixed checks, never raw callback parameters',async t=>{
  const h=scoringV2Fixture(t,{perCaseModels:true});
  for(const c of h.marks.slice(0,2)){
   const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',scoringModel:{backend:'deepseek',model:'deepseek/deepseek-v4-flash'},
@@ -655,24 +676,115 @@ test('scene gate/test trace v2 plans and immutable receipts accept one mixed rub
   const frozen=h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Mixed scene checks'},h.store.read().revision);
   h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=frozen.hash;
  }
+ h.screen(h.marks.slice(0,2).map(c=>c.id));
  const before=h.store.read(),p=h.pin();assert.equal(p.summary.experiment.kind,'wiki-experiment-plan-v2');
- const f=v2Execution(h),r=await f.run();assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');
+ const f=structuredTraceExecution(h),r=await f.run();assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');
  const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
- assert.deepEqual(store.read()[0],saved);assert.deepEqual(h.store.read(),before);
+ assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);assert.deepEqual(h.store.read(),before);
  for(const c of saved.cases.filter(c=>h.marks.slice(0,2).some(m=>m.id===c.sourceCaseId))){
-  assert.ok(c.rubric.toolCheck);assert.ok(c.runs.every(row=>row.checks===undefined&&row.assessment.rubricHash===c.rubric.hash));
-  assert.deepEqual(c.runs[0].assessment.judgments.map(q=>q.criterionId),['trace','reply']);
+  assert.ok(c.rubric.toolCheck);assert.ok(c.runs.every(row=>row.checks===undefined&&row.assessment.tool&&row.assessment.rubricHash===c.rubric.hash));
+  const pass=c.runs.find(row=>row.status==='pass');assert.deepEqual(pass.assessment.judgments.map(q=>q.criterionId),['trace','reply']);
+  for(const row of c.runs.filter(row=>row.status==='fail'))assert.equal(row.assessment.votes.length,0);
  }
+ assert.equal(f.judged(),90,'30 passing mixed receipts get three votes each; violations never call the judge');
+ assert.doesNotMatch(JSON.stringify(saved),/goal\/suggest|PRIVATE-CALLBACK-PARAMETER|PRIVATE-WORKER/);
+ for(const c of saved.cases)for(const row of c.runs)assert.equal(row.goalEvidence,undefined);
  const text=require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved);
- for(const c of h.marks.slice(0,2))assert.match(text.split('\n').find(line=>line.startsWith('断言 '+c.id)),/工具调用检查不用于 trace 级/);
+ for(const c of h.marks.slice(0,2))assert.match(text.split('\n').find(line=>line.startsWith('断言 '+c.id)),/工具调用检查按结构化记录判定/);
+});
+function traceToolFixture(t,{mixed=false,native=false}={}){
+ const h=scoringV2Fixture(t,{perCaseModels:true});
+ for(const c of h.marks.slice(0,2)){
+  const draft=h.store.saveRubricDraft({caseId:c.id,model:'deepseek/deepseek-v4-flash',
+   questions:mixed?[{id:'q1',question:'The reply is clear.',evidence:'reply'}]:[],scoringModel:mixed?{backend:'deepseek',model:'deepseek/deepseek-v4-flash'}:null,
+   toolCheck:{method:'code',target:native?{kind:'native',name:'read'}:{kind:'caff-chat',name:'suggest-goal'},mode:'on-call',
+    rules:[{parameter:native?'path':'reason',kind:'max-chars',max:1000}]}},h.store.read().revision);
+  h.store.confirmRubric({rubricId:draft.id,hash:draft.hash,confirmationRecord:'Synthetic structured trace approval'},h.store.read().revision);
+  h.config.cases.find(r=>r.sourceCaseId===c.id).rubricHash=draft.hash;
+  if(!mixed){delete h.definition.cases.find(r=>r.caseId===c.id).judge;delete h.judges[c.id];}
+ }
+ h.screen(h.marks.slice(0,2).map(c=>c.id));
+ return h;
+}
+function structuredTraceExecution(h,{invalid=false,onceInvalid=false,judgeFault=false,native=false}={}){
+ const f=v2Execution(h),legacy=f.options.runProductionComparison;let judged=0;
+ f.options.runProductionComparison=async(config,options)=>{
+  if(!config.scoring.rubric.toolCheck)return legacy(config,options);
+  f.calls.push(config);options.onEvent({event:'plan',runtimeHash:digest});const runs=[],slots={original:0,candidate:0},attempts={original:0,candidate:0};let variant='original',extras=0;
+  while(slots.original<10||slots.candidate<10){
+   if(slots[variant]===10)variant=variant==='original'?'candidate':'original';
+   const iteration=++attempts[variant],failed=config.request.association.checkpointId==='cp-0'&&variant==='original',unreached=invalid||onceInvalid&&variant==='original'&&iteration===1;
+   const reason=(failed?'x'.repeat(1001):'PRIVATE-CALLBACK-PARAMETER').padEnd(failed?1001:862,'x'),executionId=crypto.randomUUID();
+   const shape=require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items.find(x=>x.case===23&&x.step===45);
+   const receipt={success:true,finalText:'RESULT. PRIVATE-WORKER-REPLY-NOT-FOR-PAGE',replySource:'public',modelCalls:[{success:true}],
+    toolCalls:native?(unreached?[]:[{name:'read',isError:false,args:{path:reason}}]):shape.toolCalls.map(c=>({name:c.name,args:c.arguments,isError:false})),
+    goalEvidence:{kind:'evaluation-goal-evidence-v1',executionId,goalState:'unseeded',seed:null,seedHash:sha('null'),calls:unreached?[]:[{executionId,sequence:1,endpoint:'goal/suggest',parameters:{action:'pause',reason},
+     statusCode:failed?400:200,errorCode:null,response:failed?{error:'Goal proposal reason must be 1000 characters or fewer'}:{ok:true}}]}};
+   if(native)delete receipt.goalEvidence;
+   options.onEvent({event:'run_start',variant,iteration});options.onEvent({event:'model_call',variant,iteration,model:PROFILE});
+   const assessment=await require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').scoreWikiReceipt({receipt,rules:config.rules,scoring:config.scoring},
+    config.scoring.binding===null?undefined:{configuration:options.judge.configuration,evaluate:async()=>{judged++;if(judgeFault)throw Error('PRIVATE-JUDGE-DETAIL');return {judgments:config.scoring.rubric.questions.map(q=>({criterionId:q.id,verdict:'satisfied',reason:'Synthetic reasoning',evidence:[q.evidence==='trace'?{source:'trace',text:'{"toolCalls":'}:{source:'reply',text:'RESULT.'}]}))};}});
+   const row={variant,iteration,status:assessment.status,...(assessment.reason?{reason:assessment.reason}:{}),assessment,replySource:'public',cleaned:true};
+   runs.push(row);options.onEvent({event:'run',...row});
+   if(row.status==='invalid'||row.status==='error'&&!['judge_backend_failed','judge_output_invalid'].includes(row.reason)){if(++extras===5)break;}else slots[variant]++;
+   variant=variant==='original'?'candidate':'original';
+  }
+  return {completed:runs.filter(r=>r.variant==='original'&&['pass','fail'].includes(r.status)).length===10&&runs.filter(r=>r.variant==='candidate'&&['pass','fail'].includes(r.status)).length===10,runs,modelCallsKnown:runs.length,callsUnavailable:false};
+ };
+ return {...f,judged:()=>judged};
+}
+for(const native of [false,true])test(`formal tool-only ${native?'native':'callback'} trace checks publish with null judge and correct denominators`,async t=>{
+ const h=traceToolFixture(t,{native});h.pin();const f=structuredTraceExecution(h,{native}),r=await f.run();assert.equal(r.completed,true);assert.equal(f.judged(),0);
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ assert.deepEqual(store.read()[0],saved);assert.equal(saved.gateDecision.outcome,'accepted');assert.deepEqual(saved.byStage,r.byStage);
+ for(const c of saved.cases.filter(c=>c.rubric?.toolCheck))assert.ok(c.runs.every(row=>row.assessment.binding===null&&row.assessment.votes.length===0));
+});
+for(const onceInvalid of [false,true])test(`formal trace invalid ${onceInvalid?'replacement':'exhaustion'} stays outside scored denominator and survives publication`,async t=>{
+ const h=traceToolFixture(t);h.pin();const f=structuredTraceExecution(h,{onceInvalid,invalid:!onceInvalid}),r=await f.run();
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ assert.deepEqual(store.read()[0],saved);assert.deepEqual(saved.byStage,r.byStage);assert.deepEqual(saved.gateDecision,r.gateDecision);
+ const c=saved.cases.find(c=>c.sourceCaseId===h.marks[0].id);assert.equal(c.totals.original.invalid,onceInvalid?1:3);assert.equal(c.totals.original.scored,onceInvalid?10:0);
+ assert.equal(c.totals.original.errors,0);assert.equal(c.runs[0].status,'invalid');assert.equal(c.runs[0].assessment.reason,'no_check_reached');assert.equal(f.judged(),0);
+ assert.equal(saved.completed,onceInvalid);assert.equal(saved.gateDecision.outcome,onceInvalid?'accepted':'indeterminate');
+});
+test('formal structured trace tool and plan summaries reject tampering, missing checks, impossible votes and null binding drift',async t=>{
+ const h=traceToolFixture(t);h.pin();const r=await structuredTraceExecution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ store.save(r);const first=x=>x.cases.find(c=>c.sourceCaseId===h.marks[0].id),rehash=x=>{const{planHash,...body}=x.experiment;x.experiment.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(body);};
+ for(const mutate of [x=>delete first(x).runs[0].assessment.tool,x=>first(x).runs[0].assessment.tool.status='pass',x=>first(x).runs[0].assessment.tool.reason=null,
+  x=>first(x).runs[0].assessment.binding={},x=>first(x).runs[0].assessment.tool.parameters={reason:'PRIVATE-CALLBACK-PARAMETER'},x=>first(x).runs[0].assessment.votes=[[]],
+  x=>{delete x.experiment.cases.find(c=>c.caseId===h.marks[0].id).traceToolCheck;rehash(x);},x=>{x.experiment.cases.find(c=>c.caseId===h.controlId).traceToolCheck='structured-v1';rehash(x);},
+  x=>{delete first(x).runs[0].assessment;first(x).runs[0].reason='tool_rule_failed';}]){
+  const changed=structuredClone(r);mutate(changed);assert.throws(()=>store.save(changed),/wiki_(comparison|rubric|experiment)_invalid/);
+ }
+});
+test('historical marker-free mixed trace results remain byte-readable with ignored toolCheck and no new counters',async t=>{
+ const h=traceToolFixture(t,{mixed:true});h.pin();const r=await v2Execution(h).run();
+ // Historical scorer ignored the co-frozen toolCheck. Freeze that old shape,
+ // not a new structured evaluation disguised by stripping its tool result.
+ for(const c of r.experiment.cases)delete c.traceToolCheck;
+ delete r.experiment.admission;
+ const {planHash,...body}=r.experiment;r.experiment.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(body);
+ const {projectProductionResultV2}=require('../../build/server/domain/runtime/badcase-capture/wiki-production-result-v2'),{wikiComparisonTotals}=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-totals');
+ const payload=projectProductionResultV2(r,wikiComparisonTotals),record={id:'comparison-'+sha(JSON.stringify(payload)),createdAt:'2026-11-09T00:00:00.000Z',...payload};
+ const directory=path.join(h.config.globalRoot,'comparisons');fs.mkdirSync(directory);const file=path.join(directory,record.id.slice(11)+'.json'),bytes=JSON.stringify({schemaVersion:1,checksum:sha(JSON.stringify(record)),record})+'\n';fs.writeFileSync(file,bytes);
+ const store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);assert.deepEqual(store.read()[0],record);assert.deepEqual(store.save(record),record);
+ assert.equal(Object.hasOwn(record.experiment,'admission'),false);
+ assert.equal(fs.readFileSync(file,'utf8'),bytes);assert.ok(record.cases.filter(c=>c.rubric?.toolCheck).every(c=>c.runs.every(row=>row.assessment.tool===undefined)&&c.totals.original.invalid===undefined));
+ assert.ok(record.experiment.cases.every(c=>c.traceToolCheck===undefined));assert.equal(record.byStage.gate.original.invalid,undefined);
+});
+test('structured trace mixed judge errors occupy slots and retain invalid counters after publication',async t=>{
+ const h=traceToolFixture(t,{mixed:true});h.pin();const f=structuredTraceExecution(h,{judgeFault:true}),r=await f.run();assert.equal(f.judged(),20);
+ const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
+ assert.deepEqual(saved.byStage,r.byStage);assert.equal(saved.gateDecision.outcome,'indeterminate');assert.equal(saved.completed,false);
+ assert.equal(saved.cases.find(c=>c.sourceCaseId===h.marks[0].id).totals.candidate.errors,10);
 });
 test('v2 immutable publication retains criterion votes/citations/reference metrics, not full replies, and rejects forged judgments',async t=>{
  const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
  const saved=store.save(r);assert.equal(saved.kind,'wiki-staged-batch-comparison-v2');assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);
  const c=saved.cases.find(c=>c.sourceCaseId===h.marks[0].id);assert.equal(c.rubric.status,'frozen');assert.equal(c.runs[0].assessment.votes.length,3);assert.equal(c.runs[0].assessment.judgments[0].verdict,'not-satisfied');assert.equal(c.runs[0].assessment.referenceMetrics.noForbiddenTerms,false);
- const control=saved.cases.find(c=>c.sourceCaseId===controlId);assert.deepEqual(control.hardAssertionIds,['files']);assert.equal(control.runs[0].assessment.hardAssertions.find(a=>a.id==='files').status,'pass');
+ const control=saved.cases.find(c=>c.sourceCaseId===h.controlId);assert.deepEqual(control.hardAssertionIds,['files']);assert.equal(control.runs[0].assessment.hardAssertions.find(a=>a.id==='files').status,'pass');
  assert.equal(c.runs[0].assessment.votes[0][0].evidence[0].text,'RESULT.');assert.equal(JSON.stringify(saved).includes('PRIVATE-WORKER'),false);assert.equal(h.store.read().experiences.length,0,'v2 must not auto-draft a misleading literal-rule experience');
- for(const change of [x=>x.cases.find(c=>!c.reportOnly).runs[0].status='pass',x=>x.cases.find(c=>!c.reportOnly).runs[0].assessment.judgments[0].verdict='satisfied',x=>x.experiment.planHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).comparison.scoring.binding.promptHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).rubric.questions[0].question='Forged question?',x=>x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions=x.cases.find(c=>c.sourceCaseId===controlId).runs[0].assessment.hardAssertions.filter(a=>a.id!=='files')]){const x=structuredClone(r);change(x);assert.throws(()=>store.save(x));}
+ for(const change of [x=>x.cases.find(c=>!c.reportOnly).runs[0].status='pass',x=>x.cases.find(c=>!c.reportOnly).runs[0].assessment.judgments[0].verdict='satisfied',x=>x.experiment.planHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).comparison.scoring.binding.promptHash='f'.repeat(64),x=>x.cases.find(c=>!c.reportOnly).rubric.questions[0].question='Forged question?',x=>x.cases.find(c=>c.sourceCaseId===h.controlId).runs[0].assessment.hardAssertions=x.cases.find(c=>c.sourceCaseId===h.controlId).runs[0].assessment.hardAssertions.filter(a=>a.id!=='files')]){const x=structuredClone(r);change(x);assert.throws(()=>store.save(x));}
 });
 test('v2 insufficient evidence is an immutable fail, not an error or replacement answer',async t=>{
  const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h,{insufficient:true}),r=await f.run();assert.equal(f.calls.length,2);assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'rejected');
@@ -687,7 +799,7 @@ test('v2 judge technical failure leaves a denominator gap, continues other gate 
   assert.equal(f.calls.length,2);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
   const saved=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r);
   assert.equal(saved.byStage.gate.original.scored,19);assert.equal(saved.byStage.gate.original.errors,1);assert.equal(saved.byStage.gate.original.notRun,1);assert.equal(saved.byStage.gate.candidate.scored,20);assert.equal(saved.byStage.test.original.attempted,0);
-  assert.equal(saved.cases.find(c=>c.sourceCaseId===controlId).status,'completed');
+  assert.equal(saved.cases.find(c=>c.sourceCaseId===h.controlId).status,'completed');
   assert.equal(saved.cases.flatMap(c=>c.runs)[0].assessment.reason,judgeFault==='backend'?'judge_backend_failed':'judge_output_invalid');
   assert.equal(JSON.stringify(saved).includes('PRIVATE-JUDGE-DETAIL'),false);
  }
@@ -739,4 +851,74 @@ test('production model never silently falls back to proxy or accepts caller-draw
  const h=fixture(t);for(const c of h.marks)h.confirm(c);
  for(const patch of [{repeats:3},{keySource:'caff-deepseek'},{evaluation:{kind:'wikiskill-gate-v1',targetEntryId:'entry-1',gateCaseIds:[]}}])assert.throws(()=>prepareBatch({...h.config,...patch},h.options),/evaluation_gate_config_invalid/);
  delete h.config.cases[0].repository;assert.throws(h.plan,/evaluation_repository_restore_required/);
+});
+
+test('Goal approximation marker survives formal v2 persistence/export and readable staged report without rewriting legacy bytes',async t=>{
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config);
+ const legacy=store.save(r),legacyBytes=fs.readFileSync(path.join(h.config.globalRoot,'comparisons',legacy.id.slice(11)+'.json'));
+ const marked=structuredClone(r),marker={goalState:'approximate-minimal-v1',goalSeedHash:'e'.repeat(64),goalExecutionId:crypto.randomUUID()};
+ for(const c of marked.cases)for(const row of c.runs){Object.assign(row,marker);Object.assign(row.assessment.referenceMetrics,marker);}
+ const saved=store.save(marked);assert.notEqual(saved.id,legacy.id);
+ for(const c of saved.cases)for(const row of c.runs){for(const k of Object.keys(marker))assert.equal(row[k],marker[k]);assert.equal(row.assessment.referenceMetrics.goalState,marker.goalState);}
+ assert.deepEqual(JSON.parse(JSON.stringify(saved)),saved);assert.match(require('../../scripts/badcase-capture/staged-batch.cjs').formatStagedBatch(saved),/Goal 状态近似/);
+ assert.deepEqual(fs.readFileSync(path.join(h.config.globalRoot,'comparisons',legacy.id.slice(11)+'.json')),legacyBytes);
+ assert.equal(JSON.stringify(legacy).includes('goalState'),false);
+});
+
+test('new trusted scoring plans require independent precheck reproduction and exact control consent before paid execution',async t=>{
+ for(const settings of [{screening:false},{controlConfirmed:false},{controlTarget:true}]){
+  const h=scoringV2Fixture(t,settings),f=v2Execution({...h,plan:()=>({summary:{planHash:digest}})});
+  assert.throws(h.plan,/wiki_experiment_(?:precheck_required|control_required|control_target_mode)/);
+  await assert.rejects(f.run(),/wiki_experiment_(?:precheck_required|control_required|control_target_mode)/);
+  assert.equal(f.calls.length,0);assert.equal(f.events.length,0);assert.equal(f.legacyReads(),0);
+ }
+});
+test('trusted plans pin current measured prechecks and consent in the experiment, never in formal counts',t=>{
+ const h=scoringV2Fixture(t),before=JSON.stringify(h.store.read()),p=h.pin(),a=p.summary.experiment.admission;
+ assert.equal(a?.kind,'wiki-experiment-admission-v1');assert.equal(a.targetEntryId,'entry-1');
+ assert.equal(a.cases.length,3);assert.equal(a.cases.find(c=>c.caseId===h.controlId).controlHash,h.store.read().controlConfirmations[0].hash);
+ assert.equal(JSON.stringify(h.store.read()),before);assert.doesNotMatch(JSON.stringify(a),/Unclear|Clear|captureRoot/);
+});
+test('latest reserved or nonreproducing precheck invalidates trusted plans instead of borrowing historical success',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ for(const n of [0,1])for(const reserve of [false,true]){
+  const h=scoringV2Fixture(t);h.pin();t.mock.timers.setTime(Date.now()+1000);
+  const id=n?h.controlId:h.marks[0].id;h.screen([id],{reserve,statuses:n?['pass','fail','error']:['pass','pass','pass']});
+  assert.throws(h.plan,/wiki_experiment_(?:precheck_required|control_required)/);
+ }
+});
+test('old unadmitted scored plans are readable but cannot be pinned as a new current-evidence execution',t=>{
+ const h=scoringV2Fixture(t),p=h.pin(),old=structuredClone(p.summary.experiment);delete old.admission;
+ const {planHash,...payload}=old;old.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(payload);
+ const bytes=JSON.stringify(old);assert.equal(JSON.stringify(require('../../build/server/domain/runtime/badcase-capture/wiki-experiment-plan').validateWikiExperimentPlan(old)),bytes);
+ h.config.experiment.plan=old;assert.throws(h.plan,/wiki_experiment_changed/);
+});
+test('evidence drift between cases stops further paid replays and does not promote an incomplete result',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const h=scoringV2Fixture(t);h.pin();const f=v2Execution(h),execute=f.options.runProductionComparison;let changed=false;
+ f.options.runProductionComparison=async(c,o)=>{const r=await execute(c,o);if(!changed){changed=true;t.mock.timers.setTime(Date.now()+1000);h.screen([h.marks[0].id],{reserve:true});}return r;};
+ const r=await f.run();assert.equal(f.calls.length,1);assert.equal(r.completed,false);assert.equal(r.gateDecision.outcome,'indeterminate');
+ assert.equal(r.cases.filter(c=>c.stage==='test').some(c=>c.runs.length),false);
+ assert.throws(()=>require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config).save(r),/wiki_comparison_invalid/);
+});
+test('new result publication checks admission evidence; stored history and exact idempotent publication stay byte-stable',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const h=scoringV2Fixture(t);h.pin();const r=await v2Execution(h).run(),store=require('../../build/server/domain/runtime/badcase-capture/wiki-comparison-store').createWikiComparisonStore(h.config),saved=store.save(r);
+ const file=path.join(h.config.globalRoot,'comparisons',saved.id.slice(11)+'.json'),bytes=fs.readFileSync(file),proof=r.experiment.admission;
+ assert.equal(proof?.kind,'wiki-experiment-admission-v1');
+ for(const mutate of [a=>a.cases[0].precheckPlanHash='f'.repeat(64),a=>a.cases[0].precheckResultHash='f'.repeat(64),a=>a.targetEntryId='entry-other']){
+  const x=structuredClone(r);mutate(x.experiment.admission);const {hash,...a}=x.experiment.admission;x.experiment.admission.hash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(a);
+  const {planHash,...p}=x.experiment;x.experiment.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(p);
+  assert.throws(()=>store.save(x),/wiki_comparison_invalid/);
+ }
+ const stripped=structuredClone(r);delete stripped.experiment.admission;const {planHash,...p}=stripped.experiment;stripped.experiment.planHash=require('../../build/server/domain/runtime/badcase-capture/wiki-rubric').wikiValueHash(p);
+ assert.throws(()=>store.save(stripped),/wiki_comparison_invalid/);
+ t.mock.timers.setTime(Date.now()+1000);h.screen([h.marks[0].id],{reserve:true});
+ assert.deepEqual(store.read()[0],saved);assert.deepEqual(store.save(saved),saved);assert.deepEqual(fs.readFileSync(file),bytes);
+ const fresh=structuredClone(r);fresh.executionId='another-execution';assert.throws(()=>store.save(fresh),/wiki_comparison_invalid/);
+});
+test('dropping scored experiment selects a different legacy contract and cannot reuse a modern confirmation',async t=>{
+ const h=scoringV2Fixture(t),p=h.pin();delete h.config.experiment;for(const c of h.config.cases)delete c.rubricHash;
+ let workers=0;await assert.rejects(runBatch(h.config,{...h.options,confirmed:true,expectedPlanHash:p.summary.planHash,runProductionComparison:async()=>{workers++;}}),/evaluation_batch_confirmation_required/);
+ assert.equal(workers,0);assert.notEqual(h.plan().summary.planHash,p.summary.planHash);
 });

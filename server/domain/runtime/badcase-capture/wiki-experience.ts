@@ -71,8 +71,16 @@ export function buildWikiExperienceDraft(state: any, result: any, observations: 
   const stageLine = (stage: string) => rows.filter((r: any) => r.stage === stage && !r.reportOnly)
     .map((r: any) => `#${r.displayNumber} 原版 ${r.original.passed}/${r.original.scored}，候选 ${r.candidate.passed}/${r.candidate.scored}`
       + (r.original.errors + r.candidate.errors ? `（环境错误 ${r.original.errors + r.candidate.errors}，不改变有效分母）` : '') + (r.original.notRun + r.candidate.notRun ? `（未运行 ${r.original.notRun}/${r.candidate.notRun}）` : '')).join('；') || '未运行';
-  const lines = [`本轮改法：${candidate.appendedSection.trim()}`,
-    `门槛：${result.gateDecision.outcome}；${stageLine('gate')}。`, `测试：${stageLine('test')}。`];
+  const holdout = result.kind === 'wiki-mode-holdout-comparison-v2', holdoutStages = holdout ? '门槛/验证' : '门槛/测试';
+  const v = result.validation, repair = result.gateDecision.repair;
+  const lines = [`本轮改法：${candidate.appendedSection.trim()}`, ...(holdout ? [
+    `门槛（本模式）：${result.gateDecision.outcome}；合计原版 ${repair.original.passed}/${repair.original.total}，候选 ${repair.candidate.passed}/${repair.candidate.total}；单侧 Fisher p=${repair.pValue ?? 'N/A'}（阈值 0.05）；${stageLine('gate')}。`,
+    `验证（其他模式对照题）：${v.status}；` + (v.cases.map((c: any) => {
+      const stopped = result.cases.find((row: any) => row.sourceCaseId === c.caseId)?.reason === 'wiki_validation_prior_degradation';
+      return `#${numbers.get(c.caseId)} 原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${stopped ? 'not-run（已有劣化而停止）' : c.degraded === null ? '未完成' : (c.degraded ? '劣化' : '未劣化') + `（少通过 ${c.loss} 次）`}`;
+    }).join('；') || '没有可运行的对照题') + '。',
+    '未覆盖：' + (v.uncovered.map((c: any) => c.entryId + (c.reason === 'operator-skipped' ? '（操作方跳过）' : '（无已确认对照题）')).join('、') || '无') + '。未覆盖不等于验证通过。',
+  ] : [`门槛：${result.gateDecision.outcome}；${stageLine('gate')}。`, `测试：${stageLine('test')}。`])];
   if (opening.length) lines.push('有效/无效观察：“开头先给结论”字面检查：' + opening.map((r: any) =>
     `#${r.displayNumber} 从 ${r.literal.original.conclusionInLead}/${r.literal.original.observed} 到 ${r.literal.candidate.conclusionInLead}/${r.literal.candidate.observed}`).join('；')
     + '。这是分项观察，不等于整体修好或因果证明。');
@@ -81,16 +89,19 @@ export function buildWikiExperienceDraft(state: any, result: any, observations: 
     '规则教训：禁用 P 编号可能与题目主题冲突；遇到以 P 编号为主题的题目会误判，出题和定规则时要避开。此处只是待审核教训，已冻结评分不回改。');
   if (result.completed && targetRows.some((r: any) => r.stage === 'test' && r.candidate.passed === 0)) lines.push(
     '解读边界：门槛改善未在留出复现题上得到支持，不能说模式整体变好了；分项改进不自动变为采纳。');
-  if (review) lines.push(review.decision === 'not-adopted' ? '已保存的人工裁决：本轮未采纳，基线未改变，不进生产提示词。' : '已保存的人工裁决：用户明确采纳为评测基线，生产提示词仍须手动合入。');
+  if (review) lines.push(review.decision === 'not-adopted' ? '已保存的人工裁决：本轮未采纳，基线未改变，不进生产提示词。'
+    + (holdout ? `理由：${({ gate_rejected: '门槛未通过', validation_degraded: '验证劣化', user_declined: '用户拒绝' } as Record<string, string>)[review.reason]}。` : '')
+    : '已保存的人工裁决：用户明确采纳为评测基线，生产提示词仍须手动合入。');
   if (!result.completed) lines.push('执行不完整：以上只作观察，不产生修好或采纳结论。');
-  lines.push('轨迹边界：没有从本轮门槛/测试轨迹抽取正例，不将其送入训练归纳；以上只使用逐题结果与固定字面检查计数。');
-  const positiveExamples = opening.length ? '建议写法（示意，非回放原文）：结论：最重要的变化是……。对你的影响是……。\n本轮没有可引用的目标模式训练组正例；不把门槛/测试输出伪装为训练正例。'
-    : '本轮没有抽取可引用的目标模式训练组正例；门槛/测试输出不进入正例栏。';
+  lines.push(`轨迹边界：没有从本轮${holdoutStages}轨迹抽取正例，不将其送入训练归纳；以上只使用逐题结果与固定字面检查计数。`);
+  const positiveExamples = opening.length ? `建议写法（示意，非回放原文）：结论：最重要的变化是……。对你的影响是……。\n本轮没有可引用的目标模式训练组正例；不把${holdoutStages}输出伪装为训练正例。`
+    : `本轮没有抽取可引用的目标模式训练组正例；${holdoutStages}输出不进入正例栏。`;
   const evidenceHash = hash({ comparisonId: result.id, observations, reviewId: review?.id || null }), rootId = 'experience-root-' + hash(result.id), version = previous ? previous.version + 1 : 1;
   return { id: 'experience-' + hash({ rootId, version, evidenceHash }), rootId, version, parentId: previous?.id || null,
     kind: 'wiki-experience-v1', comparisonId: result.id, candidateId: candidate.id, entryId: candidate.entryIds[0],
     status: 'draft', createdAt: new Date().toISOString(), evidenceHash, literalObservations: observations,
     methods: lines.join('\n'), positiveExamples, tracePolicy: 'training-only-no-holdout-trajectories', trainingTraceCount: 0,
     summary: { completed: result.completed, gateOutcome: result.gateDecision.outcome, model: result.model, modelConfig: result.modelConfig,
-      rows, byStage: result.byStage, disclosures: result.disclosures, reviewId: review?.id || null } };
+      rows, byStage: result.byStage, disclosures: result.disclosures, reviewId: review?.id || null,
+      ...(holdout ? { outcome: result.outcome, validation: structuredClone(v), adoptionEligible: result.adoptionEligible } : {}) } };
 }

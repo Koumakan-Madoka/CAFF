@@ -1,7 +1,7 @@
 // Short-lived TCP forwarder for the installer: Docker bridge -> the approved
 // host loopback proxy only. No logging, request interpretation or direct fallback.
-const net = require('node:net');
-async function withDependencyProxy(gateway, work, { connect = () => net.connect({ host: '127.0.0.1', port: 17890 }) } = {}) {
+const net = require('node:net'), { host, port } = require('./host-proxy.cjs');
+async function withDependencyProxy(gateway, work, { connect = () => net.connect({ host, port }) } = {}) {
   if (!net.isIPv4(gateway) || gateway === '0.0.0.0' || gateway.startsWith('127.')) throw Error('evaluation_dependency_proxy_invalid');
   const sockets = new Set();
   const relay = net.createServer(incoming => {

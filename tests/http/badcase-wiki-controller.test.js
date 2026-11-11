@@ -35,6 +35,37 @@ test('pipeline statuses are a read-only addition to Wiki GET and do not start an
   assert.equal(calls, 0); assert.deepEqual(h.store.read(), before);
 });
 
+test('GET projects immutable original prechecks without exposing artifacts/paths, creating files or calling any model', async t => {
+  const h = setup(t); h.seed(); const state = h.store.read(), c = state.cases[0];
+  c.sealedCheckpointId = 'synthetic-cp'; c.split = 'gate';
+  state.replayCases = [{ id: 'synthetic-replay', sourceCaseId: c.id, checkpointHash: 'c'.repeat(64), request: { association: { checkpointId: c.sealedCheckpointId } } }];
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const rubric = { ...createWikiRubric({ caseId: c.id, version: 1, model: 'deepseek/deepseek-v4-flash', actual: c.actual, expected: c.expected, questions: [], scoringModel: null,
+    toolCheck: { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] } }), status: 'frozen', confirmedAt: '2026-11-10T00:00:00.000Z', confirmationRecord: 'Synthetic confirmation' };
+  state.rubrics = [rubric]; const file = path.join(h.config.globalRoot, 'snapshots', String(state.revision).padStart(12, '0') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, checksum: crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex'), record: state }));
+  const { createWikiPipelinePrecheckStore, readWikiPipelineInputs } = require('../../build/server/domain/runtime/badcase-capture/wiki-pipeline-prechecks'), cache = createWikiPipelinePrecheckStore(h.config);
+  cache.getOrCompute({ level: 'trace', replayId: 'synthetic-replay', checkpointHash: 'c'.repeat(64) }, () => ({ status: 'supported' }));
+  const { createWikiOriginalPrecheckStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-original-precheck-store'), records = createWikiOriginalPrecheckStore(h.config);
+  let calls = 0; h.options.runOriginalPrecheck = () => { calls++; throw Error('forbidden'); };
+  const before = fs.readFileSync(file), empty = await h.invoke(); assert.equal(empty.body.pipelineStates[0].precheck.status, 'missing');
+  assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'original-prechecks')), false);
+  const plan = require('../../build/server/domain/runtime/badcase-capture/wiki-original-precheck').createWikiOriginalPrecheckPlan({ state, caseId: c.id, rubricHash: rubric.hash, inputHash: 'd'.repeat(64), replayChecks: readWikiPipelineInputs(state, cache) });
+  const reservation = records.reserve(plan); records.finish(reservation.id, { status: 'completed', reason: null, runs: ['fail', 'fail', 'pass'].map((status, i) => ({ iteration: i + 1, variant: 'original', status, artifactId: 'private-output-' + i, artifactHash: 'e'.repeat(64), usageComplete: true })) });
+  const get = await h.invoke(); assert.deepEqual(get.body.comparisons, []); assert.deepEqual(get.body.runReplays, []);
+  const p = get.body.pipelineStates[0]; assert.equal(p.inLibrary, true); assert.equal(p.precheck.current.summary.fail, 2); assert.equal(p.precheck.current.rubricHash, rubric.hash); assert.equal(p.precheck.notFormalStatistics, true);
+  assert.doesNotMatch(JSON.stringify(p.precheck), /private-output|sourceWorktree|globalRoot|bodyBase64/); assert.equal(calls, 0); assert.deepEqual(fs.readFileSync(file), before);
+  const resultFile = path.join(h.config.globalRoot, 'original-prechecks', reservation.id + '.result.json'); fs.writeFileSync(resultFile, 'corrupt-private-detail');
+  await rejects(h.invoke(), 'wiki_original_precheck_record_invalid', 503); assert.equal(calls, 0);
+});
+test('HTTP has no original-precheck/run-report execution route, even with a trusted runner option', async t => {
+  const h = setup(t); let calls = 0; const controller = createBadcaseWikiController({ ...h.options, runOriginalPrecheck() { calls++; } });
+  for (const pathname of ['/api/wikiskill/original-precheck', '/api/wikiskill/precheck', '/api/wikiskill/cases/case/original-precheck', '/api/wikiskill/cases/case/run-report']) {
+    const req = new PassThrough(); req.method = 'POST'; req.headers = {}; req.socket = { remoteAddress: '127.0.0.1' };
+    assert.equal(await controller({ req, res: {}, pathname }), false);
+  }
+  assert.equal(calls, 0); assert.equal(fs.existsSync(path.join(h.config.globalRoot, 'original-prechecks')), false);
+});
 test('GET never prepares/materializes sealed inputs, starts git, creates scratch directories or computes cache misses', async t => {
   const h = setup(t); h.seed();
   const state = h.store.read(), c = state.cases[0]; c.sealedCheckpointId = 'synthetic-v2-checkpoint';

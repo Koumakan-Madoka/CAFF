@@ -146,12 +146,11 @@ function aggregateVotes(questions: WikiRubricQuestion[], votes: WikiCriterionJud
     return { criterionId: q.id, verdict, majority: true };
   });
 }
-export async function scoreWikiRun(options: {
-  rubric: WikiRubric; binding: WikiJudgeBinding; run: WikiScoringRun; hardAssertions: WikiHardAssertion[];
-  referenceMetrics?: WikiScoreResult['referenceMetrics']; replyOnly?: true;
-}, judge: WikiJudgeAdapter): Promise<WikiScoreResult> {
-  const rubric = validateWikiRubric(options.rubric, true), binding = structuredClone(options.binding);
-  checkBinding(binding, judge, rubric);
+// Shared objective facts for legacy scoring and trace tool checks. This does
+// not judge, bind a model, infer evidence, or change the historical hard rules.
+export function prepareWikiScoreFacts(options: {
+  run: WikiScoringRun; hardAssertions: WikiHardAssertion[]; referenceMetrics?: WikiScoreResult['referenceMetrics'];
+}) {
   const run = structuredClone(options.run), extra = options.hardAssertions;
   if (!Array.isArray(extra) || extra.length > 128 || new Set(extra.map(v => v?.id)).size !== extra.length) throw fail('wiki_hard_assertions_invalid');
   for (const item of extra) {
@@ -169,8 +168,17 @@ export async function scoreWikiRun(options: {
     { id: 'publicReply', status: typeof run.publicReply !== 'string' || !['public', 'internal', 'none'].includes(run.replySource || '')
       ? 'error' : run.replySource === 'public' && run.publicReply.trim() ? 'pass' : 'fail' }, ...structuredClone(extra),
   ];
+  return { run, hardAssertions, referenceMetrics: structuredClone(referenceMetrics) };
+}
+export async function scoreWikiRun(options: {
+  rubric: WikiRubric; binding: WikiJudgeBinding; run: WikiScoringRun; hardAssertions: WikiHardAssertion[];
+  referenceMetrics?: WikiScoreResult['referenceMetrics']; replyOnly?: true;
+}, judge: WikiJudgeAdapter): Promise<WikiScoreResult> {
+  const rubric = validateWikiRubric(options.rubric, true), binding = structuredClone(options.binding);
+  checkBinding(binding, judge, rubric);
+  const { run, hardAssertions, referenceMetrics } = prepareWikiScoreFacts(options);
   const result: WikiScoreResult = { kind: 'wiki-score-v2', status: 'error', reason: null, binding, rubricHash: rubric.hash,
-    hardAssertions, votes: [], judgments: [], referenceMetrics: structuredClone(referenceMetrics) };
+    hardAssertions, votes: [], judgments: [], referenceMetrics };
   const finish = (status: WikiScoreStatus, reason: string | null): WikiScoreResult => ({ ...result, status, reason });
   if (run.environmentError === true) return finish('error', 'environment_failure');
   if (hardAssertions.some(c => c.status === 'fail')) return finish('fail', 'hard_assertion_failed');

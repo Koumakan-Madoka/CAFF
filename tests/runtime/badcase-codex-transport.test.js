@@ -1,9 +1,15 @@
 // Synthetic access credentials, native pi-ai serializer/parser and fake network only.
-// Never opens a real auth.json, listens on 17890 or makes an external request.
+// Never opens a real auth.json, listens on 10090 or makes an external request.
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const zlib = require('node:zlib');
 const load = () => require('../../scripts/badcase-capture/codex-transport.cjs');
+const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
+test('shared host proxy is the immutable fixed policy, not an environment-selected endpoint', () => {
+  assert.deepEqual(hostProxy, { host: '127.0.0.1', port: 10090, url: 'http://127.0.0.1:10090' });
+  assert.equal(Object.isFrozen(hostProxy), true);
+  assert.equal(load().PROFILE.proxy, hostProxy.url);
+});
 const epoch = 2000000000000, endpoint = 'https://chatgpt.com/backend-api/codex/responses';
 const jwt = (exp = epoch / 1000 + 600, account = 'synthetic-account') => 'test.' + Buffer.from(JSON.stringify({
   exp, 'https://api.openai.com/auth': { chatgpt_account_id: account },
@@ -80,7 +86,7 @@ test('native Responses bytes and SSE preserved; fixed endpoint/proxy, credential
   const f = fixture(t), g = fakeTransport(f), q = request(), response = await g.transport.fetch(endpoint, q);
   assert.equal(await response.text(), sse()); assert.equal(g.calls.length, 1); assert.equal(g.agents.length, 1);
   const c = g.calls[0]; assert.equal(c.url, endpoint); assert.equal(c.options.dispatcher, g.agents[0]);
-  assert.equal(g.agents[0].uri, 'http://127.0.0.1:17890'); assert.equal(c.options.redirect, 'error');
+  assert.equal(g.agents[0].uri, hostProxy.url); assert.equal(c.options.redirect, 'error');
   assert.equal(c.options.headers.get('authorization'), 'Bearer ' + f.access);
   assert.equal(c.options.headers.get('chatgpt-account-id'), 'synthetic-account');
   assert.equal(Buffer.from(c.options.body).toString(), q.body); assert.equal(q.headers.authorization, 'Bearer inert-placeholder');
@@ -251,7 +257,7 @@ test('real undici transport uses only the dedicated proxy dispatcher; proxy CONN
   proxy.on('connect', (req, socket) => { destinations.push(req.url); socket.end('HTTP/1.1 502 Synthetic proxy refusal\r\nContent-Length: 0\r\n\r\n'); });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   transport = load().createCodexTransport(f.config, { now: () => epoch, createDispatcher: uri => {
-    assert.equal(uri, 'http://127.0.0.1:17890'); return new ProxyAgent({ uri: 'http://127.0.0.1:' + proxy.address().port });
+    assert.equal(uri, hostProxy.url); return new ProxyAgent({ uri: 'http://127.0.0.1:' + proxy.address().port });
   } });
   await assert.rejects(transport.fetch(endpoint, request()), /evaluation_codex_proxy_failed/);
   assert.equal(transport.state().stopped, false); assert.equal(transport.state().requests, 1);

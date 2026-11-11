@@ -3,6 +3,9 @@
 // operator label) or a whole runtime prompt for the triggering user message.
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {createWikiExperimentPlan,assertWikiExperimentPlan,wikiExperimentRunSceneHash}=require(base+'wiki-experiment-plan');
+const {createWikiExperimentAdmission}=require(base+'wiki-experiment-admission');
+const {createWikiOriginalPrecheckStore}=require(base+'wiki-original-precheck-store');
+const {createWikiPipelinePrecheckStore,readWikiPipelineInputs}=require(base+'wiki-pipeline-prechecks');
 const {resolveFrozenWikiRubric,wikiExactKeys,wikiValueHash}=require(base+'wiki-rubric');
 const {bindWikiJudge}=require(base+'wiki-scoring-v2');
 const {readWikiEligibleJudges,assertWikiEligibleConfiguration}=require(base+'wiki-judge-catalog');
@@ -25,29 +28,29 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  const experiment=config.experiment;
  wikiExactKeys(experiment,['definition',...(experiment?.plan===undefined?[]:['plan'])]);
  const definition=experiment.definition,catalog=[],scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree};
- const selections=suite.cases.filter(c=>!c.reportOnly).map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction}));
+ const holdout=definition?.kind==='wiki-experiment-v3',perCase=['wiki-experiment-v2','wiki-experiment-v3'].includes(definition?.kind);
+ const selections=suite.cases.filter(c=>!c.reportOnly).map(c=>holdout?{caseId:c.sourceCaseId}
+  :{caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction});
  if(!same(definition?.variants,[{id:'original',promptHash:candidate.baseHash},{id:'candidate',promptHash:candidate.candidateHash}])
    || !same(definition?.runner,{model:config.modelProfile,settings:modelConfig})
    || !same(definition?.cases?.map(({judge,...selection})=>selection),selections))throw fail('wiki_experiment_changed');
- const eligibleJudges=readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
+ let eligibleJudges;
  for(const selection of definition.cases){
-  const source=state.cases.find(c=>c.id===selection.caseId),item=config.cases.find(c=>c.sourceCaseId===selection.caseId);
+  const item=config.cases.find(c=>c.sourceCaseId===selection.caseId);
   const rubric=resolveFrozenWikiRubric(state,selection.caseId,item?.rubricHash);
-  const run=source.kind==='marked-badcase'&&!source.sealedCheckpointId;
-  if(!run&&rubric.toolCheck&&!rubric.questions.length)throw fail('wiki_tool_check_run_only');
-  if(!(run&&rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,eligibleJudges);
+  if(!(rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(perCase?selection.judge:definition.judge,
+   eligibleJudges??=readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG));
  }
- function scoringFor(source,item,task,run=false){
+ function scoringFor(source,item,task){
   if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
   const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
-  const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
-  if(rubric.toolCheck&&!run&&!rubric.questions.length)throw fail('wiki_tool_check_run_only');
-  return {kind:'wiki-score-v2',rubric,binding:run&&rubric.toolCheck&&!rubric.questions.length?null:bindWikiJudge(judge,rubric),task,expected:source.expected};
+  const judge=perCase?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
+  return {kind:'wiki-score-v2',rubric,binding:rubric.toolCheck&&!rubric.questions.length?null:bindWikiJudge(judge,rubric),task,expected:source.expected};
  }
  return {
   forCase(source,replay,item){return scoringFor(source,item,(options.prepareProductionTask || readProductionScoringTask)(replay,scope));},
   forRun(source,item,task){
-   const scoring=scoringFor(source,item,task,true);
+   const scoring=scoringFor(source,item,task);
    if(scoring.rubric.questions.some(q=>q.evidence!=='reply'))throw fail('wiki_rubric_run_evidence_invalid');
    return scoring;
   },
@@ -63,8 +66,30 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
     hardAssertions:wikiObjectiveRules(replay.rules),rubric:scoring.rubric});
   },
   finish(){
-   const plan=createWikiExperimentPlan(definition,catalog);
-   if(experiment.plan!==undefined)assertWikiExperimentPlan(experiment.plan,definition,catalog);
+   if(holdout&&suite.validation){
+    const {readProductionHoldoutValidationEvidence}=require('./production-holdout-suite.cjs');
+    const {createWikiHoldoutFullExperimentPlan,assertWikiHoldoutFullExperimentPlan}=require(base+'wiki-holdout-validation-plan');
+    const current=readProductionHoldoutValidationEvidence(scope,require(base+'wiki-store').createWikiStore(scope).read(),candidate.entryIds[0],config.evaluation.validation);
+    const plan=createWikiHoldoutFullExperimentPlan(definition,catalog,suite.gate,suite.validation);
+    assertWikiHoldoutFullExperimentPlan(plan,definition,catalog,current);
+    if(experiment.plan!==undefined)assertWikiHoldoutFullExperimentPlan(experiment.plan,definition,catalog,current);
+    return plan;
+   }
+   if(holdout){
+    const {readProductionHoldoutEvidence}=require('./production-holdout-suite.cjs');
+    const {createWikiHoldoutExperimentPlan,assertWikiHoldoutExperimentPlan}=require(base+'wiki-holdout-plan');
+    const current=readProductionHoldoutEvidence(scope,state,candidate.entryIds[0]);
+    const plan=createWikiHoldoutExperimentPlan(definition,catalog,suite.gate);
+    // This also reconstructs current prechecks, never trusts a saved selection
+    // merely because its author recomputed a local hash.
+    assertWikiHoldoutExperimentPlan(plan,definition,catalog,current);
+    if(experiment.plan!==undefined)assertWikiHoldoutExperimentPlan(experiment.plan,definition,catalog,current);
+    return plan;
+   }
+   const admission=createWikiExperimentAdmission({state,definition,catalog,targetEntryId:candidate.entryIds[0],
+    records:createWikiOriginalPrecheckStore(scope).list(),replayChecks:readWikiPipelineInputs(state,createWikiPipelinePrecheckStore(scope))});
+   const plan=createWikiExperimentPlan(definition,catalog,admission);
+   if(experiment.plan!==undefined)assertWikiExperimentPlan(experiment.plan,definition,catalog,admission);
    return plan;
   },
  };

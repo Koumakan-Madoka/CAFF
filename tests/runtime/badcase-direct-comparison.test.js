@@ -7,7 +7,7 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
+async function workerReceipt(t, { nativeMaxRequests, files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, goalEvidence, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
@@ -20,6 +20,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
     callback: withCallback ? { trace: {}, expectedTraceHash: 'fixture', association: { conversationId: 'c1', turnId: 't1' } } : null,
     ...(fileEvidencePaths === undefined ? {} : { fileEvidencePaths }) };
   fs.writeFileSync(path.join(root, 'evaluation-profile.json'), JSON.stringify(profile));
+  if (nativeMaxRequests !== undefined) fs.writeFileSync(path.join(root, 'evaluation-limits.json'), JSON.stringify({ maxRequests: nativeMaxRequests }));
   if (directoryWorkspace) {
     const staged = require('../../scripts/badcase-capture/direct-docker.cjs').prepareDirectReplayInput(input);
     for (const f of staged) { const dest = path.join(root, f.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, f.bytes); }
@@ -33,7 +34,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
   workerFs.existsSync = p => p === '/.dockerenv' || fs.existsSync(mapped(p));
   workerFs.renameSync = (a, b) => fs.renameSync(mapped(a), mapped(b));
   const observer = { calls: [], complete() {}, fetch: async () => { throw Error('unexpected_network'); } };
-  let subscriber, disposed = false, stopped = false, startConfig, callbackLifetimeMs, invocationPrompt;
+  let subscriber, disposed = false, stopped = false, startConfig, callbackLifetimeMs, invocationPrompt, observerOptions, mailboxOptions;
   const selected = require('../../scripts/badcase-capture/direct-model.cjs').modelProfile(profile);
   const session = { messages: [], model: { provider: selected.provider, id: selected.model, api: selected.api || 'openai-completions' }, thinkingLevel: selected.thinking || 'off',
     agent: { transport: 'websocket', state: { tools: Array.from({ length: 10 }, (_, i) => ({ name: 'tool-' + i })) } },
@@ -55,8 +56,9 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
       return require('node:child_process').execFileSync(program, args.map(a => a === '/work/restored' ? mapped(a) : a),
         { ...options, env: { ...require('../../scripts/badcase-capture/replay-git.cjs').gitEnvironment(), ...options.env, PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
     } };
-    if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: () => observer };
-    if (name === '/work/codex-mailbox.cjs') return { createCodexMailboxFetch: () => observer.fetch };
+    if (name === '/work/direct-model.cjs') return { ...require('../../scripts/badcase-capture/direct-model.cjs'), observeDirectFetch: (_fetch, options) => { observerOptions = options; return observer; } };
+    if (name === '/work/codex-mailbox.cjs') return { ...require('../../scripts/badcase-capture/codex-mailbox.cjs'),
+      createCodexMailboxFetch: options => { mailboxOptions = options; return observer.fetch; } };
     if (name === '/work/build/server/domain/runtime/badcase-capture/secrets') return require('../../build/server/domain/runtime/badcase-capture/secrets');
     if (name === '/work/build/server/domain/runtime/badcase-capture/session-validator') return require('../../build/server/domain/runtime/badcase-capture/session-validator');
     if (name === '/work/build/server/domain/runtime/badcase-capture/project-resources') return require('../../build/server/domain/runtime/badcase-capture/project-resources');
@@ -65,7 +67,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
     if (name === '/work/build/server/domain/runtime/badcase-capture/evaluation-callback') return { startEvaluationCallback: async config => {
       callbackLifetimeMs = config.lifetimeMs;
       return { apiUrl: 'http://127.0.0.1:1', credentials: { invocationId: 'fixture', callbackToken: 'fixture-only' },
-        readPublicReply: () => published, stop: async () => { stopped = true; } }; } };
+        readPublicReply: () => published, ...(goalEvidence ? { readGoalEvidence: () => structuredClone(goalEvidence) } : {}), stop: async () => { stopped = true; } }; } };
     assert.ok(name.startsWith('node:'), name); return require(name);
   };
   const workerModule = { exports: {} }, filename = require.resolve('../../scripts/badcase-capture/direct-sdk-container.cjs');
@@ -79,7 +81,7 @@ async function workerReceipt(t, { files = [], fileBytes = {}, fileModes = {}, di
       return { runtime }; } };
   } });
   assert.equal(disposed, true); assert.equal(stopped, withCallback);
-  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations,
+  return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations, observerOptions, mailboxOptions,
     workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
 test('actual worker passes only captured SDK origins and rejects missing/extra/renamed discoveries for both transports', async t => {
@@ -283,6 +285,17 @@ test('worker accepts the full 256 KiB prompt and keeps public callback valid for
   assert.equal(r.input.prompt, prompt); assert.equal(r.callbackLifetimeMs, 2700000); assert.equal(r.receipt.success, true);
   await assert.rejects(workerReceipt(t, { prompt: prompt + 'a' }), /AssertionError/);
 });
+test('actual native worker reads stage-bound limits for both mailbox and request observer without changing archived input', async t => {
+  for (const nativeMaxRequests of [undefined, 64]) {
+    const r = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', nativeMaxRequests });
+    assert.equal(r.mailboxOptions.maxRequests, nativeMaxRequests ?? 32);
+    assert.equal(r.observerOptions.maxRequests, nativeMaxRequests ?? 32);
+    assert.equal(r.input.nativeMaxRequests, undefined);
+  }
+  for (const nativeMaxRequests of [0, 65, null, '64']) {
+    await assert.rejects(workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol', nativeMaxRequests }), /evaluation_codex_mailbox_limits_invalid/);
+  }
+});
 test('Codex worker uses credential-free mailbox, xhigh native model, SSE and no automatic retry', async t => {
   const { receipt, startConfig, settings } = await workerReceipt(t, { profile: 'openai-codex/gpt-6.1-sol' });
   assert.equal(startConfig.provider, 'openai-codex'); assert.equal(startConfig.model, 'gpt-6.1-sol'); assert.equal(startConfig.thinking, 'xhigh');
@@ -469,4 +482,18 @@ test('CLI run requires explicit confirmation and a new output file; plan does no
   assert.equal(argumentsFor(['--config', file, '--run', '--confirmed', '--output', output])['--run'], true);
   for (const args of [['--config', file, '--run'], ['--config', file, '--run', '--output', output], ['--config', file, '--plan', '--run'],
     ['--config', file, '--plan', '--output', output], ['--config', 'relative', '--plan'], ['--config', file, '--plan', '--unknown']]) assert.throws(() => argumentsFor(args), /cli_invalid/);
+});
+
+test('Goal evidence is exported by the actual trace worker without changing prompt/session/prepared-input bytes or hashes', async t => {
+  const sourceRoot = 'C:/synthetic/room', prompt = 'Now {{CAFF_CHAT_API_URL}}';
+  const sessionText = [{ type: 'session', version: 3, id: 'goal-prefix', cwd: sourceRoot },
+    { type: 'message', id: 'm1', parentId: null, message: { role: 'user', content: [{ type: 'text', text: '{{PI_AGENT_PRIVATE_DIR}}' }], timestamp: 1 } }].map(JSON.stringify).join('\n') + '\n';
+  const options = { prompt, sessionText, bindings: { sourceRoot, controlledReplacements: [{ name: 'CAFF_CHAT_API_URL', count: 1 }, { name: 'PI_AGENT_PRIVATE_DIR', count: 1 }] } };
+  const evidence = { kind: 'evaluation-goal-evidence-v1', executionId: 'synthetic-worker-execution', goalState: 'approximate-minimal-v1', seedHash: 'a'.repeat(64), seed: { status: 'active' }, calls: [] };
+  const a = await workerReceipt(t, options), b = await workerReceipt(t, { ...options, goalEvidence: evidence });
+  for (const key of ['input', 'invocationPrompt', 'workingSessionText']) {
+    assert.deepEqual(a[key], b[key]); assert.equal(crypto.createHash('sha256').update(JSON.stringify(a[key])).digest('hex'), crypto.createHash('sha256').update(JSON.stringify(b[key])).digest('hex'));
+  }
+  assert.deepEqual(a.receipt.replaySession, b.receipt.replaySession); assert.equal(a.receipt.historyHash, b.receipt.historyHash);
+  assert.equal(a.receipt.inputHash, b.receipt.inputHash); assert.deepEqual(b.receipt.goalEvidence, evidence); assert.equal(Object.hasOwn(a.receipt, 'goalEvidence'), false);
 });

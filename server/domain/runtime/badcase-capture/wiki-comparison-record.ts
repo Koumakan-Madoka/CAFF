@@ -14,7 +14,7 @@ export function readWikiComparisonRecord(globalRoot: string, comparisonId: strin
     const file = path.join(globalRoot, 'comparisons', filename), stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.size > WIKI_COMPARISON_V2_MAX_BYTES) throw Error();
     const envelope = JSON.parse(fs.readFileSync(file, 'utf8')), { id, createdAt, ...payload } = envelope.record;
-    if (stat.size > (payload.kind === 'wiki-staged-batch-comparison-v2' ? WIKI_COMPARISON_V2_MAX_BYTES : 512 * 1024)
+    if (stat.size > (['wiki-staged-batch-comparison-v2', 'wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(payload.kind) ? WIKI_COMPARISON_V2_MAX_BYTES : 512 * 1024)
       || envelope.schemaVersion !== 1 || envelope.checksum !== hash(envelope.record)
       || id !== comparisonId || id !== 'comparison-' + hash(payload)
       || typeof createdAt !== 'string' || new Date(createdAt).toISOString() !== createdAt

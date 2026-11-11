@@ -209,7 +209,9 @@ test('temporary dependency relay only dials the approved loopback proxy and clos
     relay.address = () => ({ port: 12345 });
     relay.close = done => { closed = true; relay.listening = false; done(); };
     vm.runInNewContext(fs.readFileSync(path.resolve('scripts/badcase-capture/dependency-proxy.cjs'), 'utf8'), {
-      module, require(name) { assert.equal(name, 'node:net'); return { isIPv4: require('node:net').isIPv4,
+      module, require(name) {
+        if (name === './host-proxy.cjs') return require('../../scripts/badcase-capture/host-proxy.cjs');
+        assert.equal(name, 'node:net'); return { isIPv4: require('node:net').isIPv4,
         createServer: callback => { accept = callback; return relay; }, connect: options => { connects.push(options); return socket(); } }; }
     });
     const work = module.exports.withDependencyProxy('172.18.0.1', async url => {
@@ -218,7 +220,8 @@ test('temporary dependency relay only dials the approved loopback proxy and clos
     });
     if (failWork) await assert.rejects(work, /synthetic-work-failed/); else assert.equal(await work, 'done');
     assert.equal(listenAddress, '172.18.0.1'); assert.equal(closed, true); assert.ok(sockets.every(s => s.destroyed));
-    assert.equal(connects.length, 1); assert.equal(connects[0].host, '127.0.0.1'); assert.equal(connects[0].port, 17890);
+    const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
+    assert.equal(connects.length, 1); assert.equal(connects[0].host, hostProxy.host); assert.equal(connects[0].port, hostProxy.port);
     await assert.rejects(module.exports.withDependencyProxy('0.0.0.0', async () => {}), /proxy_invalid/);
   }
 });

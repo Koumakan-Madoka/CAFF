@@ -29,7 +29,7 @@
 }
 ```
 
-`credentialDir` 中 `models.json` 的 DeepSeek 官方配置须已获准读取；模型固定 `deepseek/deepseek-v4-flash`，网络固定经宿主 17890。Key 不进入 WSL/容器；不自动选发行版、拉镜像、换凭据或直连回退。
+`credentialDir` 中 `models.json` 的 DeepSeek 官方配置须已获准读取；模型固定 `deepseek/deepseek-v4-flash`，网络固定经宿主 10090。Key 不进入 WSL/容器；不自动选发行版、拉镜像、换凭据或直连回退。
 
 在隔离 HOME/TEMP、没有生产凭据/飞书环境变量、没有继承生产副作用配置的 shell 中，从 clone 执行（以下为 Git Bash，路径换成实际绝对路径）：
 
@@ -58,7 +58,7 @@ node scripts/start-app.js > 'E:/isolated-wiki/server.log' 2>&1
 
 ## 4. 准备运行时及仓库依赖（首次/缓存未命中时）
 
-镜像必须已按契约在本地准备。`runtime.json` 只含上面的 `image` 和 `dockerBackend`：
+镜像必须已按契约在本地准备。**缓存未命中的构建不是离线操作**：宿主 `127.0.0.1:10090` 必须已有可访问公共 npm 的代理。GPT、npm 缓存、宿主模型/裁判及页面 DeepSeek 的固定代理统一取自 `scripts/badcase-capture/host-proxy.cjs`（导出 host、port、url），不支持环境变量覆盖。`dependency-proxy.cjs` 只把一次性无账号凭据容器的连接转发到这个固定端口，不允许直连回退；代理没开时停止并等待用户恢复，不自行启动代理、不改捕获的 package/lock、不复用或重写旧缓存回执。缓存命中只按原规则离线核验。`runtime.json` 只含上面的 `image` 和 `dockerBackend`：
 
 ```sh
 node scripts/badcase-capture/cache-runtime-dependencies.cjs 'E:/isolated-wiki/runtime.json' 'E:/isolated-wiki/runtime-cache'

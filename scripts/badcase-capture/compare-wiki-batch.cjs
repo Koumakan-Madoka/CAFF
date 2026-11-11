@@ -27,7 +27,12 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, { ...runtimeOptions, allowDraftCandidate: args['--plan'] === true });
   if (args['--plan']) { process.stdout.write(JSON.stringify({ preparedOnly: true, dockerVerified: false, ...plan.summary }, null, 2) + '\n'); return; }
   if (plan.summary.planHash !== args['--expected-plan']) throw fail('evaluation_batch_confirmation_required');
-  const progress = plan.summary.evaluation?.splitPolicy === 'd15-frozen-v1' ? createWikiBatchExecutionStore(config) : null;
+  if (plan.summary.kind === 'wiki-mode-holdout-comparison-v2' && !config.experiment?.plan) throw fail('wiki_experiment_confirmation_required');
+  // Capture public numbering before execution. No source data/numbering is
+  // added to the immutable scoring plan or retained comparison envelope.
+  const sourceCases = ['wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(plan.summary.kind)
+    ? require('../../build/server/domain/runtime/badcase-capture/wiki-store').createWikiStore(config).read().cases : undefined;
+  const progress = ['d15-frozen-v1', 'mode-holdout-frozen-v1'].includes(plan.summary.evaluation?.splitPolicy) ? createWikiBatchExecutionStore(config) : null;
   const fd = fs.openSync(args['--output'], 'wx', 0o600);
   let record, timer, publicationFailed = false;
   const append = event => { for (const chunk of jsonChunks(event)) fs.writeSync(fd, chunk); fs.writeSync(fd, '\n'); fs.fsyncSync(fd); };
@@ -55,7 +60,7 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
       }
     }
     if (args['--json']) { for (const chunk of jsonChunks(result)) process.stdout.write(chunk); process.stdout.write('\n'); }
-    else process.stdout.write(formatBatch(result) + (result.comparisonId ? '已保存全局结果：' + result.comparisonId + '\n' : ''));
+    else process.stdout.write(formatBatch(result, sourceCases) + (result.comparisonId ? '已保存全局结果：' + result.comparisonId + '\n' : ''));
     if (!result.completed) process.exitCode = 1;
   } catch (e) {
     const code = /^(evaluation|wiki)_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_batch_failed';
