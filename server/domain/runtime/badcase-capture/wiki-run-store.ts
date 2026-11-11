@@ -32,13 +32,31 @@ export function projectWikiRunAccounting(rows: any[], dehydrations: any[] = []) 
         ? { excludedReason: 'user_reclassified_reference', supersededByDecisionHash: current.hash } : {}) };
   });
   return normalized.map(row => {
-    const originals = normalized.filter(r => !r.excludedReason && r.variant?.kind === 'original'
+    const originals = normalized.filter(r => !r.excludedReason && !r.reportOnly && r.variant?.kind === 'original'
       && r.caseId === row.caseId && r.traceHash === row.traceHash && r.decisionHash === row.decisionHash);
-    const baselineStatus = originals.some(r => r.status === 'reached') ? 'valid_output'
+    const validOutput = (r: any) => ['reached', 'pass', 'fail'].includes(r.status);
+    const baselineStatus = originals.some(validOutput) ? 'valid_output'
       : originals.some(r => r.status === 'reserved') ? 'pending' : originals.length ? 'no_valid_output' : 'not_run';
     return { ...row, accountingPolicy: 'single-call-valid-output-v2',
-      eligibleForScoring: !row.excludedReason && row.status === 'reached', baselineStatus,
-      caseEligibleForGateAndScreen: !row.excludedReason && baselineStatus === 'valid_output' };
+      eligibleForScoring: !row.excludedReason && !row.reportOnly && validOutput(row), baselineStatus,
+      caseEligibleForGateAndScreen: !row.excludedReason && !row.reportOnly && baselineStatus === 'valid_output' };
+  });
+}
+// Diagnostic reports are a separate, current-cut/current-rubric view. Never
+// supply baseline evidence, comparisons or gate denominators from these counts.
+export function projectWikiRunReportCounts(state: any, rows: any[]) {
+  return state.cases.map((c: any) => {
+    const decision = (state.dehydrations || []).findLast((d: any) => d.caseId === c.id && d.traceHash === c.traceBundle?.hash)?.decision;
+    const rubric = (state.rubrics || []).filter((r: any) => r.caseId === c.id && r.status === 'frozen').sort((a: any, b: any) => b.version - a.version)[0];
+    const matching = rows.filter(r => r.reportOnly && r.caseId === c.id && r.traceHash === c.traceBundle?.hash
+      && r.decisionHash === decision?.hash && r.rubricHash === rubric?.hash && r.sceneCheckpointId === (c.sealedCheckpointId || null)
+      && r.variant?.kind === 'original' && !r.excludedReason);
+    const invalidReasons: Record<string, number> = {};
+    for (const r of matching.filter(r => r.status === 'invalid')) invalidReasons[r.reason || 'unknown'] = (invalidReasons[r.reason || 'unknown'] || 0) + 1;
+    return { caseId: c.id, reportOnly: true, notAdoptionEvidence: true, decisionHash: decision?.hash || null, rubricHash: rubric?.hash || null,
+      passed: matching.filter(r => r.status === 'pass').length, failed: matching.filter(r => r.status === 'fail').length,
+      invalid: matching.filter(r => r.status === 'invalid').length, errors: matching.filter(r => r.status === 'error').length,
+      pending: matching.filter(r => r.status === 'reserved').length, total: matching.length, invalidReasons };
   });
 }
 export function createWikiRunStore(input: any) {
@@ -79,6 +97,8 @@ export function createWikiRunStore(input: any) {
     if (result && (result.requestHash !== wikiRunHash(reservation.request) || result.caseId !== reservation.request.metadata.caseId
       || result.decisionHash !== reservation.request.metadata.decisionHash
       || JSON.stringify(result.attempt) !== JSON.stringify(reservation.attempt))) throw fail('wiki_run_record_invalid');
+    if (result && reservation.request.metadata.report && (result.report?.kind !== 'wiki-run-report-v1'
+      || result.report.rubricHash !== reservation.request.metadata.report.rubricHash)) throw fail('wiki_run_record_invalid');
     return { reservation, result };
   }
   return {
@@ -102,7 +122,8 @@ export function createWikiRunStore(input: any) {
         .map(({ reservation: r, result: v }) => ({ id: r.id, caseId: r.request.metadata.caseId, caseNumber: r.request.metadata.caseNumber,
           traceHash: r.request.metadata.traceHash, decisionHash: r.request.metadata.decisionHash, variant: r.request.variant,
           model: r.request.model, thinking: r.request.thinking, createdAt: r.createdAt, status: v?.outcome?.status || 'reserved',
-          resultHash: v ? wikiRunHash(v) : null, modelCalls: v?.modelCalls ?? null, toolExecutions: v?.toolExecutions ?? null }));
+          resultHash: v ? wikiRunHash(v) : null, modelCalls: v?.modelCalls ?? null, toolExecutions: v?.toolExecutions ?? null,
+          ...(r.request.metadata.report ? { reportOnly: true, rubricHash: r.request.metadata.report.rubricHash, sceneCheckpointId: r.request.metadata.report.sceneCheckpointId, reason: v?.outcome?.reason ?? null } : {}) }));
       return projectWikiRunAccounting(rows);
     },
   };

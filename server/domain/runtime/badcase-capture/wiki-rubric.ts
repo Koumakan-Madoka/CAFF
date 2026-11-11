@@ -1,6 +1,7 @@
 // Case-owned, content-addressed rubric versions. Drafting is not judging.
 import crypto from 'node:crypto';
 import { containsSecretSentinel } from './secrets';
+import { validateWikiToolCheck, type WikiToolCheck } from './wiki-tool-check';
 export const WIKI_RUBRIC_MODEL = 'deepseek/deepseek-v4-flash';
 export const wikiRubricFail = (code: string) => Object.assign(Error(code), { code });
 export function wikiValueHash(value: unknown): string {
@@ -33,6 +34,7 @@ export function validateWikiScoringModel(value: WikiScoringModel): WikiScoringMo
 export interface WikiRubric {
   kind: 'wiki-rubric-v1' | 'wiki-rubric-v2'; id: string; caseId: string; version: number; model: typeof WIKI_RUBRIC_MODEL;
   scoringModel?: WikiScoringModel | null;
+  toolCheck?: WikiToolCheck | null;
   sourceHash: string; questions: WikiRubricQuestion[]; hash: string; status: 'draft' | 'frozen';
   confirmedAt?: string; confirmationRecord?: string;
 }
@@ -40,8 +42,8 @@ export function wikiRubricSourceHash(actual: string, expected: string): string {
   wikiRubricText(actual, 8192); wikiRubricText(expected, 8192);
   return wikiValueHash({ actual, expected });
 }
-export function validateWikiRubricQuestions(value: unknown): WikiRubricQuestion[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw wikiRubricFail('wiki_rubric_invalid');
+export function validateWikiRubricQuestions(value: unknown, allowEmpty = false): WikiRubricQuestion[] {
+  if (!Array.isArray(value) || value.length < (allowEmpty ? 0 : 1) || value.length > 4) throw wikiRubricFail('wiki_rubric_invalid');
   for (const q of value) {
     wikiExactKeys(q, ['id', 'question', 'evidence']);
     if (typeof q.id !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(q.id) || !['reply', 'trace', 'files'].includes(q.evidence)) throw wikiRubricFail('wiki_rubric_invalid');
@@ -50,8 +52,8 @@ export function validateWikiRubricQuestions(value: unknown): WikiRubricQuestion[
   if (new Set(value.map(q => q.id)).size !== value.length) throw wikiRubricFail('wiki_rubric_invalid');
   return structuredClone(value);
 }
-export function validateWikiAssertions(value: unknown): WikiRubricQuestion[] {
-  const assertions = validateWikiRubricQuestions(value);
+export function validateWikiAssertions(value: unknown, allowEmpty = false): WikiRubricQuestion[] {
+  const assertions = validateWikiRubricQuestions(value, allowEmpty);
   // Syntax validation only, not semantic answer scoring. The historical v1
   // question format remains readable without changing its hash.
   if (assertions.some(q => /[?？]/.test(q.question))) throw wikiRubricFail('wiki_rubric_assertion_required');
@@ -59,12 +61,15 @@ export function validateWikiAssertions(value: unknown): WikiRubricQuestion[] {
 }
 function rubricContent(value: WikiRubric) {
   return { kind: value.kind, caseId: value.caseId, version: value.version, model: value.model, sourceHash: value.sourceHash, questions: value.questions,
-    ...(value.kind === 'wiki-rubric-v2' ? { scoringModel: value.scoringModel } : {}) };
+    ...(value.kind === 'wiki-rubric-v2' ? { scoringModel: value.scoringModel,
+      ...(Object.hasOwn(value, 'toolCheck') ? { toolCheck: value.toolCheck } : {}) } : {}) };
 }
-export function createWikiRubric(input: { caseId: string; version: number; model: string; actual: string; expected: string; questions: unknown; scoringModel?: WikiScoringModel | null }): WikiRubric {
+export function createWikiRubric(input: { caseId: string; version: number; model: string; actual: string; expected: string; questions: unknown; scoringModel?: WikiScoringModel | null; toolCheck?: WikiToolCheck | null }): WikiRubric {
+  const twoSlots = Object.hasOwn(input, 'toolCheck');
   const content = { kind: 'wiki-rubric-v2' as const, caseId: input.caseId, version: input.version, model: WIKI_RUBRIC_MODEL as typeof WIKI_RUBRIC_MODEL,
-    sourceHash: wikiRubricSourceHash(input.actual, input.expected), questions: validateWikiAssertions(input.questions),
-    scoringModel: input.scoringModel == null ? null : validateWikiScoringModel(input.scoringModel) };
+    sourceHash: wikiRubricSourceHash(input.actual, input.expected), questions: validateWikiAssertions(input.questions, twoSlots),
+    scoringModel: input.scoringModel == null ? null : validateWikiScoringModel(input.scoringModel),
+    ...(twoSlots ? { toolCheck: input.toolCheck === null ? null : validateWikiToolCheck(input.toolCheck) } : {}) };
   if (input.model !== WIKI_RUBRIC_MODEL || !/^[A-Za-z0-9_-]{1,128}$/.test(input.caseId)
     || !Number.isSafeInteger(input.version) || input.version < 1) throw wikiRubricFail('wiki_rubric_invalid');
   const hash = wikiValueHash(content);
@@ -72,17 +77,20 @@ export function createWikiRubric(input: { caseId: string; version: number; model
 }
 export function validateWikiRubric(value: WikiRubric, frozen = false): WikiRubric {
   wikiExactKeys(value, ['kind', 'id', 'caseId', 'version', 'model', 'sourceHash', 'questions', 'hash', 'status',
-    ...(value?.kind === 'wiki-rubric-v2' ? ['scoringModel'] : []), ...(value?.status === 'frozen' ? ['confirmedAt', 'confirmationRecord'] : [])]);
+    ...(value?.kind === 'wiki-rubric-v2' ? ['scoringModel', ...(Object.hasOwn(value, 'toolCheck') ? ['toolCheck'] : [])] : []),
+    ...(value?.status === 'frozen' ? ['confirmedAt', 'confirmationRecord'] : [])]);
   if (!['wiki-rubric-v1', 'wiki-rubric-v2'].includes(value.kind) || value.model !== WIKI_RUBRIC_MODEL || !/^[A-Za-z0-9_-]{1,128}$/.test(value.caseId)
     || !Number.isSafeInteger(value.version) || value.version < 1 || !/^[a-f0-9]{64}$/.test(value.sourceHash)
     || !['draft', 'frozen'].includes(value.status)) throw wikiRubricFail('wiki_rubric_invalid');
   if (value.kind === 'wiki-rubric-v2') {
-    validateWikiAssertions(value.questions);
+    validateWikiAssertions(value.questions, Object.hasOwn(value, 'toolCheck'));
+    if (Object.hasOwn(value, 'toolCheck') && value.toolCheck !== null) validateWikiToolCheck(value.toolCheck);
     if (value.scoringModel !== null) validateWikiScoringModel(value.scoringModel!);
   } else validateWikiRubricQuestions(value.questions);
   if (value.hash !== wikiValueHash(rubricContent(value)) || value.id !== 'rubric-' + value.hash) throw wikiRubricFail('wiki_rubric_hash_changed');
   if (value.status === 'frozen') {
-    if (value.kind === 'wiki-rubric-v2' && !value.scoringModel) throw wikiRubricFail('wiki_rubric_model_required');
+    if (!value.questions.length && !value.toolCheck) throw wikiRubricFail('wiki_rubric_checks_required');
+    if (value.kind === 'wiki-rubric-v2' && value.questions.length && !value.scoringModel) throw wikiRubricFail('wiki_rubric_model_required');
     wikiRubricText(value.confirmationRecord, 4096);
     if (typeof value.confirmedAt !== 'string' || !Number.isFinite(Date.parse(value.confirmedAt))
       || new Date(value.confirmedAt).toISOString() !== value.confirmedAt) throw wikiRubricFail('wiki_rubric_invalid');

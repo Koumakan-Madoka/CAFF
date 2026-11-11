@@ -21,12 +21,42 @@ test('pipeline projects frozen assertions, real replay support and one independe
   assert.equal(row.original.reproduced, true); assert.equal(row.original.comparisonId, h.comparison.id); assert.equal(row.inLibrary, true);
   assert.equal(JSON.stringify(h), before);
 });
+test('scene latest tool-only rubric is incompatible, while one co-frozen mixed rubric matches trace reproduction by its full hash', () => {
+  for (const questions of [[], [{ id: 'q1', question: 'The trace shows the correct action.', evidence: 'trace' }, { id: 'q2', question: 'The reply is clear.', evidence: 'reply' }]]) {
+    const h = fixture(); Object.assign(h.c, { kind: 'marked-badcase', role: 'role-family-gpt' });
+    const latest = { ...createWikiRubric({ ...h.rubric, version: 2, actual: h.c.actual, expected: h.c.expected, questions, scoringModel: questions.length ? h.rubric.scoringModel : null,
+      toolCheck: { method: 'code', target: { kind: 'native', name: 'read' }, mode: 'on-call', rules: [{ parameter: 'path', kind: 'max-chars', max: 1000 }] } }),
+      status: 'frozen', confirmedAt: h.rubric.confirmedAt, confirmationRecord: 'Co-frozen report and trace checks' };
+    h.state.rubrics.push(latest); h.comparison.cases[0].rubric = latest;
+    const row = project(h); assert.equal(row.level, 'trace'); assert.equal(row.assertion.hash, latest.hash);
+    assert.equal(row.assertion.status, questions.length ? 'frozen' : 'incompatible'); assert.equal(row.inLibrary, !!questions.length);
+    assert.equal(row.original.valid, questions.length ? 3 : 0);
+    assert.equal(row.original.reproduced, !!questions.length);
+  }
+});
 test('new draft does not erase frozen version; draft-only, changed source and all-pass original do not claim reproduced/library', () => {
   const h = fixture(); h.state.rubrics.push({ ...h.rubric, version: 2, status: 'draft' });
   assert.equal(project(h).assertion.version, 1); assert.equal(project(h).assertion.draftVersion, 2);
   h.comparison.cases[0].runs = [{ variant: 'original', status: 'pass' }]; assert.equal(project(h).original.reproduced, false); assert.equal(project(h).inLibrary, false);
   h.state.rubrics = [{ ...h.rubric, status: 'draft' }]; assert.equal(project(h).assertion.status, 'missing'); assert.equal(project(h).original.valid, 0);
   h.state.rubrics = [h.rubric]; h.c.expected = 'changed expectation'; assert.equal(project(h).assertion.status, 'stale'); assert.equal(project(h).inLibrary, false);
+});
+test('scene pipeline ignores superseded drafts but still shows only newer drafts without rewriting any versions', t => {
+  const h = require('../helpers/wiki-scene-run.cjs')(t, { reply: true });
+  const oldDraft = h.store.saveRubricDraft({ caseId: h.c.id, model: h.rubric.model, questions: h.rubric.questions, scoringModel: h.rubric.scoringModel }, h.store.read().revision);
+  const currentDraft = h.store.saveRubricDraft({ caseId: h.c.id, model: h.rubric.model, questions: h.rubric.questions, scoringModel: h.rubric.scoringModel, toolCheck: h.rubric.toolCheck }, h.store.read().revision);
+  const frozen = h.store.confirmRubric({ rubricId: currentDraft.id, hash: currentDraft.hash, confirmationRecord: 'Co-frozen checks replace old draft' }, h.store.read().revision);
+  const row = () => projectWikiPipelineStates({ state: h.store.read() })[0];
+  const before = JSON.stringify(h.store.read());
+  assert.equal(oldDraft.version, 2); assert.equal(frozen.version, 3);
+  assert.equal(row().level, 'trace'); assert.equal(row().assertion.version, 3); assert.equal(row().assertion.status, 'frozen');
+  assert.equal(row().assertion.draftVersion, null, 'v2 is older than frozen v3, not waiting for confirmation');
+  assert.equal(JSON.stringify(h.store.read()), before);
+  const newer = h.store.saveRubricDraft({ caseId: h.c.id, model: h.rubric.model, questions: h.rubric.questions, scoringModel: h.rubric.scoringModel }, h.store.read().revision);
+  assert.equal(newer.version, 4); assert.equal(row().assertion.draftVersion, 4); assert.equal(row().assertion.version, 3);
+  const draftsOnly = h.store.read(); draftsOnly.rubrics = draftsOnly.rubrics.filter(r => r.status === 'draft');
+  const projected = projectWikiPipelineStates({ state: draftsOnly })[0];
+  assert.equal(projected.assertion.status, 'missing'); assert.equal(projected.assertion.draftVersion, 4);
 });
 test('legacy literal, proxy, interrupted, foreign scene and foreign rubric records never become v2 reproduction evidence', () => {
   for (const mutate of [

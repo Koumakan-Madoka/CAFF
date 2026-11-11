@@ -246,7 +246,17 @@ table.runs { width: 100%; border-collapse: collapse; font-size: 13.5px; min-widt
 .rubric-panel, .assertion-results { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
 .rubric-panel > summary, .assertion-results > summary, .judge-vote > summary, .assertion-run > summary { cursor: pointer; font-weight: 600; }
 .rubric-panel[open] > :not(summary), .assertion-results[open] > :not(summary) { margin-top: 10px; }
-.rubric-editor, .assertion-field { display: grid; gap: 10px; }
+.rubric-editor, .assertion-field, .tool-fields, .tool-rule { display: grid; gap: 10px; }
+.case:has(.rubric-panel[open]) { grid-column: 1 / -1; }
+.rubric-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.rubric-checks > section { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.rubric-checks h4 { margin: 0 0 10px; }
+.tool-fields { margin-top: 12px; }
+.tool-rule { border-top: 1px solid var(--border); padding-top: 10px; }
+.rubric-editor .check { display: flex; align-items: center; gap: 8px; }
+.rubric-editor input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; }
+.rubric-editor input:not([type="checkbox"]) { width: 100%; min-width: 0; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+@media (max-width: 1000px) { .rubric-checks { grid-template-columns: 1fr; } }
 .assertion-field { border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .rubric-editor label { display: grid; gap: 4px; }
 .rubric-editor textarea, .rubric-editor select { width: 100%; max-width: 100%; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }

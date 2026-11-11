@@ -71,27 +71,32 @@ test('eligible new mark sends exactly once with runtime-only config, stores reco
   await rejects(h.invoke(), 'wiki_dehydration_frozen', 409);
   assert.equal(h.calls, 1); assert.deepEqual(h.store.readCaseTrace(h.c.id), before);
 });
-test('sealed scenes cannot request a recommendation; API projection excludes them before runtime/auth/network', async t => {
+test('sealed scenes can request a cut recommendation while API projection and persisted scene identity remain trace', async t => {
   const h = setup(t, 'scene'), before = h.store.read(), packet = h.store.readCaseTrace(h.c.id);
-  await rejects(h.invoke(), 'wiki_dehydration_ineligible', 422);
-  assert.equal(h.opens, 0); assert.equal(h.calls, 0);
   const view = await h.invoke(undefined, { method: 'GET', pathname: '/api/wikiskill' });
-  assert.equal(view.body.cases[0].dehydrationRecommendation.eligible, false);
-  assert.deepEqual(h.store.read(), before); assert.deepEqual(h.store.readCaseTrace(h.c.id), packet);
+  assert.equal(view.body.cases[0].dehydrationRecommendation.eligible, true);
+  const response = await h.invoke(); assert.equal(response.status, 200);
+  assert.equal(h.opens, 1); assert.equal(h.calls, 1); assert.equal(h.closed, 1);
+  assert.equal(response.body.dehydrations[0].recommendation.kindSuggestion, 'single');
+  assert.equal(response.body.dehydrations[0].decision, undefined);
+  assert.deepEqual(h.store.read().cases, before.cases); assert.deepEqual(h.store.readCaseTrace(h.c.id), packet);
 });
-test('sealed legacy recommendation cannot freeze single/run through HTTP or direct store; non-single remains trace', async t => {
+test('sealed recommendation can freeze a report-only single cut through HTTP or direct store; non-single remains trace', async t => {
   const h = setup(t, 'scene');
   // Existing recommendation fixture only: no model call and no migration of old data.
   const item = h.store.read().cases[0], built = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration').buildDehydrationRequest({ caseRecord: item, bundle: h.packet, cause: { source: 'trigger', text: 'solve this' } });
   const row = h.store.saveDehydrationRecommendation({ built, expectedRevision: h.store.read().revision, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind: '单步型', cutStep: 1, reason: '本步决定', evidence: 'reply' }), finishReason: 'stop' }] } });
   const before = h.store.read(), input = { caseId: h.c.id, traceHash: row.traceHash, recommendationHash: row.hash, kind: 'single', cutStep: 1, expectedRevision: before.revision };
-  assert.throws(() => h.store.confirmDehydration(input), e => e.code === 'wiki_dehydration_scene_run_unsupported');
-  await rejects(h.invoke({ confirmed: true, ...input }, { pathname: '/api/wikiskill/dehydration-confirm' }), 'wiki_dehydration_scene_run_unsupported', 409);
-  assert.deepEqual(h.store.read(), before); assert.equal(h.store.getDehydration(h.c.id).decision, undefined);
-  const result = await h.invoke({ confirmed: true, ...input, kind: 'throughout', cutStep: null }, { pathname: '/api/wikiskill/dehydration-confirm' });
-  assert.equal(result.body.dehydrations[0].decision.level, 'trace');
-  const { decision, ...unchanged } = result.body.dehydrations[0]; assert.deepEqual(unchanged, row);
-  assert.equal(h.calls, 0); assert.equal(h.opens, 0);
+  const result = await h.invoke({ confirmed: true, ...input }, { pathname: '/api/wikiskill/dehydration-confirm' });
+  const decision = result.body.dehydrations[0].decision;
+  assert.equal(decision.level, 'run'); assert.equal(decision.cutStep, 1);
+  assert.deepEqual(h.store.confirmDehydration({ ...input, expectedRevision: h.store.read().revision }), decision);
+  const { decision: ignored, ...unchanged } = result.body.dehydrations[0]; assert.deepEqual(unchanged, row);
+  assert.deepEqual(h.store.read().cases, before.cases); assert.equal(h.calls, 0); assert.equal(h.opens, 0);
+  const throughout = setup(t, 'scene'), item2 = throughout.store.read().cases[0];
+  const built2 = require('../../build/server/domain/runtime/badcase-capture/wiki-dehydration').buildDehydrationRequest({ caseRecord: item2, bundle: throughout.packet, cause: { source: 'trigger', text: 'solve this' } });
+  const r2 = throughout.store.saveDehydrationRecommendation({ built: built2, expectedRevision: throughout.store.read().revision, response: { model: 'deepseek/deepseek-v4-flash', attempts: [{ content: JSON.stringify({ kind: '贯穿型', cutStep: '无', reason: 'Across the trace', evidence: '' }), finishReason: 'stop' }] } });
+  assert.equal(throughout.store.confirmDehydration({ caseId: item2.id, traceHash: r2.traceHash, recommendationHash: r2.hash, kind: 'throughout', cutStep: null, expectedRevision: throughout.store.read().revision }).level, 'trace');
 });
 test('missing or unavailable real system prompt rejects recommendation and legacy single confirmation without writes', async t => {
   for (const mode of ['unavailable', 'unavailable-metadata', 'no-prompt']) {

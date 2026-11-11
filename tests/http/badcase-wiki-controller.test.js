@@ -213,6 +213,40 @@ test('legacy gate/test labels confirm independently of induction and never move 
   assert.equal(done.body.patternLabels.length, 1);
 });
 
+function sceneRubricApi(t) {
+  const h = setup(t);
+  const c = h.store.addMarkedCase({ source: { projectId: null, conversationId: 'synthetic-scene-22', conversationTitle: 'Synthetic tool editor', messageId: 'mark', agentId: 'role-family-gpt' },
+    role: 'role-family-gpt', sealedCheckpointId: 'synthetic-scene-22', actual: 'reason too long', expected: 'check limit before calling', message: 'marked reply',
+    traceState: 'missing', traceExcerpt: '', traceTruncated: false, messageTruncated: false }).case;
+  const toolCheck = { method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] };
+  const body = patch => ({ confirmed: true, expectedRevision: h.store.read().revision, caseId: c.id, scoringModel: null, questions: [], toolCheck, ...patch });
+  const save = patch => h.invoke(body(patch), { pathname: '/api/wikiskill/rubric' });
+  const freeze = rubric => h.invoke({ confirmed: true, expectedRevision: h.store.read().revision, rubricId: rubric.id, hash: rubric.hash }, { pathname: '/api/wikiskill/confirm-rubric' });
+  return { ...h, c, toolCheck, body, save, freeze };
+}
+test('HTTP dual-slot editor saves and freezes tool-only without a judge, and empty drafts cannot freeze', async t => {
+  const h = sceneRubricApi(t); let calls = 0;
+  h.options.runRubricDraft = h.options.runDehydration = () => { calls++; throw Error('paid model forbidden'); };
+  const saved = await h.save(), r = saved.body.rubrics[0]; assert.deepEqual(r.toolCheck, h.toolCheck); assert.equal(r.scoringModel, null);
+  const frozen = (await h.freeze(r)).body.rubrics[0]; assert.equal(frozen.status, 'frozen');
+  const empty = (await h.save({ toolCheck: null })).body.rubrics[1]; assert.deepEqual(empty.questions, []);
+  await rejects(h.freeze(empty), 'wiki_rubric_checks_required');
+  const after = await h.invoke(); assert.deepEqual(after.body.rubrics[0], frozen); assert.equal(after.body.rubrics[1].status, 'draft'); assert.equal(calls, 0);
+});
+test('HTTP scene mixed version co-freezes both slots and preserves old hashes/bytes when tool rules change', async t => {
+  const h = sceneRubricApi(t); h.options.judgeCatalogFile = require('../helpers/wiki-judge-catalog.cjs')(h.root).configFile;
+  const questions = [{ id: 'trace', question: '轨迹核对约束。', evidence: 'trace' }, { id: 'reply', question: '回复清晰。', evidence: 'reply' }], scoringModel = { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' };
+  const first = (await h.save({ questions, scoringModel })).body.rubrics[0]; const frozen = (await h.freeze(first)).body.rubrics[0], bytes = JSON.stringify(frozen);
+  assert.deepEqual(frozen.questions, questions); assert.deepEqual(frozen.toolCheck, h.toolCheck);
+  const revised = (await h.save({ questions, scoringModel, toolCheck: { ...h.toolCheck, mode: 'forbid' } })).body.rubrics;
+  assert.equal(JSON.stringify(revised[0]), bytes); assert.notEqual(revised[1].hash, frozen.hash);
+  assert.equal((await h.invoke()).body.pipelineStates[0].assertion.status, 'frozen');
+});
+for (const patch of [{ method: 'model' }, { script: 'return true' }, { target: { kind: 'native', name: 'read;bad' } }, { rules: [{ parameter: 'reason', kind: 'max-chars', max: -1 }] }]) test('HTTP tool checks reject malformed rules before any write', async t => {
+  const h = sceneRubricApi(t), before = h.store.read();
+  await rejects(h.save({ toolCheck: { ...h.toolCheck, ...patch } }), 'wiki_tool_check_invalid'); assert.deepEqual(h.store.read(), before);
+});
+
 test('rubric APIs append versions and freeze exact eligible model/hash without touching older versions', async t => {
   const h = setup(t); h.seed(); const { configFile, frozen } = require('../helpers/wiki-judge-catalog.cjs')(h.root);
   h.options.judgeCatalogFile = configFile;
@@ -223,7 +257,7 @@ test('rubric APIs append versions and freeze exact eligible model/hash without t
   for (const extra of [{ eligible: true }, { configurationHash: frozen.configurationHash }, { globalRoot: h.root }]) await rejects(h.invoke({ ...body, ...extra }, route), 'wiki_invalid_input');
   await rejects(h.invoke({ ...body, scoringModel: { backend: 'jev', model: 'jev-latest' } }, route), 'wiki_judge_not_eligible', 409);
   await rejects(h.invoke({ ...body, expectedRevision: 0 }, route), 'wiki_revision_conflict', 409);
-  const saved = await h.invoke(body, route), rubric = saved.body.rubrics[0]; assert.equal(rubric.status, 'draft'); assert.equal(rubric.scoringModel.backend, 'deepseek');
+  const saved = await h.invoke(body, route), rubric = saved.body.rubrics[0]; assert.equal(Object.hasOwn(rubric, 'toolCheck'), false, 'legacy HTTP clients keep the prior content shape'); assert.equal(rubric.status, 'draft'); assert.equal(rubric.scoringModel.backend, 'deepseek');
   const confirm = { confirmed: true, expectedRevision: 3, rubricId: rubric.id, hash: rubric.hash };
   await rejects(h.invoke({ ...confirm, hash: 'a'.repeat(64) }, confirmRoute), 'wiki_rubric_hash_changed', 409);
   const result = await h.invoke(confirm, confirmRoute); assert.equal(result.body.rubrics[0].status, 'frozen');

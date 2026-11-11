@@ -43,12 +43,17 @@
     const cache = new Map(), expanded = new Set(), queries = new Map(), runCache = new Map();
     let detailSignature = null, splitConsent = null, linkConsent = null, panelSerial = 0;
     const labelForms = new Map(), labelConsents = new Map(), labelErrors = new Map();
+    const cutForms = new Map(), cutConsents = new Map();
     const categoryForms = new Map(), categoryConsents = new Map(), categoryErrors = new Map(), draftForms = new Map(), draftConsents = new Map(), draftErrors = new Map();
     let writable = [onConfirmDecision, onRequestRecommendation, onConfirmPatternLabel, onConfirmInitialSplit, onLinkPendingPattern, onPreclassify, onProposeCategories, onConfirmCategory, onRejectCategory, onInductCategory, onReviewCategory].some(fn => typeof fn === 'function');
     const dehydration = c => (D.dehydrations || []).findLast(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash);
     const excludedRun = (c, r) => dehydration(c)?.decision?.level === 'reference' && dehydration(c)?.decision?.supersedesDecisionHash === r.decisionHash;
-    const caseRuns = c => (D.runReplays || []).filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
+    const caseRuns = c => (D.runReplays || []).filter(r => !r.reportOnly && r.caseId === c.id && r.traceHash === c.traceBundle?.hash && (r.decisionHash === dehydration(c)?.decision?.hash || excludedRun(c, r)));
+    const frozenRubric = c => (D.rubrics || []).filter(r => r.caseId === c.id && r.status === 'frozen').sort((a, b) => b.version - a.version)[0];
+    const reportRows = c => (D.runReplays || []).filter(r => r.reportOnly && !r.excludedReason && r.variant?.kind === 'original' && r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === dehydration(c)?.decision?.hash && r.rubricHash === frozenRubric(c)?.hash && r.sceneCheckpointId === (c.sealedCheckpointId || null));
     const activeRuns = c => dehydration(c)?.decision?.level === 'run' ? caseRuns(c).filter(r => !excludedRun(c, r)) : [];
+    // Match projectWikiRunAccounting: a code-decided pass/fail is also a valid output.
+    const validRunOutput = r => ['reached', 'pass', 'fail'].includes(r.status);
     const baselineMissing = c => { const row = (D.pipelineStates || []).find(r => r.caseId === c.id); return row ? row.stopReason === 'invalid_baseline' : activeRuns(c).some(r => r.baselineStatus === 'no_valid_output'); };
     const kindLabel = k => ({ single: '单步型', throughout: '贯穿型', unclear: '说不清（按贯穿型）' }[k] || k);
     const activeGrouping = () => (D.regroupConfirmations || []).findLast(r => r.status === 'active');
@@ -60,7 +65,7 @@
     const splitProposal = c => D.initialSplitProposal?.rows.find(r => r.caseId === c.id && r.proposedSplit);
     root.innerHTML = `<div class="groups badcase-pipeline"><section class="sec bc-panel"><h2>从 badcase 到测试用例</h2>
       <div class="howline" aria-label="trace 级还是 run 级怎么定"><span class="how-step">系统自动：这一轮有现场吗</span><span>→ 有：<b>trace 级</b></span><span>｜没有：DeepSeek 推荐 → <b>你决定</b></span><span>→ 单步型：<b>run 级</b></span><span>贯穿型 / 说不清：只作参考</span></div>
-      <details><summary class="hint">展开说明</summary><p class="hint">现场在这一轮开始前自动封存。有现场一律走 trace，从这一轮开头执行到自然结束；有现场的 run 执行器尚未实现。无现场经 DeepSeek 推荐、你确认后冻结判断和切点，run 在切点上只调一次模型，不执行工具。原版始终无有效回复的是无效测试用例，不算通过也不算不通过。测试只收 trace；门槛 run 不超过 trace。训练组初筛暂未启用。分组确认不启动回放或评测。</p></details><div class="lanes" data-funnels></div></section>
+      <details><summary class="hint">展开说明</summary><p class="hint">现场在这一轮开始前自动封存。有现场一律走 trace，从这一轮开头执行到自然结束；也可推荐并确认切点，做只调用一次模型的 run 级检查报告，身份和组别不变，不作采纳依据。不恢复现场、不执行工具。无现场经 DeepSeek 推荐、你确认后冻结判断和切点，run 在切点上只调一次模型，不执行工具。原版始终无有效输出的是无效测试用例，不算通过也不算不通过。测试只收 trace；门槛 run 不超过 trace。训练组初筛暂未启用。分组确认不启动回放或评测。</p></details><div class="lanes" data-funnels></div></section>
       <section class="sec bc-panel" data-categories hidden></section>
       <section class="sec bc-panel" data-grouping></section>
       <div class="bc-master-detail"><section class="bc-panel bc-index" aria-label="Badcase 列表"><label class="search"><input data-bc-search type="search" aria-label="搜索 badcase" placeholder="搜索问题、期望、来源房间或编号" autocomplete="off"></label>
@@ -70,6 +75,7 @@
     const $ = s => root.querySelector(s);
     const isGpt = c => /gpt/i.test(c.source?.agentId || c.role || '');
     const hasScene = c => !!c.sealedCheckpointId;
+    const reportCut = c => hasScene(c) && dehydration(c)?.decision?.kind === 'single' && dehydration(c)?.decision?.level === 'run';
     // Goal B8's three immutable historical sources, not their synthetic tests.
     const sourceOnly = c => [4, 10, 14].includes(c.n);
     const levelLabel = c => sourceOnly(c) ? '旧题来源' : hasScene(c) ? 'trace 级 · ' + sceneNote(c) : dehydration(c)?.decision?.level === 'reference' ? '只作参考' : dehydration(c)?.decision?.level === 'run' ? baselineMissing(c) ? 'run 级 · 原版无有效输出' : 'run 级 · 决定已冻结' : '待确认层级（无现场）';
@@ -83,7 +89,7 @@
     function assertionText(c) {
       const a = pipeline(c).assertion;
       const prefix = a.version ? `已冻结 v${a.version} · ${a.questions.length} 条 · ${a.model || '打分模型未记录'}` : '还没有冻结的断言；可去「用例」页起草并确认';
-      return prefix + (a.status === 'incompatible' ? '；run 级只能以回复为依据，需另存一版；旧版保留' : a.status === 'stale' ? '；问题或期望已变，需另存一版' : '') + (a.draftVersion ? `；另有 v${a.draftVersion} 草稿待确认` : '');
+      return prefix + (a.status === 'incompatible' ? hasScene(c) ? '；trace 级至少需要一个问题，只有工具调用检查不能用于 trace 评测；需另存一版，旧版保留' : '；run 级的问题只能以回复为依据，需另存一版；旧版保留' : a.status === 'stale' ? '；问题或期望已变，需另存一版' : '') + (a.draftVersion ? `；另有 v${a.draftVersion} 草稿待确认` : '');
     }
     function replayText(c) {
       const r = pipeline(c).replay;
@@ -105,7 +111,7 @@
       const steps = [
         ['done', c.kind === 'text-only' ? '用户批准的历史导入' : '页面标记'],
         [has ? c.traceBundle?.scene?.metadataStatus === 'recorded' ? 'done' : 'pending' : 'alt', has ? sceneNote(c) + '；元数据不等于已通过回放检查' : '没有现场；须先确认能否脱水'],
-        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；现场 run 级回放尚未实现，暂不开放脱水' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
+        [old || has || d ? 'done' : 'pending', old ? '不脱水、不改组，只作旧题来源' : d ? `用户已冻结：${kindLabel(d.kind)}${d.cutStep ? '，切点第 ' + d.cutStep + ' 步' : '；' + (reference ? '无现场，只作参考' : '仍走 trace 级')}` : has ? '有现场，走 trace 级；可请求推荐并确认切点，仅用于单次 run 级检查报告，身份和组别不变' : r ? 'DeepSeek 推荐已生成，等待你确认能否脱水和切点' : 'DeepSeek 推荐尚未生成；用户确认后冻结判断与切点'],
         [patternLabel(c)?.confirmed || cs?.memberships?.length ? 'done' : 'pending', patternLabel(c)?.confirmed ? '已锁定：' + labelTitle(patternLabel(c)) : cs?.memberships?.length ? '已有已确认模式标签' : '待确认模式标签；不自动改模式或加入归纳'],
         [old || splitName[c.split] ? 'done' : 'pending', old ? '原测试分组保留' : confirmedGroup(c) ? `用户确认的${splitName[confirmedGroup(c).confirmedSplit]}组已生效；原提议和旧分组记录保留` : splitProposal(c) ? `提议：${splitName[splitProposal(c).proposedSplit]}组，等你确认后冻结` : !splitName[c.split] ? '待分配；模式标签及有效原版证据齐备后，按模式提议分组' : `已有${splitName[c.split]}组保留，不重新分配`],
         [status.assertion.status === 'frozen' ? 'done' : ['incompatible', 'stale'].includes(status.assertion.status) ? 'warn' : 'pending', assertionText(c)],
@@ -123,7 +129,7 @@
       const actor = other ? 'other' : old ? 'source' : reference ? 'reference' : invalidCase ? 'invalid' : r && !d || labelPending || splitProposal(c) ? 'you' : categoryReview ? c.split === 'train' ? 'you' : 'system' : needsAssertion ? 'you' : status.inLibrary ? 'library' : 'system';
       const next = other ? '非 GPT 来源，只报告' : old ? '保留旧题来源，不脱水、不改组' : reference ? '只作参考，不进入 run 级回放或选题'
         : invalidCase ? '原版无有效输出：无效测试用例，不进门槛和初筛；保留原文，不自动补跑'
-        : r && !d ? '请确认能否脱水与切点；确认后不可修改'
+        : r && !d ? has ? '请确认报告切点；仍是 trace 级，身份和组别不变，确认后不可修改' : '请确认能否脱水与切点；确认后不可修改'
         : labelPending ? '请确认模式标签：决定分组所属模式和评测目标用例，确认后不能改'
         : splitProposal(c) ? '请核对并确认此模式的新用例分组'
         : categoryReview ? c.split === 'train' ? '在分组区归纳本类别的模式内容并审核，只给模型训练成员。' : '等待本类别训练成员归纳并审核通过；门槛和测试不参与归纳。'
@@ -139,9 +145,9 @@
       const gpt = D.cases.filter(isGpt), tr = gpt.filter(c => hasScene(c) && !sourceOnly(c)), refs = gpt.filter(c => !hasScene(c) && dehydration(c)?.decision?.level === 'reference'), rn = gpt.filter(c => !hasScene(c) && !sourceOnly(c) && dehydration(c)?.decision?.level === 'run');
       const lane = (key, title, note, cells) => `<div class="lane" data-lane="${key}"><div class="lane-head"><b>${title}</b><span>${note}</span></div><div class="funnel">${cells.map(([n, l]) => `<div class="f-step ${n ? '' : 'zero'}"><b>${n}</b><span>${l}</span></div>`).join('')}</div></div>`;
       $('[data-funnels]').innerHTML = lane('trace', 'trace 级', '有现场；从这一轮开头执行到自然结束；不能把封存当作已通过回放检查', [[tr.length, 'GPT 且有封存现场'], [tr.filter(c => c.traceBundle).length, '已冻结轨迹包'], [tr.filter(c => pipeline(c).replay.status === 'supported').length, '回放检查通过'], [tr.filter(c => pipeline(c).assertion.status === 'frozen').length, '断言已冻结'], [tr.filter(c => pipeline(c).inLibrary).length, '已入库']])
-        + lane('run', 'run 级（脱水）', `无现场；冻结切点只调一次模型；只作参考 ${refs.length} 条不计入，未确认的也不计入`, [[rn.length, '用户确认可脱水'], [rn.filter(c => pipeline(c).replay.status === 'supported').length, '前缀可构造请求'], [rn.filter(c => pipeline(c).original.outputs || pipeline(c).original.valid || pipeline(c).original.unscored).length, '原版有有效输出'], [rn.filter(c => pipeline(c).assertion.status === 'frozen').length, '断言已冻结（依据回复）'], [rn.filter(c => pipeline(c).inLibrary).length, '已入库']]);
+        + lane('run', 'run 级（脱水）', `无现场；冻结切点只调一次模型；只作参考 ${refs.length} 条不计入，未确认的也不计入`, [[rn.length, '用户确认可脱水'], [rn.filter(c => pipeline(c).replay.status === 'supported').length, '前缀可构造请求'], [rn.filter(c => pipeline(c).original.outputs || pipeline(c).original.valid || pipeline(c).original.unscored).length, '原版有有效输出'], [rn.filter(c => pipeline(c).assertion.status === 'frozen').length, '检查已冻结（回复／工具调用）'], [rn.filter(c => pipeline(c).inLibrary).length, '已入库']]);
       const runs = gpt.flatMap(activeRuns), excluded = gpt.flatMap(c => caseRuns(c).filter(r => excludedRun(c, r)));
-      if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(r => r.status === 'reached').length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出不代表判分通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
+      if (runs.length || excluded.length) $('[data-funnels]').insertAdjacentHTML('beforeend', `<p data-run-totals>单次 run 回放共 ${runs.length} 次：有效输出 ${runs.filter(validRunOutput).length}；无效 ${runs.filter(r => r.status === 'invalid').length}（不算通过也不算不通过）；请求失败 ${runs.filter(r => r.status === 'error').length}；结果未知 ${runs.filter(r => r.status === 'reserved').length}。有效输出含待判分与代码已判通过／失败；待判分不表示通过。原版无有效输出 ${gpt.filter(baselineMissing).length} 题，不进门槛和初筛。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次（原文保留）。` : ''}</p>`);
     }
     const patternKey = c => { const p = patternLabel(c); return p?.confirmed ? p.patternKey || p.entryId || 'unclassified' : 'pending'; };
     function patterns() {
@@ -321,32 +327,66 @@
     }
     function replayPanel(c) {
       const rows = caseRuns(c), active = activeRuns(c), excluded = rows.filter(r => excludedRun(c, r)); if (!rows.length) return '';
-      const labels = { reached: '有效输出（待判分）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
-      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(r => r.status === 'reached').length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。单次原始回放不表示判分通过；正式判分见「原版复现」，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+      const labels = { reached: '有效输出（待判分）', pass: '已判通过（代码判断）', fail: '已判失败（代码判断）', invalid: '无效 · 不算通过也不算不通过', error: '请求失败（不冒充模型答案）', reserved: '已占用 · 结果未知，不自动重试' };
+      return `<section class="dehydration-panel" data-run-panel="${esc(c.id)}"><h4>单次 run 级回放</h4>${baselineMissing(c) ? '<p class="pill warn">原版无有效输出：无效测试用例，不进门槛和初筛。</p>' : ''}<p>有效输出 ${active.filter(validRunOutput).length} · 无效 ${active.filter(r => r.status === 'invalid').length}（不算通过也不算不通过） · 请求失败 ${active.filter(r => r.status === 'error').length} · 结果未知 ${active.filter(r => r.status === 'reserved').length}。有效输出含待判分与代码已判通过／失败；待判分不表示通过。正式批次判分见「原版复现」，不在本页重新判分。${excluded.length ? `历史回放已被用户改判，不计入：${excluded.length} 次。` : ''}</p>${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>${r.variant.kind === 'original' ? '原版' : '候选 ' + esc(r.variant.id)} · ${excludedRun(c, r) ? '已被用户改判，不计入（历史回放）' : esc(labels[r.status] || r.status)} · 查看完整输出及实际请求</summary><p>${esc(r.model)} · thinking ${esc(r.thinking)} · 模型调用 ${r.modelCalls ?? '未知'} · 工具执行 ${r.toolExecutions ?? '未知'}</p><p class="trace-hash mono">请求 SHA-256：${esc(r.id)}<br>结果 SHA-256：${esc(r.resultHash || '未取得')}</p><p class="hint">当前分类以 accounting 为准；原始包中的历史分类只供审计，不参与当前计数。</p><p>${['json', 'md'].map(format => `<a class="btn small" data-run-export="${format}" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出回放 ${format === 'json' ? 'JSON' : 'Markdown'}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+    }
+    const checkLabel = s => ({ pass: '通过', fail: '失败', invalid: '无效', error: '技术错误', unreached: '未判到（不计通过或失败）', unconfigured: '未配置' }[s] || s || '未记录');
+    const runReason = s => ({ arguments_unparseable: '参数无法解析', no_check_reached: '没有判到任何检查', tool_rule_failed: '工具参数不符合规则', reply_check_failed: '回复检查失败', empty_output: '空输出', model_failed: '模型未产生有效输出' }[s] || s);
+    function reportScope(r) {
+      const skipped = r.questions.filter(q => q.evidence !== 'reply');
+      return `<p class="hint">${r.questions.length && !r.questions.some(q => q.evidence === 'reply') ? '本版本没有回复依据的问题' : !r.questions.length ? '未配置回复检查' : '回复检查只判断依据为回复的问题'}；工具调用检查${r.toolCheck ? '已配置（代码判断）' : '未配置'}。</p>${skipped.length ? `<ul data-report-skipped>${skipped.map(q => `<li>${esc(q.id)} · ${esc(q.question)} · 依据 ${esc(q.evidence)}：未判到，不送裁判，不计通过或失败。</li>`).join('')}</ul>` : ''}`;
+    }
+    function reportPanel(c) {
+      if (!reportCut(c)) return '';
+      const r = frozenRubric(c), counts = c.runChecks, rows = reportRows(c);
+      const current = r && counts?.rubricHash === r.hash && counts.decisionHash === dehydration(c)?.decision?.hash;
+      return `<section class="dehydration-panel" data-run-report="${esc(c.id)}"><h4>切点上的 run 级检查报告</h4><p class="hint">只出报告，不作采纳依据，不进门槛统计；仍是 trace 级，组别不变。工具调用检查只用于切点上的 report，不用于 trace 评测。只统计原版的当前切点 + 最新冻结版本；旧版结果不拼接。</p>${r ? `<p>统计的是 v${esc(r.version)} · 切在第 ${esc(dehydration(c).decision.cutStep)} 步之前</p>${reportScope(r)}<p class="trace-hash mono">断言 hash ${esc(r.hash)}</p>` : '<p>尚无冻结版本；没有可用的检查结果。</p>'}${current ? `<p data-report-counts>通过 ${counts.passed} · 失败 ${counts.failed} · 无效 ${counts.invalid} · 技术错误 ${counts.errors} · 结果未知 ${counts.pending}。无效和技术错误不进有效分母，未知不算通过。</p>${Object.entries(counts.invalidReasons || {}).length ? `<ul>${Object.entries(counts.invalidReasons).map(([reason, n]) => `<li>${esc(runReason(reason))}：${esc(n)}</li>`).join('')}</ul>` : ''}` : '<p>等待读取与当前切点和冻结版本一致的报告统计；不沿用旧版次数。</p>'}${rows.map(r => `<details data-run-details="${esc(r.id)}" data-run-case="${esc(c.id)}"><summary>原版 · ${esc(r.status === 'reserved' ? '结果未知' : checkLabel(r.status))} · 查看检查结果、完整输出及实际请求</summary><p>模型调用 ${esc(r.modelCalls ?? '未知')} · 工具执行 ${esc(r.toolExecutions ?? '未知')} · 不作采纳依据</p><p>${['json', 'md'].map(format => `<a class="btn small" href="/api/wikiskill/cases/${encodeURIComponent(c.id)}/run-replays/${encodeURIComponent(r.id)}/export.${format}" download>导出 ${format}</a>`).join(' ')}</p><div data-run-body></div></details>`).join('')}</section>`;
+    }
+    function reportCheckStatus(packet) {
+      const report = packet.result?.report, checks = report?.checks;
+      if (!checks) return '';
+      const r = (D.rubrics || []).find(r => r.hash === report.rubricHash);
+      const reply = checks.reply === 'unconfigured' && r?.questions.length && !r.questions.some(q => q.evidence === 'reply') ? '本版本没有回复依据的问题' : checks.reply === 'unconfigured' ? '未配置回复检查' : '回复检查：' + checkLabel(checks.reply);
+      return `<p data-run-check-status>${esc(reply)}；工具调用检查：${esc(checkLabel(checks.tool?.status))}${checks.reason ? `；${esc(runReason(checks.reason))}` : ''}。不作采纳依据。</p>`;
     }
     async function loadRun(details) {
       if (!details.isConnected) return;
       const id = details.dataset.runDetails, caseId = details.dataset.runCase, host = details.querySelector('[data-run-body]');
-      const render = row => { host.textContent = ''; const pre = document.createElement('pre'); pre.className = 'tl-req'; pre.textContent = row.state === 'ready' ? json(row.packet) : row.state === 'error' ? '回放记录读取失败；未使用其他结果兜底。' : '正在读取完整回放记录…'; host.appendChild(pre); };
+      const render = row => { host.innerHTML = row.state === 'ready' ? reportCheckStatus(row.packet) : ''; const pre = document.createElement('pre'); pre.className = 'tl-req'; pre.textContent = row.state === 'ready' ? json(row.packet) : row.state === 'error' ? '回放记录读取失败；未使用其他结果兜底。' : '正在读取完整回放记录…'; host.appendChild(pre); };
       if (runCache.has(id)) { render(runCache.get(id)); return; }
       const row = { state: 'loading', packet: null }; runCache.set(id, row); render(row);
       try { const packet = await fetchJson('/api/wikiskill/cases/' + encodeURIComponent(caseId) + '/run-replays/' + encodeURIComponent(id)); if (!packet?.reservation) throw Error(); row.packet = packet; row.state = 'ready'; }
       catch { row.state = 'error'; runCache.delete(id); }
       if (details.isConnected) render(row);
     }
+    const canRecommend = (c, r) => !!c.traceBundle && c.source?.agentId === 'role-family-gpt' && !sourceOnly(c) && !r?.decision && c.dehydrationRecommendation?.eligible;
+    const cutKey = (c, r) => json([c.id, c.traceBundle?.hash, c.sealedCheckpointId || null, r?.hash, r?.decision || null]);
+    const cutForm = (c, r) => cutForms.get(c.id) || { kind: r.recommendation.kindSuggestion, cutStep: r.recommendation.cutStepSuggestion };
+    const cutBody = (c, r, f) => ({ caseId: c.id, traceHash: r.traceHash, recommendationHash: r.hash, kind: f.kind, cutStep: f.kind === 'single' ? Number(f.cutStep) : null });
+    const reportNote = c => hasScene(c) ? '单步型切点只用于切点上的单次检查报告；仍是 trace 级，身份和组别不变，不作采纳依据。' : '单步型成为 run 级；贯穿型或说不清且无现场只作参考，不成为测试用例。';
+    function refreshCutPanel(c) { const host = [...root.querySelectorAll('[data-dehydration]')].find(el => el.dataset.dehydration === c.id); if (host) host.outerHTML = dehydrationPanel(c); syncWritable(); }
+    function cutActions(c, r) {
+      const consent = cutConsents.get(c.id), body = cutBody(c, r, cutForm(c, r)), disabled = writable && typeof onConfirmDecision === 'function' ? '' : 'disabled';
+      return consent?.operation === 'freeze' && consent.key === cutKey(c, r) && consent.body === json(body)
+        ? `<div class="bc-confirm-strip" data-dehydration-consent><b>确认冻结 #${c.n}：${esc(kindLabel(body.kind))}${body.cutStep ? '，切在第 ' + body.cutStep + ' 步之前' : ''}</b><span>${reportNote(c)}确认后不能修改；不启动模型、不执行工具、不改分组。</span><div class="row-actions"><button type="button" class="btn primary" data-dehydration-lock="${esc(c.id)}" ${disabled}>确认并冻结</button><button type="button" class="btn" data-dehydration-cancel="${esc(c.id)}">取消</button></div></div>`
+        : `<button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${disabled}>确认并冻结判断与切点…</button>`;
+    }
     function requestButton(c, r) {
-      if (hasScene(c) || !c.traceBundle || c.source?.agentId !== 'role-family-gpt' || sourceOnly(c) || r?.decision || !c.dehydrationRecommendation?.eligible) return '';
-      return `<p class="hint">每次点击只请求一次 DeepSeek；不会执行工具或自动确认。</p><button type="button" class="btn" data-dehydration-recommend="${esc(c.id)}" ${writable && typeof onRequestRecommendation === 'function' ? '' : 'disabled'}>${r ? '再次请求推荐' : '请求推荐'}</button>`;
+      if (!canRecommend(c, r)) return '';
+      const consent = cutConsents.get(c.id), disabled = writable && typeof onRequestRecommendation === 'function' ? '' : 'disabled';
+      return consent?.operation === 'recommend' && consent.key === cutKey(c, r)
+        ? `<div class="bc-confirm-strip" data-dehydration-consent><b>为 #${c.n} 请求一次 DeepSeek 推荐？</b><span>将发送冻结的起因、步骤卡片、回复和问题／期望，不自动重试或确认。${reportNote(c)}</span><div class="row-actions"><button type="button" class="btn primary" data-dehydration-request-lock="${esc(c.id)}" ${disabled}>确认请求推荐</button><button type="button" class="btn" data-dehydration-cancel="${esc(c.id)}">取消</button></div></div>`
+        : `<p class="hint">每次确认请求只调用一次 DeepSeek；不会执行工具或自动确认。</p><button type="button" class="btn" data-dehydration-recommend="${esc(c.id)}" ${disabled}>${r ? '再次请求推荐' : '请求推荐'}</button>`;
     }
     function dehydrationPanel(c) {
       const r = dehydration(c); if (sourceOnly(c) || !isGpt(c)) return '';
-      if (!r) { const button = requestButton(c, r); return button ? `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>脱水 · 能否脱水</h4>${button}</section>` : ''; }
-      const rec = r.recommendation, d = r.decision;
+      if (!r) { const button = requestButton(c, r); return button ? `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>${hasScene(c) ? '切点推荐 · 只出报告' : '脱水 · 能否脱水'}</h4><p class="hint">${reportNote(c)}</p>${button}</section>` : ''; }
+      const rec = r.recommendation, d = r.decision, f = cutForm(c, r);
       const fallbackLabel = { parse_failed: '两次输出仍无法解析', evidence_mismatch: '依据与该步卡片原文不匹配', no_cut: '未给出切点', unclear: '模型说不清', not_single: '模型判断为贯穿型' };
       const provider = rec.schemaVersion === 2 ? 'DeepSeek' : '历史 JEV';
       if (rec.retryPolicy === 'manual') fallbackLabel.parse_failed = '本次输出无法解析';
       const history = (D.dehydrations || []).filter(old => old.caseId === c.id && old.traceHash === r.traceHash && old.hash !== r.hash);
-      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>能否脱水</h4>${d?.supersedesDecisionHash ? '<p class="pill warn">原推荐与历史确认已被用户改判，不计入；原文和 hash 保留。</p>' : ''}<p>${rec.schemaVersion === 2 && !rec.answers ? '未取得可解析的 DeepSeek 判断；回退切点：第 ' : provider + ' 建议：' + esc(kindLabel(rec.kindSuggestion)) + '；建议切点：第 '}${rec.cutStepSuggestion} 步${rec.cutSource === 'marked_step_fallback' ? `（${esc(fallbackLabel[rec.fallbackReason] || '未达建议条件')}，回退到发消息步骤${d ? '；用户决定见下方' : '，请你挑选'}）` : ''}。</p>
+      return `<section class="dehydration-panel" data-dehydration="${esc(c.id)}"><h4>${hasScene(c) ? '切点确认 · 只出报告' : '能否脱水'}</h4><p class="hint">${reportNote(c)}</p>${d?.supersedesDecisionHash ? '<p class="pill warn">原推荐与历史确认已被用户改判，不计入；原文和 hash 保留。</p>' : ''}<p>${rec.schemaVersion === 2 && !rec.answers ? '未取得可解析的 DeepSeek 判断；回退切点：第 ' : provider + ' 建议：' + esc(kindLabel(rec.kindSuggestion)) + '；建议切点：第 '}${rec.cutStepSuggestion} 步${rec.cutSource === 'marked_step_fallback' ? `（${esc(fallbackLabel[rec.fallbackReason] || '未达建议条件')}，回退到发消息步骤${d ? '；用户决定见下方' : '，请你挑选'}）` : ''}。</p>
         ${rec.schemaVersion === 2 ? `<p>理由：${esc(rec.answers?.reason || '未取得可解析答案，不代表模型给出了判断')}</p><p>原文依据：${esc(rec.answers?.evidence || '未提供')}（${rec.evidenceVerified ? '程序已核对为该步卡片原文的子串' : '未核验通过'}）</p>` : ''}
         <details><summary>查看实际推荐材料与完整输出</summary><pre class="tl-req">${esc(json({ request: r.request, answers: rec.answers, attempts: rec.attempts }))}</pre></details>
         ${history.map(old => `<details data-recommendation-history><summary>此前推荐 · 原文与 hash 保留</summary><pre class="tl-req">${esc(json(old))}</pre></details>`).join('')}
@@ -354,9 +394,9 @@
         ${requestButton(c, r)}
         ${(r.decisionHistory || []).map(old => `<details data-decision-history><summary>历史确认 · 已被用户改判，不计入</summary><pre class="tl-req">${esc(json(old))}</pre></details>`).join('')}
         ${d?.reason ? `<p>用户改判原因：${esc(d.reason)}</p>` : ''}
-        ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p><p>确认来源：${d.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户在 Badcase 页确认'}${d.confirmation?.reference ? ` · ${esc(d.confirmation.reference)}` : ''}${d.kind !== rec.kindSuggestion || d.kind === 'single' && d.cutStep !== rec.cutStepSuggestion ? ' · 用户改判（原推荐保留在上方）' : ''}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${rec.kindSuggestion === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
-        <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${rec.cutStepSuggestion === s.step ? 'selected' : ''}>第 ${s.step} 步 · ${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
-        <p class="hint">贯穿型或说不清且无现场，只作参考，不成为测试用例。确认后判断与切点永久冻结；此处不启动模型。</p><button type="button" class="btn primary" data-dehydration-confirm="${esc(c.id)}" ${writable && typeof onConfirmDecision === 'function' ? '' : 'disabled'}>确认并冻结判断与切点</button>`}</section>`;
+        ${d ? `<p class="pill ok">已冻结：${esc(kindLabel(d.kind))}${d.cutStep ? ' · 第 ' + d.cutStep + ' 步' : ''} · ${reportCut(c) ? '切点检查报告 · trace 级身份和组别不变' : d.level === 'reference' ? '只作参考' : esc(d.level) + ' 级'}</p><p class="trace-hash mono">决定 SHA-256：${esc(d.hash)}</p><p>确认来源：${d.confirmation?.source === 'user-via-planner' ? '用户经规划者转达' : '用户在 Badcase 页确认'}${d.confirmation?.reference ? ` · ${esc(d.confirmation.reference)}` : ''}${d.kind !== rec.kindSuggestion || d.kind === 'single' && d.cutStep !== rec.cutStepSuggestion ? ' · 用户改判（原推荐保留在上方）' : ''}</p>` : `<label class="field">你的判断 <select data-dehydration-kind>${['single', 'throughout', 'unclear'].map(k => `<option value="${k}" ${f.kind === k ? 'selected' : ''}>${esc(kindLabel(k))}</option>`).join('')}</select></label>
+        <label class="field">单步型切点 <select data-dehydration-cut>${r.request.state.steps.map(s => `<option value="${s.step}" ${Number(f.cutStep) === s.step ? 'selected' : ''}>重新生成第 ${s.step} 步 · 原输出：${esc((s.messageBody || s.body).slice(0, 120))}</option>`).join('')}</select></label>
+        <p class="hint">${reportNote(c)}确认后判断与切点永久冻结；切点可以早于被标记回复，此处不启动模型。</p><div data-cut-actions>${cutActions(c, r)}</div>`}</section>`;
     }
     function card(c, ts) {
       const p = plan(c), ref = c.traceBundle, tone = ref?.complete ? 'ok' : 'warn';
@@ -368,7 +408,7 @@
         ${confirmedGroup(c) ? `<p class="pill ok">用户确认：${esc(splitName[confirmedGroup(c).confirmedSplit])}组 · 已生效；旧记录保留</p>` : ''}
         ${dehydration(c)?.decision ? `<details class="more"><summary>脱水决定与推荐记录（已冻结）</summary>${dehydrationPanel(c)}</details>` : dehydrationPanel(c)}
         <div class="bc-detail-grid">${patternPanel(c) || `<section class="bc-card"><h4>九步说明</h4><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></section>`}
-        <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p><p>${esc(originalText(c))}</p><p>${esc(backfill(c))}</p>${replayPanel(c)}</section></div></div>
+        <div class="bc-detail-stack"><section class="bc-card"><h4>问题与期望</h4><p>${hl(c.actual, ts)}</p><p class="case-exp"><span class="lbl">期望</span> ${hl(c.expected, ts)}</p></section>${assertionPanel(c)}<section class="bc-card"><h4>复现与回放</h4><p>${esc(replayText(c))}</p><p>${esc(originalText(c))}</p><p>${esc(backfill(c))}</p>${reportPanel(c)}${replayPanel(c)}</section></div></div>
         ${patternLabel(c) ? `<details class="more"><summary>九步说明</summary><ul class="steps-detail">${p.steps.map(([status, text], i) => `<li><span class="k">${labels[i]}</span><span class="st-${status}">${esc(text)}</span></li>`).join('')}</ul></details>` : ''}
         <details class="more trace" data-trace-case="${esc(c.id)}" ${expanded.has(c.id) ? 'open' : ''}><summary>轨迹与上下文${ref ? `（${ref.stepCount} 次模型调用）` : ''}</summary><div data-trace-host="${esc(c.id)}"></div></details></article>`;
     }
@@ -388,7 +428,7 @@
       }).join('') || '<p class="muted-note">没有符合条件的 badcase。</p>';
       const c = visible.find(c => c.id === selected), detail = $('[data-bc-detail]');
       // Keep the selected viewer DOM (search, disclosures, scroll) during list-only changes.
-      const signature = c && json([c, pipeline(c), dehydration(c), caseRuns(c), patternLabel(c), confirmedGroup(c), splitProposal(c), ts]);
+      const signature = c && json([c, pipeline(c), dehydration(c), caseRuns(c), frozenRubric(c), reportRows(c), patternLabel(c), confirmedGroup(c), splitProposal(c), ts]);
       if (detailSignature !== signature) {
         detail.innerHTML = c ? card(c, ts) : '<p class="muted-note">请选择符合筛选条件的用例。</p>'; detailSignature = signature; detail.scrollTop = 0;
         if (c && expanded.has(c.id)) { renderTrace(c); void loadTrace(c); }
@@ -456,7 +496,7 @@
       if (el.open) { expanded.add(id); renderTrace(c); void loadTrace(c); } else expanded.delete(id);
     }, true);
     root.addEventListener('click', e => {
-      const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-recommend],[data-pattern-confirm],[data-pattern-lock],[data-label-cancel],[data-initial-split-confirm],[data-initial-split-lock],[data-split-cancel],[data-pending-link],[data-pending-link-lock],[data-link-cancel],[data-preclassify]'); if (!el || el.disabled) return;
+      const el = e.target.closest('[data-bc-pattern],[data-bc-row],[data-bc-pick],[data-bc-filter],[data-bc-go-group],[data-trace-retry],[data-dehydration-confirm],[data-dehydration-lock],[data-dehydration-recommend],[data-dehydration-request-lock],[data-dehydration-cancel],[data-pattern-confirm],[data-pattern-lock],[data-label-cancel],[data-initial-split-confirm],[data-initial-split-lock],[data-split-cancel],[data-pending-link],[data-pending-link-lock],[data-link-cancel],[data-preclassify]'); if (!el || el.disabled) return;
       if (el.dataset.bcPattern) { const focused = el === document.activeElement; currentPattern = el.dataset.bcPattern; splitConsent = linkConsent = null; draftConsents.clear(); groupingPanel(); renderCards(); if (focused) [...root.querySelectorAll('.pat-seg [data-bc-pattern]')].find(b => b.dataset.bcPattern === currentPattern)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcRow) { const focused = el === document.activeElement; selected = el.dataset.bcRow; renderCards(); if (focused) [...root.querySelectorAll('[data-bc-row]')].find(b => b.dataset.bcRow === selected)?.focus({ preventScroll: true }); return; }
       if (el.dataset.bcPick) { pickCase(el.dataset.bcPick); return; }
@@ -495,19 +535,23 @@
         onLinkPendingPattern({ pendingPatternId: id, entryId: linkConsent.entryId }); return;
       }
       if (el.hasAttribute('data-preclassify')) { if (writable && typeof onPreclassify === 'function' && preclassificationBatch().length) onPreclassify(); return; }
-      if (el.dataset.dehydrationRecommend) {
-        const c = D.cases.find(c => c.id === el.dataset.dehydrationRecommend), r = c && dehydration(c);
-        if (!writable || !c || hasScene(c) || !c.dehydrationRecommendation?.eligible || r?.decision || typeof onRequestRecommendation !== 'function') return;
-        if (!confirmAction(`为 #${c.n} 请求一次 DeepSeek 推荐？将发送冻结的起因、步骤卡片、回复和问题/期望；不自动重试或确认。`)) return;
+      if (el.dataset.dehydrationCancel) { cutConsents.delete(el.dataset.dehydrationCancel); const c = D.cases.find(c => c.id === el.dataset.dehydrationCancel); if (c) refreshCutPanel(c); return; }
+      if (el.dataset.dehydrationRecommend || el.dataset.dehydrationRequestLock) {
+        const c = D.cases.find(c => c.id === (el.dataset.dehydrationRecommend || el.dataset.dehydrationRequestLock)), r = c && dehydration(c);
+        if (!writable || !c || !canRecommend(c, r) || typeof onRequestRecommendation !== 'function') return;
+        if (el.dataset.dehydrationRecommend) { cutConsents.set(c.id, { operation: 'recommend', key: cutKey(c, r) }); refreshCutPanel(c); return; }
+        const consent = cutConsents.get(c.id); if (consent?.operation !== 'recommend' || consent.key !== cutKey(c, r)) return;
         onRequestRecommendation({ caseId: c.id, traceHash: c.traceBundle.hash, ...(r ? { retryOf: r.hash } : {}) }); return;
       }
-      if (el.dataset.dehydrationConfirm) {
-        const c = D.cases.find(c => c.id === el.dataset.dehydrationConfirm), r = c && dehydration(c);
+      if (el.dataset.dehydrationConfirm || el.dataset.dehydrationLock) {
+        const c = D.cases.find(c => c.id === (el.dataset.dehydrationConfirm || el.dataset.dehydrationLock)), r = c && dehydration(c);
         if (!writable || !r || r.decision || typeof onConfirmDecision !== 'function') return;
-        const host = el.closest('[data-dehydration]'), kind = host.querySelector('[data-dehydration-kind]').value;
-        const cutStep = kind === 'single' ? Number(host.querySelector('[data-dehydration-cut]').value) : null;
-        if (!confirmAction(`确认冻结 #${c.n}：${kindLabel(kind)}${cutStep ? '，切点第 ' + cutStep + ' 步' : '；' + (hasScene(c) ? '仍走 trace 级' : '无现场，只作参考')}？之后不能修改；不会启动模型。`)) return;
-        onConfirmDecision({ caseId: c.id, traceHash: r.traceHash, recommendationHash: r.hash, kind, cutStep }); return;
+        const host = el.closest('[data-dehydration]'), f = { kind: host.querySelector('[data-dehydration-kind]').value, cutStep: Number(host.querySelector('[data-dehydration-cut]').value) };
+        if (!['single', 'throughout', 'unclear'].includes(f.kind) || f.kind === 'single' && !r.request.state.steps.some(s => s.step === f.cutStep)) return;
+        cutForms.set(c.id, f); const body = cutBody(c, r, f);
+        if (el.dataset.dehydrationConfirm) { cutConsents.set(c.id, { operation: 'freeze', key: cutKey(c, r), body: json(body) }); refreshCutPanel(c); return; }
+        const consent = cutConsents.get(c.id); if (consent?.operation !== 'freeze' || consent.key !== cutKey(c, r) || consent.body !== json(body)) { cutConsents.delete(c.id); refreshCutPanel(c); return; }
+        onConfirmDecision(body); return;
       }
       if (el.dataset.traceRetry) { const c = D.cases.find(c => c.id === el.dataset.traceRetry); if (c) void loadTrace(c, true); }
     });
@@ -577,6 +621,11 @@
     });
     root.addEventListener('change', e => {
       const el = e.target;
+      if (el.matches('[data-dehydration-kind],[data-dehydration-cut]')) {
+        const host = el.closest('[data-dehydration]'), c = D.cases.find(c => c.id === host.dataset.dehydration); if (!writable || !c) return;
+        cutForms.set(c.id, { kind: host.querySelector('[data-dehydration-kind]').value, cutStep: Number(host.querySelector('[data-dehydration-cut]').value) });
+        cutConsents.delete(c.id); refreshCutPanel(c);
+      }
       if (el.matches('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id]')) {
         const host = el.closest('[data-pattern-label]'), c = D.cases.find(c => c.id === host.dataset.patternLabel);
         labelForms.set(c.id, readLabelForm(host, c)); labelConsents.delete(c.id); labelErrors.delete(c.id); refreshLabelPanels(c);
@@ -591,15 +640,17 @@
       if (el.hasAttribute('data-bc-model')) { model = el.value; renderCards(); }
     });
     function syncWritable() {
-      for (const [selector, fn] of [['[data-dehydration-confirm]', onConfirmDecision], ['[data-dehydration-recommend]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify], ['[data-propose-categories]', onProposeCategories], ['[data-category-induct]', onInductCategory], ['[data-category-ask],[data-category-lock]', onConfirmCategory], ['[data-category-reject]', onRejectCategory], ['[data-category-approve],[data-category-review-lock],[data-category-reinduct]', onReviewCategory]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-category-stale') || b.hasAttribute('data-category-ask') && !categorySelection(pendingCategoryProposals().find(p => p.hash === b.closest('[data-category-card]').dataset.categoryCard)).members.length || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
+      for (const [selector, fn] of [['[data-dehydration-confirm],[data-dehydration-lock]', onConfirmDecision], ['[data-dehydration-recommend],[data-dehydration-request-lock]', onRequestRecommendation], ['[data-pattern-confirm],[data-pattern-lock]', onConfirmPatternLabel], ['[data-initial-split-confirm],[data-initial-split-lock]', onConfirmInitialSplit], ['[data-pending-link],[data-pending-link-lock]', onLinkPendingPattern], ['[data-preclassify]', onPreclassify], ['[data-propose-categories]', onProposeCategories], ['[data-category-induct]', onInductCategory], ['[data-category-ask],[data-category-lock]', onConfirmCategory], ['[data-category-reject]', onRejectCategory], ['[data-category-approve],[data-category-review-lock],[data-category-reinduct]', onReviewCategory]]) root.querySelectorAll(selector).forEach(b => { b.disabled = !writable || typeof fn !== 'function' || b.hasAttribute('data-category-stale') || b.hasAttribute('data-category-ask') && !categorySelection(pendingCategoryProposals().find(p => p.hash === b.closest('[data-category-card]').dataset.categoryCard)).members.length || b.hasAttribute('data-pattern-confirm') && !formFor(D.cases.find(c => c.id === b.dataset.patternConfirm)).kind || b.hasAttribute('data-pending-link') && !approvedOptions().some(e => e.id === b.closest('[data-pending-link-panel]').querySelector('[data-pending-link-entry]').value); });
       root.querySelectorAll('[data-pattern-kind],[data-pattern-entry],[data-pattern-pending-mode],[data-pattern-pending-id],[data-pattern-name],[data-pattern-scope]').forEach(el => { el.disabled = !writable || typeof onConfirmPatternLabel !== 'function' || el.matches('[data-pattern-pending-mode][value="join"]') && !pendingOptions().length; });
+      root.querySelectorAll('[data-dehydration-kind],[data-dehydration-cut]').forEach(el => { el.disabled = !writable || typeof onConfirmDecision !== 'function' || el.hasAttribute('data-dehydration-cut') && el.closest('[data-dehydration]').querySelector('[data-dehydration-kind]').value !== 'single'; });
+      root.querySelectorAll('[data-dehydration-cancel]').forEach(el => { el.disabled = !writable; });
       root.querySelectorAll('[data-pending-link-entry]').forEach(el => { el.disabled = !writable || typeof onLinkPendingPattern !== 'function'; });
       root.querySelectorAll('[data-category-name],[data-category-scope],[data-category-member]').forEach(el => { const p = pendingCategoryProposals().find(p => p.hash === el.closest('[data-category-card]').dataset.categoryCard); el.disabled = !writable || typeof onConfirmCategory !== 'function' || el.hasAttribute('data-category-member') && !p?.members.some(m => m.caseId === el.dataset.categoryMember && m.canConfirm === true); });
       root.querySelectorAll('[data-category-field]').forEach(el => { el.disabled = !writable || typeof onReviewCategory !== 'function'; });
       root.querySelectorAll('[data-category-cancel],[data-category-review-cancel]').forEach(el => { el.disabled = !writable; });
     }
     return { setWritable(value) { writable = !!value; syncWritable(); }, render(data) {
-      D = data; splitConsent = linkConsent = null; labelForms.clear(); labelConsents.clear(); labelErrors.clear(); categoryForms.clear(); categoryConsents.clear(); categoryErrors.clear(); draftForms.clear(); draftConsents.clear(); draftErrors.clear(); detailSignature = null;
+      D = data; splitConsent = linkConsent = null; cutForms.clear(); cutConsents.clear(); labelForms.clear(); labelConsents.clear(); labelErrors.clear(); categoryForms.clear(); categoryConsents.clear(); categoryErrors.clear(); draftForms.clear(); draftConsents.clear(); draftErrors.clear(); detailSignature = null;
       const selectedCase = D.cases.find(c => c.id === selected);
       if (currentPattern === 'pending' && !D.cases.some(c => patternKey(c) === 'pending') && selectedCase && patternLabel(selectedCase)?.confirmed) currentPattern = patternKey(selectedCase);
       const linked = D.pendingPatternLinks?.find(l => l.pendingPatternId === currentPattern); if (linked) currentPattern = linked.entryId;

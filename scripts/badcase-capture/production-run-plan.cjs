@@ -15,14 +15,14 @@ function prepareProductionRun({config,store,source,item,record,candidate,scoring
  const input={item:source,bundle,decision,toolset};
  const original=buildWikiRunRequest(input);
  const originals=createWikiRunStore(config).list(source.id).filter(r=>r.traceHash===source.traceBundle.hash && r.decisionHash===decision.hash && r.variant?.kind==='original');
- if(!originals.some(r=>r.status==='reached' && r.caseEligibleForGateAndScreen))throw fail('wiki_run_baseline_required');
+ if(!originals.some(r=>['reached','pass','fail'].includes(r.status) && r.caseEligibleForGateAndScreen))throw fail('wiki_run_baseline_required');
  const replacement={id:candidate.id,targetId:candidate.targetId,baseText:candidate.baseText,baseHash:candidate.baseHash,replacement:candidate.candidateText};
  const changed=buildWikiRunRequest({...input,candidate:replacement});
  const originalRequestHash=wikiRunHash(original),candidateRequestHash=wikiRunHash(changed);
  const execution={level:'run',traceBundleHash:source.traceBundle.hash,dehydrationHash:decision.hash,requestHash:originalRequestHash};
  const scoring=scoringPlan.forRun(source,item,pageDehydrationCause(bundle).text);
  const summary={kind:'wikiskill-run-comparison-v1',execution,originalRequestHash,candidateRequestHash,
-  commonInputHash:wikiValueHash({originalRequestHash,candidateRequestHash}),scoring:wikiScoringSummary(scoring)};
+  commonInputHash:wikiValueHash({originalRequestHash,candidateRequestHash}),scoring:wikiScoringSummary(scoring,{runChecks:true})};
  scoringPlan.recordRun(source,execution,scoring);
  return {...record,supported:true,execution,comparison:summary,comparisonConfig:{kind:summary.kind,
   globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree,caseId:source.id,toolset:structuredClone(toolset),candidate:replacement,

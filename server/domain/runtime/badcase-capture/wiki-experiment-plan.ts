@@ -6,7 +6,7 @@ import { assertWikiEligibleConfiguration, readWikiEligibleJudges } from './wiki-
 import { bindWikiJudge, isWikiJudgeTechnicalError, type WikiJudgeBinding, type WikiJudgeConfiguration, type WikiScoreStatus } from './wiki-scoring-v2';
 import { validateWikiRubric, wikiExactKeys, wikiRubricFail as fail, wikiRubricSourceHash, wikiRubricText, wikiValueHash, type WikiRubric } from './wiki-rubric';
 const POLICY = Object.freeze({ kind: 'wikiskill-gate-v1', alpha: .05, noHarmFraction: .05, minimumAllowedLoss: 1, maxExtraAttemptsPerCase: 5 });
-interface WikiExperimentSelection { caseId: string; stage: 'gate' | 'test'; category: 'reproduction' | 'control' | 'probe'; targetReproduction: boolean; judge?: WikiJudgeConfiguration }
+interface WikiExperimentSelection { caseId: string; stage: 'gate' | 'test'; category: 'reproduction' | 'control' | 'probe'; targetReproduction: boolean; judge?: WikiJudgeConfiguration | null }
 export type WikiExperimentExecution = { level: 'trace' } | {
   level: 'run'; traceBundleHash: string; dehydrationHash: string; requestHash: string;
 };
@@ -23,7 +23,7 @@ export interface WikiExperimentDefinition {
 export interface WikiExperimentPlan {
   kind: 'wiki-experiment-plan-v1' | 'wiki-experiment-plan-v2' | 'wiki-experiment-plan-v3'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof POLICY;
-  cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding; execution?: WikiExperimentExecution })[];
+  cases: (Omit<WikiExperimentSelection, 'judge'> & { sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding | null; execution?: WikiExperimentExecution })[];
   planHash: string;
 }
 export interface WikiExperimentCaseResult {
@@ -76,7 +76,7 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     && new Set(definition.cases.map(c => c?.caseId)).size === definition.cases.length);
   const eligibleJudges = readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG);
   const cases = definition.cases.map(selection => {
-    wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction', ...(perCase ? ['judge'] : [])]); identifier(selection.caseId);
+    wikiExactKeys(selection, ['caseId', 'stage', 'category', 'targetReproduction', ...(perCase && Object.hasOwn(selection, 'judge') ? ['judge'] : [])]); identifier(selection.caseId);
     ensure(['gate', 'test'].includes(selection.stage) && ['reproduction', 'control', 'probe'].includes(selection.category)
       && typeof selection.targetReproduction === 'boolean' && (!selection.targetReproduction || selection.category === 'reproduction'));
     const source = catalog.find(c => c.id === selection.caseId); ensure(source);
@@ -88,9 +88,13 @@ export function createWikiExperimentPlan(definition: WikiExperimentDefinition, c
     ensure(rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected));
     if (perCase) ensure(rubric.kind === 'wiki-rubric-v2');
     if (source.execution && rubric.questions.some(q => q.evidence !== 'reply')) throw fail('wiki_rubric_run_evidence_invalid');
+    if (rubric.toolCheck && !source.execution && !rubric.questions.length) throw fail('wiki_tool_check_run_only');
     const { judge: selectedJudge, ...partition } = selection;
-    const configuration = (perCase ? selectedJudge : definition.judge)!, judge = bindWikiJudge(configuration, rubric);
-    assertWikiEligibleConfiguration(configuration, eligibleJudges);
+    const codeOnly = !!source.execution && !!rubric.toolCheck && !rubric.questions.length;
+    if (codeOnly && perCase) ensure(selectedJudge == null);
+    const configuration = (perCase ? selectedJudge : definition.judge)!;
+    const judge = codeOnly ? null : bindWikiJudge(configuration, rubric);
+    if (!codeOnly) assertWikiEligibleConfiguration(configuration, eligibleJudges);
     return { ...structuredClone(partition), sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }),
       hardAssertionsHash: wikiValueHash(source.hardAssertions), rubricHash: rubric.hash, judge,
       ...(source.execution ? { execution: structuredClone(source.execution) } : {}) };
@@ -129,6 +133,10 @@ function checkPlanHash(plan: WikiExperimentPlan) {
     ensure(['gate', 'test'].includes(c.stage) && ['reproduction', 'control', 'probe'].includes(c.category) && typeof c.targetReproduction === 'boolean'
       && (!c.targetReproduction || c.category === 'reproduction'));
     for (const key of ['sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash'] as const) ensure(/^[a-f0-9]{64}$/.test(c[key]));
+    if (c.judge === null) {
+      ensure(plan.kind === 'wiki-experiment-plan-v3' && c.execution?.level === 'run');
+      continue; // The rubric is checked by plan reconstruction/publication.
+    }
     wikiExactKeys(c.judge, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
     ensure(c.judge.kind === 'wiki-judge-binding-v1' && ['deepseek', 'jev'].includes(c.judge.backend) && c.judge.passes === 3
       && c.judge.rubricHash === c.rubricHash && /^[a-f0-9]{64}$/.test(c.judge.modelHash) && /^[a-f0-9]{64}$/.test(c.judge.promptHash));

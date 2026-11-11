@@ -5,6 +5,7 @@ import { validateWikiExperimentPlan, decideWikiExperimentGate, wikiExperimentRun
 import { validateWikiRubric, wikiValueHash, wikiExactKeys } from './wiki-rubric';
 import { projectWikiAssessment, projectWikiScoringSummary } from './wiki-comparison-scoring';
 import { isWikiJudgeTechnicalError } from './wiki-scoring-v2';
+import { projectWikiRunCheckAssessment } from './wiki-run-check-projection';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(v: unknown): asserts v { if (!v) throw invalid(); }
 const same = (a: unknown, b: unknown) => wikiValueHash(a) === wikiValueHash(b);
@@ -59,7 +60,7 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
         && raw.comparison.originalRequestHash === (selection.execution as any).requestHash);
       digest(raw.comparison.candidateRequestHash);
       check(raw.comparison.commonInputHash === wikiValueHash({ originalRequestHash: raw.comparison.originalRequestHash, candidateRequestHash: raw.comparison.candidateRequestHash }));
-    } else check(raw.execution === undefined);
+    } else check(raw.execution === undefined && rubric.questions.length > 0);
     check(raw.comparison && c.comparison);
     const scoring = projectWikiScoringSummary(raw.comparison.scoring, rubric, selection.judge); check(scoring.inputHash === selection.inputHash);
     const comparison = { ...(run ? { kind: raw.comparison.kind, execution: structuredClone(raw.execution),
@@ -73,6 +74,14 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
       if (run) {
         check(original.toolExecutions === 0 && Number.isSafeInteger(row.durationMs) && row.durationMs >= 0
           && row.requestHash === comparison[row.variant + 'RequestHash']);
+        if (rubric.toolCheck) {
+          if (original.checks === undefined) { check(row.status === 'error' && assessment === undefined); return row; }
+          check(row.cleaned && (rubric.questions.length > 0 || assessment === undefined));
+          const projected = assessment === undefined ? undefined : projectWikiAssessment(assessment, rubric, selection.judge!, hardAssertionIds);
+          const checks = projectWikiRunCheckAssessment(original.checks, rubric, projected);
+          check(row.status === checks.status && (row.reason ?? null) === checks.reason);
+          return { ...row, checks, ...(projected ? { assessment: projected } : {}) };
+        }
         if (row.status === 'invalid') {
           check(assessment === undefined && row.replySource === 'none' && ['empty_reply', 'other_tool_requested'].includes(row.reason));
           return row;
@@ -82,7 +91,7 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
         check(row.status === 'error' || !run && row.status === 'fail' && ['model_timeout', 'model_turn_failed'].includes(row.reason));
         return row;
       }
-      const projected = projectWikiAssessment(assessment, rubric, selection.judge, hardAssertionIds);
+      const projected = projectWikiAssessment(assessment, rubric, selection.judge!, hardAssertionIds);
       check(row.cleaned && row.status === projected.status && (row.reason ?? null) === projected.reason);
       return { ...row, assessment: projected };
     });

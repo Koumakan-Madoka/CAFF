@@ -4,6 +4,8 @@ import { createWikiRunStore } from './wiki-run-store';
 import { buildWikiRunRequest, classifyWikiRunOutput, wikiRunHash } from './wiki-run-replay';
 import { resolveFrozenWikiRubric, wikiValueHash } from './wiki-rubric';
 import { verifyWikiRunWireRequest } from './wiki-run-wire';
+import { prepareWikiRunChecks, finishWikiRunChecks } from './wiki-run-checks';
+import { finishWikiRunCheckAssessment } from './wiki-run-check-scoring';
 const fail = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => wikiValueHash(a) === wikiValueHash(b);
@@ -30,10 +32,23 @@ export function verifyWikiRunPublication(wiki: any, options: any, payload: any, 
           baseHash: candidate.baseHash, replacement: candidate.candidateText } } : {}) });
       check(wikiRunHash(rebuilt) === row.requestHash);
       if (result.modelCalls === 1) check(verifyWikiRunWireRequest(rebuilt, result.wireRequest, options.knownKeyValues || []));
-      if (result.message) check(same(classifyWikiRunOutput(result.message), result.outcome));
-      if (row.status === 'invalid') check(result.outcome.status === 'invalid' && row.assessment === undefined);
-      else if (row.status === 'pass' || row.status === 'fail' || row.assessment !== undefined) check(result.outcome.status === 'reached');
-      else check(row.status === 'error');
+      if (c.rubric.toolCheck && result.message) {
+        const prepared = prepareWikiRunChecks(result.message, c.rubric), final = finishWikiRunChecks(prepared), legacy = classifyWikiRunOutput(result.message);
+        check(same(result.checks, { rubricHash: c.rubric.hash, prepared }));
+        const outcome = legacy.status === 'error' ? legacy : { status: prepared.needsReplyJudge ? 'reached' : final.status,
+          reason: prepared.needsReplyJudge ? null : final.reason, reply: prepared.reply };
+        check(same(result.outcome, outcome));
+        if (row.checks) {
+          check((row.assessment !== undefined) === prepared.needsReplyJudge);
+          const checked = finishWikiRunCheckAssessment(prepared, c.rubric, row.assessment);
+          check(same(row.checks, checked) && row.status === checked.status && (row.reason ?? null) === checked.reason);
+        } else check(row.status === 'error' && row.assessment === undefined);
+      } else {
+        if (result.message) check(same(classifyWikiRunOutput(result.message), result.outcome));
+        if (row.status === 'invalid') check(result.outcome.status === 'invalid' && row.assessment === undefined);
+        else if (row.status === 'pass' || row.status === 'fail' || row.assessment !== undefined) check(result.outcome.status === 'reached');
+        else check(row.status === 'error');
+      }
       if (row.assessment) for (const vote of row.assessment.votes) for (const judgment of vote) for (const quote of judgment.evidence)
         check(quote.source === 'reply' && result.outcome.reply.includes(quote.text));
       const fields = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'], usage = result.message?.usage;

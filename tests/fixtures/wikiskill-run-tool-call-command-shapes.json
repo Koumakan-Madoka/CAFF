@@ -1,0 +1,117 @@
+{
+  "note": "Read-only exported #21–#24 command fixtures. Tool calls are DATA ONLY. No server responses or credentials; never execute these commands.",
+  "items": [
+    {
+      "case": 21,
+      "step": 27,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action complete --reason \"最终候选固定SHA 43416db917415db816dd619c51db188b58edafc1；请求规划者独立终审93ef452b8b4995bbfb527c584acb44844e1ffeae..该SHA，再转用户一次性最终接受。Goal rev27：M4按用户2026-11-08选A done，AC1–AC4按证据passed；AC5/S1保留pending/in_progress，不伪造终审或用户接受。范围风险：模式分组/确认守卫、run唯一槽位/分母/未知/不可变身份、旧格式兼容、GET只读预检缓存、UI真实状态/刷新及契约一致。证据.tmp/wikiskill-loop/final/summary.md：同固定SHA Windows/WSL Node22.19.0适用全量检查通过，WSL既有4浏览器排除明列；有限秘密扫描零命中。A为各7完整判分的部分接线证据，原执行保持incomplete，B作废；AC3已入库按批准用合成截图，其余生产副本。请返回PASS/BLOCK、分级问题、独立验证和最终接受建议。不推送/合并/部署，作者冻结仓库写入。\"",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 21,
+      "step": 28,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason \"最终固定SHA 43416db917415db816dd619c51db188b58edafc1已就绪，等待规划者独立终审及用户一次性最终接受。已按要求尝试complete，但系统拒绝：所有AC passed/waived前不允许提议；AC5仍pending，不能虚标、豁免或改协议绕过，故以暂停交终审。Goal rev27：M4按用户选A done、AC1–AC4 passed，S1 in_progress。请审93ef452b8b4995bbfb527c584acb44844e1ffeae..固定SHA：分组/标签确认权限、run唯一槽位/无效错误未知分母/不可变身份、历史兼容、GET只读缓存、UI与契约一致。作者证据.tmp/wikiskill-loop/final/summary.md及s1/final-proof.json：同SHA双平台typecheck/build/check/适用fast/smoke通过，WSL Node22.19.0既有4浏览器排除明列；有限秘密扫描零命中、旧/中断材料hash不变。M4各7完整判分仅接线、不作采纳依据，原执行保持incomplete、B作废；AC3已入库按批准用M3合成截图，其余生产副本。请返回PASS/BLOCK＋分级问题＋独立验证＋最终接受建议。终审和用户接受后再过AC5并complete；不推送/合并/部署，作者冻结仓库写入。\"",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 22,
+      "step": 29,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason \"M2 ready for independent planner review at exact SHA 37ffb0d72a0cccc43bf7f272ba28f90464a674de; scope e2b437e492678d799bb39414b2aaaf5ba338ac7a..37ffb0d72a0cccc43bf7f272ba28f90464a674de, D4/AC2. Review run plan bindings/unique slot/reply-only evidence; one-call zero-tool alternating executor and durable claims; invalid/error denominators and shared cap; pooled unchanged gate plus layer reports; immutable packet linkage; progress/CLI/UI; legacy compatibility. Author proof .tmp/wikiskill-loop/m2/summary.md: test-first, Windows batch186/wiki426+1 original skip/scoring113; WSL Node22.19.0 batch186/wiki427/scoring113; typecheck/build/check pass both, no UI exclusions. Retained-room M4 comparison API exactly equals archive (legacy-api-proof.json); bounded 22-file known-value scan zero. No real calls, production data, 3100, push/merge/deploy. Return PASS/BLOCK + severity findings + independent validation. M2 remains in_progress and AC2 pending final user acceptance. Freeze repository writes now; no M3 until planner verdict.\"",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 22,
+      "step": 30,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason \"M2/AC2 ready for planner review. Exact SHA 37ffb0d72a0cccc43bf7f272ba28f90464a674de; range e2b437e492678d799bb39414b2aaaf5ba338ac7a..37ffb0d72a0cccc43bf7f272ba28f90464a674de. Scope: frozen run bindings/unique slot, reply-only scoring, alternating zero-tool calls, durable claims, invalid/error cap and denominator, unchanged pooled gate with layer reports, raw-packet publication integrity, CLI/progress/UI and legacy formats. Evidence .tmp/wikiskill-loop/m2/summary.md: red/green; Windows batch186/wiki426+1 original skip/scoring113; WSL Node22.19.0 batch186/wiki427/scoring113; typecheck/build/check pass both, no UI exclusions. M4 archived comparison API exactly unchanged; 22-file bounded scan zero. Return PASS/BLOCK + graded findings + independent verification. M2 in_progress, AC2 pending user final acceptance. Writes frozen, no M3. No real models, production access, 3100 operations, push/merge/deploy.\"",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 23,
+      "step": 44,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason 'S1正式终审暂停：请规划者Claude Code独立审查最终固定SHA b8e360b9856801cf2edb3bbbecba037a54102a5c，实现范围9542a2ce..b8e360b9（相对develop可看56dafdaa..b8e360b9）；不得合并/推送/部署。M0–M4已有独立里程碑PASS，本次仍审精确最终SHA。收尾516b8b66以merge双父链合入origin/develop@56dafdaa，四处冲突按明确授权保留双方测试、评分验证与宿主已知密钥传递、裁判imports及独立采集根；b8e360b9只补实际契约。证据.tmp/wikiskill-scoring-v2/s1/summary.md，45份文件manifest SHA256 175ff4dd0a82ed616dd90b715d5d431f8103dc5e1533800a642398bc51d96055。作者验证：合并定向251通过/1原有跳过；最终SHA Windows Node24.13.1 typecheck/build/完整fast4234通过56跳过/smoke107通过；WSL Node22.19.0精确SHA独立clone typecheck/build/fast4209通过70自身平台跳过/smoke107通过，仅按授权排除4个缺浏览器UI文件，253展开命令全0。WSL首轮验收脚本漏test-entry环境清除，失败原样保留；只修ignored脚本后从typecheck整套重跑，不拼接。1159源码前后不变且双平台仅CRLF差异，最终双哨兵空。817个新Git对象、1159tracked及630证据文件已知秘密原文/JSON/base64零命中；仅既有D9凭据清单只读，无模型调用/生产写入/3100服务请求。已停止的自有预览无残留进程/监听，清理一次性副本/测试目录和传输包；最终WSL审查clone及早期证据绑定dirty overlay保留不强删。M4全部107份证据与20份私有原件hash保留，旧.tmp-linux-tests185份未动。重点风险：二值断言/盲投影/同回复逐票重试与占槽分母、逐题模型/hash/eligible门禁、合并安全传递及Unicode路径接口、旧字面结果不重判、实际契约；当前仅DeepSeek A-q1/B公开回复校准，JEV不可用（AC3 high pending）；M4门槛接受但#20两版0/10按D7不采纳，#10仅4/7次有效/6与3error、整批incomplete且D8机会用完（AC5 high pending）。reviewComparison不能写不完整批次正式拒绝裁决，未绕过。两项偏差只交用户决定，不能当作已通过。裸CLI无自动真实裁判，需受信宿主注入；引用协议只诊断未修；Badcase页Goal将来后合入方负责冲突。期望回复PASS/BLOCK、完整SHA与范围、P0–P2逐项文件行/复现或证据/影响、P3另列、独立命令结果和局限。作者现冻结本worktree写入；可静态审查或用clean room/独立WSL clone隔离验证，无须自动新建worktree。S1/AC6未完成，用户一次性最终接受仍待终审和AC3/AC5裁决。' | node -e 'let s=\"\";process.stdin.on(\"data\",x=>s+=x).on(\"end\",()=>{const d=JSON.parse(s);console.log(JSON.stringify({ok:d.ok,proposal:d.proposal?.id,status:d.proposal?.status,error:d.error},null,2));})'",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 23,
+      "step": 45,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "cat <<'CAFF_REVIEW_EOF' | node -e 'let s=\"\";process.stdin.on(\"data\",x=>s+=x).on(\"end\",()=>{const reason=s.trim();if(reason.length>1000)throw Error(\"reason too long: \"+reason.length);const r=require(\"node:child_process\").spawnSync(process.execPath,[process.env.CAFF_CHAT_TOOLS_PATH,\"suggest-goal\",\"--action\",\"pause\",\"--reason\",reason],{encoding:\"utf8\"});if(r.status!==0){console.error(r.stderr);process.exit(r.status??1);}const d=JSON.parse(r.stdout);console.log(JSON.stringify({ok:d.ok,proposal:d.proposal?.id,status:d.proposal?.status},null,2));})'\nS1正式终审暂停，请规划者Claude Code独立审查最终SHA b8e360b9856801cf2edb3bbbecba037a54102a5c，范围9542a2ce..b8e360b9（相对develop为56dafdaa..b8e360b9）。证据.tmp/wikiskill-scoring-v2/s1/summary.md及artifact-manifest.json（45文件）。516b8b66双父merge合入56dafdaa；四处冲突按授权取测试并集、保留评分验证和宿主已知值传递、裁判imports及新采集根；最终提交更新五份实际契约。作者验证：定向251过/1跳；最终SHA双平台typecheck/build/fast/smoke均0失败，Windows fast4234过56跳，WSL Node22.19.0 fast4209过70自身平台跳，仅授权排除4个缺浏览器UI文件，253命令全0；两侧smoke107过。WSL首轮验收脚本错误及从typecheck整套重跑记录保留，未拼接。1159源码前后不变、双哨兵空；817新Git对象及源码/630证据已知秘密零命中，仅D9清单只读，无模型调用或生产写入。自有临时副本已清理，无预览残留；M4全部证据及20私有原件hash不变。风险：二值/三票重试占槽分母、逐题模型/hash/eligible、盲投影、merge安全传递及旧结果保留；AC3/JEV不可用、AC5/#10验证不完整均high pending交用户。门槛接受但#20不过，D7不采纳、D8用完；reviewComparison仍拒绝不完整批次，未绕过；引用只诊断未修，裸CLI须宿主注入裁判。请返回PASS/BLOCK、完整SHA/范围、P0–P2文件行/证据/影响、P3另列、独立验证及局限。现冻结写入，可用clean room或精确SHA WSL clone，不必新建worktree；不推送、不向develop/main合并、不部署。S1/AC6与用户最终接受尚未完成。\nCAFF_REVIEW_EOF",
+            "timeout": 30
+          }
+        }
+      ]
+    },
+    {
+      "case": 24,
+      "step": 42,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason 'M4正式里程碑评审：唯一D8重跑已结束，停止交规划者/用户；本次不进入S1。固定SHA c21dd6fe980b0266df788b1b9e01745facbb8c60，无新增实现diff，502/503/504分类修复已有独立PASS。评审范围：.tmp/wikiskill-scoring-v2/m4/rerun/summary.md、decision.json、diagnosis.md及原始运行/复制hash/实际API和截图；artifact-manifest.json的SHA256=a76ee5b9f8243d35a182230182b204271eff043380af54ea1320eb30c2ae2494。门槛#19原0/10、候选6/10，Fisher p=0.0054179566563467545；#16两版10/10，少通过0、容许1，门槛accepted。测试#20两版0/10（已看过一次的测试题），依D7不采纳candidate-050be1fb；#14两版10/10；#10原4/4、候选7/7有效通过，另6/3次技术error，故整批status=incomplete、completed=false，不能称完整无误伤。此前进度误把#10/#14对调，现以M2冻结caseId及实际API displayNumber纠正，原始数据未改。最终9次error中8次judge_output_invalid、1次judge_backend_failed；主要是trace内嵌文件与独立file槽不一致、JSON引用转义/包装层及closed-schema，不是截断；只分析未修代码。作者验证：100次执行和313次裁判调用全部离线重建票/重试次序与原inputHash，一致；逐题分母与Fisher独立复算；20份私有材料及3份持久化记录复制hash一致、原件保留，首批18份和来源树未变；实际隔离3269 API与1440/390页面核验本批门槛演进、逐票引用和技术error，预览均已停止，无新模型请求。首批因504中止，#19为0/10对4/10，未计入结论；旧回复复用0，不补跑、不拼接，D8无剩余整批机会。风险/边界：门槛已在正式比较和演进记录持久化；reviewComparison要求completed=true，本次不绕过守卫写comparisonReviews，不采纳的规则结论在decision.json，非伪造人工接受。请独立返回PASS/FAIL、确切SHA、证据范围、P0–P2阻塞项含文件/索引/原因、P3另列及验证局限，并决定M4/AC5状态；M4尚未标完成、AC3/JEV仍pending。现在停止本worktree写入，不合develop、不访问3100、不推送、不部署或迁移。' | node -e 'let s=\"\";process.stdin.on(\"data\",b=>s+=b);process.stdin.on(\"end\",()=>{const x=JSON.parse(s);console.log(JSON.stringify({ok:x.ok,proposal:x.proposal,goalStatus:x.goal?.status,goalRevision:x.goal?.revision},null,2));});'",
+            "timeout": 60
+          }
+        }
+      ]
+    },
+    {
+      "case": 24,
+      "step": 43,
+      "stopReason": "toolUse",
+      "toolCalls": [
+        {
+          "name": "bash",
+          "arguments": {
+            "command": "node \"$CAFF_CHAT_TOOLS_PATH\" suggest-goal --action pause --reason 'M4里程碑评审暂停，不进入S1。固定SHA c21dd6fe980b0266df788b1b9e01745facbb8c60，无新增源码；评审范围为.tmp/wikiskill-scoring-v2/m4/rerun/summary.md及其原始证据、decision.json、diagnosis.md和实际API/截图。门槛#19原0/10候选6/10，Fisher p=0.005418；#16各10/10，门槛接受。测试#20各0/10（已看过一次的测试题），依D7不采纳；#14各10/10；#10仅4/4与7/7有效，另6/3次技术error，整批incomplete。此前误称#14出错，已按冻结ID及API纠正。首批因504中止，#19为0/10对4/10，未计入结论；D8无剩余机会，不补跑、不拼接。作者核验：100次执行/313次裁判调用的原输入hash、票序列、重试与分母全部一致，Fisher独立复算；20+3份复制hash一致、原件保留，首批及来源树未变；隔离3269桌面/手机真实结果与本批门槛演进核验，预览已停止，无新模型调用。风险：#10引用协议/JSON层级错误，不是截断；仅分析未修。reviewComparison拒绝completed=false，未绕过守卫或伪造人工裁决；门槛已持久化，不采纳结论在decision.json。证据manifest SHA256 a76ee5b9f8243d35a182230182b204271eff043380af54ea1320eb30c2ae2494。请独立返回PASS/FAIL、确切SHA、范围、P0–P2含文件/索引/原因、P3另列和验证局限，决定M4/AC5状态。M4未标完成，AC3/JEV仍pending；现停止worktree写入，不合develop、不碰3100、不推送。' | node -e 'let s=\"\";process.stdin.on(\"data\",b=>s+=b);process.stdin.on(\"end\",()=>{if(!s)process.exit(1);const x=JSON.parse(s);console.log(JSON.stringify({ok:x.ok,proposal:x.proposal,goalStatus:x.goal?.status,goalRevision:x.goal?.revision},null,2));});'",
+            "timeout": 60
+          }
+        }
+      ]
+    }
+  ]
+}

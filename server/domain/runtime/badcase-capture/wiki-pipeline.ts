@@ -44,16 +44,17 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const source = [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!);
     const level = c.sealedCheckpointId ? 'trace' : decision?.level === 'reference' ? 'reference' : decision?.level === 'run' ? 'run' : 'pending';
     const originals = level === 'run' ? runReplays.filter((r: any) => r.caseId === c.id && r.traceHash === c.traceBundle?.hash
-      && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason) : [];
-    const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'reserved'].includes(r.status));
+      && r.decisionHash === decision?.hash && r.variant?.kind === 'original' && !r.excludedReason && !r.reportOnly) : [];
+    const invalidBaseline = originals.some((r: any) => r.status === 'invalid') && !originals.some((r: any) => ['reached', 'pass', 'fail', 'reserved'].includes(r.status));
     const stopReason = wikiSourceFamily(c) !== 'GPT' ? 'report_only' : source ? 'legacy_source' : level === 'reference' ? 'reference_only' : invalidBaseline ? 'invalid_baseline' : null;
     const versions = (state.rubrics || []).filter((r: any) => r.caseId === c.id).sort((a: any, b: any) => b.version - a.version);
     const frozen = versions.find((r: any) => r.status === 'frozen');
     const stale = frozen && frozen.sourceHash !== wikiRubricSourceHash(c.actual, c.expected);
-    const incompatible = level === 'run' && frozen?.questions.some((q: any) => q.evidence !== 'reply');
+    const incompatible = level === 'run' && frozen?.questions.some((q: any) => q.evidence !== 'reply')
+      || level === 'trace' && frozen && !frozen.questions.length;
     const assertion = { status: !frozen ? 'missing' : stale ? 'stale' : incompatible ? 'incompatible' : 'frozen',
       version: frozen?.version ?? null, hash: frozen?.hash ?? null, model: frozen?.scoringModel?.model ?? null,
-      questions: structuredClone(frozen?.questions || []), draftVersion: versions.find((r: any) => r.status === 'draft')?.version ?? null };
+      questions: structuredClone(frozen?.questions || []), draftVersion: versions.find((r: any) => r.status === 'draft' && (!frozen || r.version > frozen.version))?.version ?? null };
     const replay = state.replayCases?.find((r: any) => r.sourceCaseId === c.id && r.request?.association?.checkpointId === c.sealedCheckpointId);
     const check = replayChecks.find((r: any) => r.caseId === c.id && r.level === level && (r.status !== 'supported'
       || level === 'trace' && replay && r.checkpointHash === replay.checkpointHash
@@ -73,7 +74,7 @@ export function projectWikiPipelineStates({ state, comparisons = [], runReplays 
     const runs = match?.row.runs.filter((r: any) => r.variant === 'original') || [];
     const pass = runs.filter((r: any) => r.status === 'pass').length, fail = runs.filter((r: any) => r.status === 'fail').length;
     const original = { source: match ? 'comparison' : originals.length ? 'run-replay' : null, comparisonId: match?.batch.id ?? null,
-      valid: pass + fail, pass, fail, reproduced: fail > (pass + fail) / 2, outputs: level === 'run' ? originals.filter((r: any) => r.status === 'reached').length : pass + fail,
+      valid: pass + fail, pass, fail, reproduced: fail > (pass + fail) / 2, outputs: level === 'run' ? originals.filter((r: any) => ['reached', 'pass', 'fail'].includes(r.status)).length : pass + fail,
       unscored: match ? 0 : originals.filter((r: any) => r.status === 'reached').length,
       invalid: (match ? runs : originals).filter((r: any) => r.status === 'invalid').length,
       errors: (match ? runs : originals).filter((r: any) => r.status === 'error').length,

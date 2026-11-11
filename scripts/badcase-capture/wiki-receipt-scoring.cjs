@@ -7,19 +7,24 @@ const { scoreLiteralFiles, parseLiteralEvidence } = require('./file-literal-rule
 const { scorePublicReply } = require('./public-reply-literal-rules.cjs');
 const fail = code => Object.assign(Error(code), { code });
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
-function validateWikiScoring(value) {
+function validateWikiScoring(value, { runChecks = false } = {}) {
   wikiExactKeys(value, ['kind', 'rubric', 'binding', 'task', 'expected']);
   if (value.kind !== 'wiki-score-v2') throw fail('wiki_scoring_config_required');
-  validateWikiRubric(value.rubric, true); validateWikiJudgeBinding(value.binding, value.rubric);
+  validateWikiRubric(value.rubric, true);
+  if (value.rubric.toolCheck && !runChecks && !value.rubric.questions.length) throw fail('wiki_tool_check_run_only');
+  if (runChecks && value.rubric.toolCheck && !value.rubric.questions.length) {
+    if (value.binding !== null) throw fail('wiki_scoring_config_required');
+  } else validateWikiJudgeBinding(value.binding, value.rubric);
   wikiRubricText(value.task, 32768); wikiRubricText(value.expected, 8192);
   return structuredClone(value);
 }
-function wikiScoringSummary(value) {
-  value = validateWikiScoring(value);
+function wikiScoringSummary(value, options) {
+  value = validateWikiScoring(value, options);
   return { kind: 'wiki-score-v2', configHash: wikiValueHash(value), rubricId: value.rubric.id, rubricVersion: value.rubric.version,
     rubricHash: value.rubric.hash, binding: value.binding, inputHash: wikiValueHash({ task: value.task, expected: value.expected }) };
 }
-function assertWikiScoringJudge(value, judge) {
+function assertWikiScoringJudge(value, judge, { runChecks = false } = {}) {
+  if (runChecks && value.rubric.toolCheck && !value.rubric.questions.length && value.binding === null) return;
   if (!judge || typeof judge.evaluate !== 'function') throw fail('wiki_judge_adapter_required');
   try { if (wikiValueHash(value.binding) === wikiValueHash(bindWikiJudge(judge.configuration, value.rubric))) return; }
   catch { /* Invalid runtime adapter config is drift, not a provider retry. */ }

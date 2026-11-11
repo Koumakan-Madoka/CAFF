@@ -39,6 +39,7 @@ function data() {
 function setup(t, handler) {
   const dom = new JSDOM('<div id="panel"></div>', { runScripts: 'outside-only', url: 'http://127.0.0.1/wikiskill.html' });
   t.after(() => dom.window.close());
+  dom.window.TextEncoder = TextEncoder;
   dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
   dom.window.HTMLElement.prototype.scrollIntoView = function () {};
   dom.window.eval(fs.readFileSync(path.resolve(__dirname, '../../public/shared/badcase-pipeline.js'), 'utf8'));
@@ -323,6 +324,158 @@ test('knowledge category drafts keep identity fixed and use invalidatable inline
   await h.click('[data-review="approved"]'); await h.click('[data-wiki-category-lock]'); assert.equal(h.posts().length, 1); assert.equal(h.posts()[0].body.patch.title, undefined); assert.equal(h.posts()[0].body.patch.symptoms, '修改过的表现'); assert.equal(h.confirms.length, 0);
 });
 
+const toolRule = (kind = 'max-chars') => ({ parameter: kind === 'max-chars' ? 'reason' : 'action', kind, ...(kind === 'max-chars' ? { max: 1000 } : { values: ['pause'] }) });
+const toolConfig = () => ({ method: 'code', target: { kind: 'caff-chat', name: 'suggest-goal' }, mode: 'on-call', rules: [toolRule()] });
+function toolEditor(t, { questions = [], toolCheck = toolConfig(), scene = true, model = null, handler } = {}) {
+  const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
+  const h = setup(t, (url, options, saved) => {
+    const custom = handler?.(url, options, saved); if (custom !== undefined) return custom;
+    if (options.method !== 'POST') return undefined;
+    if (url.endsWith('/rubric')) saved.rubrics.push(createWikiRubric({ ...clone(options.body), model: 'deepseek/deepseek-v4-flash', version: saved.rubrics.length + 1, actual: saved.cases[0].actual, expected: saved.cases[0].expected }));
+    else if (url.endsWith('/confirm-rubric')) Object.assign(saved.rubrics.find(r => r.id === options.body.rubricId), { status: 'frozen', confirmedAt: '2026-11-09T00:00:00.000Z', confirmationRecord: 'synthetic-page-confirmation' });
+    else return undefined;
+    saved.revision++; return { partialPostResponse: true };
+  });
+  const c = h.saved().cases[0]; Object.assign(c, { kind: 'marked-badcase', role: 'role-family-gpt', ...(scene ? { sealedCheckpointId: 'scene-22' } : {}) });
+  h.saved().rubrics = [createWikiRubric({ caseId: c.id, version: 1, model: 'deepseek/deepseek-v4-flash', actual: c.actual, expected: c.expected, questions, scoringModel: model, toolCheck })];
+  h.saved().eligibleJudges = model ? [model] : [];
+  h.rubricPanel = () => h.root.querySelector('#c-1 [data-rubric-panel]');
+  h.field = (selector, value, type = 'input') => { const el = h.rubricPanel().querySelector(selector); assert.ok(el, selector); if (typeof value === 'boolean') el.checked = value; else el.value = value; el.dispatchEvent(new h.window.Event(type, { bubbles: true })); };
+  return h;
+}
+
+test('parallel check editor permits tool-only freezing without a judge and re-GETs after every write', async t => {
+  const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]');
+  const panel = h.rubricPanel;
+  assert.ok(panel().querySelector('[data-reply-check]')); assert.ok(panel().querySelector('[data-tool-check]'));
+  assert.match(panel().querySelector('[data-tool-preview]').textContent, /suggest-goal.*reason.*1000/);
+  assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, false, 'tool-only does not require a judge');
+  assert.match(panel().textContent, /只用于切点上的 report，不用于 trace 评测/);
+  await h.click('#c-1 [data-save-rubric]');
+  assert.equal(h.saved().rubrics[1].questions.length, 0); assert.deepEqual(clone(h.posts()[0].body.toolCheck), toolConfig());
+  assert.equal(h.posts()[0].body.scoringModel, null);
+  await h.click('#c-1 [data-freeze-rubric]'); assert.equal(h.posts().length, 1);
+  assert.match(panel().querySelector('[data-rubric-consent]').textContent, /suggest-goal.*1000/s);
+  await h.click('#c-1 [data-rubric-lock]');
+  assert.equal(h.saved().rubrics[1].status, 'frozen'); assert.equal(h.posts()[1].body.hash, h.saved().rubrics[1].hash);
+  assert.equal(h.confirms.length, 0);
+  for (let i = 0; i < h.calls.length; i++) if (h.calls[i].method === 'POST') assert.equal(h.calls[i + 1].url, '/api/wikiskill');
+  assert.match(panel().textContent, /无需.*裁判/); assert.equal(panel().querySelector('[data-run-replay]'), null);
+});
+
+test('empty checks save an unscoreable draft, removing the last reply assertion is allowed', async t => {
+  const h = toolEditor(t, { questions: [{ id: 'q1', question: '公开回复给结论。', evidence: 'reply' }], toolCheck: null });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  await h.click('#c-1 [data-remove-assertion="q1"]'); assert.equal(h.rubricPanel().querySelectorAll('[data-rubric-question]').length, 0);
+  await h.click('#c-1 [data-save-rubric]');
+  assert.deepEqual(clone(h.posts()[0].body.questions), []); assert.equal(h.posts()[0].body.toolCheck, null);
+  assert.equal(h.rubricPanel().querySelector('[data-freeze-rubric]').disabled, true);
+  assert.match(h.rubricPanel().querySelector('[data-freeze-rubric-reason]').textContent, /没有.*检查.*不能.*判分/);
+});
+
+test('mixed scene rubric preserves trace questions and lists questions unseen by report', async t => {
+  const questions = [{ id: 't1', question: '轨迹保持原组别。', evidence: 'trace' }, { id: 'r1', question: '回复有结论。', evidence: 'reply' }];
+  const h = toolEditor(t, { questions, model: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  assert.match(h.rubricPanel().querySelector('[data-report-skipped]').textContent, /t1.*轨迹保持原组别/);
+  assert.doesNotMatch(h.rubricPanel().querySelector('[data-report-skipped]').textContent, /r1/);
+  await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(clone(h.posts()[0].body.questions), questions);
+  assert.deepEqual(clone(h.posts()[0].body.toolCheck), toolConfig());
+  await h.click('#c-1 [data-freeze-rubric]'); await h.click('#c-1 [data-rubric-lock]');
+  const frozen = clone(h.saved().rubrics.at(-1));
+  await h.click('#c-1 [data-edit-rubric]'); h.field('[data-tool-name]', 'read'); h.field('[data-tool-kind]', 'native', 'change');
+  await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(h.saved().rubrics[1], frozen);
+  assert.equal(h.saved().rubrics[2].toolCheck.target.kind, 'native'); assert.notEqual(h.saved().rubrics[2].hash, frozen.hash);
+});
+
+for (const field of ['name', 'mode', 'kind', 'parameter', 'rule-kind', 'max', 'question', 'model', 'enabled']) test(`rubric consent invalidates on ${field} edits and cannot be revived by reverting`, async t => {
+  const h = toolEditor(t, { questions: [{ id: 'q1', question: '回复给结论。', evidence: 'reply' }], model: { backend: 'deepseek', model: 'deepseek/deepseek-v4-flash' } });
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('#c-1 [data-freeze-rubric]');
+  const stale = h.rubricPanel().querySelector('[data-rubric-lock]'); assert.ok(stale);
+  const changes = { name: ['[data-tool-name]', 'read'], mode: ['[data-tool-mode]', 'forbid', 'change'], kind: ['[data-tool-kind]', 'native', 'change'], parameter: ['[data-tool-parameter]', 'action'], 'rule-kind': ['[data-tool-rule-kind]', 'allowed-values', 'change'], max: ['[data-tool-max]', '999'], question: ['[data-rubric-question]', '修改过的陈述。'], model: ['[data-rubric-model]', '', 'change'], enabled: ['[data-tool-enabled]', false, 'change'] };
+  h.field(...changes[field]); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null);
+  stale.click(); await tick(); assert.equal(h.posts().length, 0);
+  await h.panel.load(); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null, 'GET invalidates consent');
+});
+
+for (const [label, selector, value] of [['bad target', '[data-tool-name]', 'x;rm'], ['blank parameter', '[data-tool-parameter]', ''], ['negative max', '[data-tool-max]', '-1'], ['fractional max', '[data-tool-max]', '1.5'], ['empty max', '[data-tool-max]', '']]) test(`tool rule form rejects ${label} before POST`, async t => {
+  const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]'); h.field(selector, value);
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /请.*修正/);
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
+});
+
+test('tool rule editor supports allowed/forbidden values, forbid preview, rule add/remove and escapes text', async t => {
+  const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]');
+  h.field('[data-tool-mode]', 'forbid', 'change'); h.field('[data-tool-rule-kind]', 'forbidden-values', 'change');
+  h.field('[data-tool-parameter]', 'action'); h.field('[data-tool-values]', 'pause\n<script>not-code</script>');
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /不该这样调用.*pause/);
+  assert.equal(h.rubricPanel().querySelector('script,img'), null);
+  await h.click('#c-1 [data-add-tool-rule]'); assert.equal(h.rubricPanel().querySelectorAll('[data-tool-rule]').length, 2);
+  await h.click('#c-1 [data-remove-tool-rule="1"]');
+  await h.click('#c-1 [data-save-rubric]'); assert.deepEqual(clone(h.posts()[0].body.toolCheck.rules[0]), { parameter: 'action', kind: 'forbidden-values', values: ['pause', '<script>not-code</script>'] });
+  h.field('[data-tool-rule-kind]', 'allowed-values', 'change'); h.field('[data-tool-values]', 'pause\npause');
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 1, 'duplicate values rejected');
+  h.field('[data-tool-values]', 'resume'); await h.click('#c-1 [data-save-rubric]');
+  assert.equal(h.posts()[1].body.toolCheck.rules[0].kind, 'allowed-values');
+});
+
+test('scene report exclusions update with locally edited trace assertions without waiting for a write', async t => {
+  const h = toolEditor(t, { questions: [{ id: 'q1', question: '旧的轨迹断言。', evidence: 'trace' }] });
+  await h.panel.load(); await h.click('[data-tab="cases"]'); h.field('[data-rubric-question]', '修改后的轨迹断言。');
+  assert.match(h.rubricPanel().querySelector('[data-report-skipped]').textContent, /修改后的轨迹断言/);
+  assert.doesNotMatch(h.rubricPanel().querySelector('[data-report-skipped]').textContent, /旧的轨迹断言/);
+  h.field('[data-rubric-evidence]', 'reply', 'change'); assert.doesNotMatch(h.rubricPanel().querySelector('[data-report-skipped]').textContent, /修改后的轨迹断言/);
+});
+
+test('reverting tool values never restores an old consent, GET invalidates even an unchanged clean version', async t => {
+  const config = toolConfig(); config.rules = [toolRule('forbidden-values')];
+  const h = toolEditor(t, { toolCheck: config }); await h.panel.load(); await h.click('[data-tab="cases"]');
+  await h.click('#c-1 [data-freeze-rubric]'); h.field('[data-tool-values]', 'resume'); h.field('[data-tool-values]', 'pause');
+  assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null); assert.equal(h.rubricPanel().querySelector('[data-freeze-rubric]').disabled, false);
+  await h.click('#c-1 [data-freeze-rubric]'); await h.panel.load(); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null);
+  await h.click('#c-1 [data-freeze-rubric]'); await h.click('#c-1 [data-add-tool-rule]'); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null);
+  await h.click('#c-1 [data-remove-tool-rule="1"]'); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null);
+  assert.equal(h.posts().length, 0);
+});
+
+test('discarding both local check edits needs in-panel consent, preserves frozen history and makes no write', async t => {
+  const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]'); h.field('[data-tool-name]', 'read');
+  await h.click('#c-1 [data-discard-rubric-edit]'); assert.match(h.rubricPanel().querySelector('[data-rubric-consent]').textContent, /放弃.*两种检查/);
+  h.field('[data-tool-name]', 'edit'); assert.equal(h.rubricPanel().querySelector('[data-rubric-lock]'), null);
+  await h.click('#c-1 [data-discard-rubric-edit]'); await h.click('#c-1 [data-rubric-lock]');
+  assert.equal(h.rubricPanel().querySelector('[data-tool-name]').value, 'suggest-goal'); assert.equal(h.posts().length, 0); assert.equal(h.confirms.length, 0);
+});
+
+test('tool rule editor bounds rule count and keeps zero-rule drafts from being saved', async t => {
+  const config = toolConfig(); config.rules = Array.from({ length: 32 }, toolRule.bind(null, 'max-chars'));
+  const h = toolEditor(t, { toolCheck: config }); await h.panel.load(); await h.click('[data-tab="cases"]');
+  assert.equal(h.rubricPanel().querySelector('[data-add-tool-rule]').disabled, true);
+  for (let i = 0; i < 32; i++) await h.click('#c-1 [data-remove-tool-rule="0"]');
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /1–32/);
+  await h.click('#c-1 [data-add-tool-rule]'); await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 1);
+});
+
+test('tool editor locks text, toggles and consent during full GET and retains local edits after refresh', async t => {
+  let defer = false, finish;
+  const h = toolEditor(t, { handler: (url, options) => defer && url === '/api/wikiskill' && options.method !== 'POST' ? new Promise(resolve => { finish = resolve; }) : undefined });
+  await h.panel.load(); await h.click('[data-tab="cases"]'); h.field('[data-tool-name]', 'read'); defer = true;
+  await h.click('#wsk-refresh'); assert.equal(typeof finish, 'function');
+  for (const el of h.rubricPanel().querySelectorAll('input,textarea,select,button')) assert.equal(el.disabled, true, el.outerHTML);
+  finish(clone(h.saved())); await tick(); await tick();
+  assert.equal(h.rubricPanel().querySelector('[data-tool-name]').value, 'read'); assert.equal(h.rubricPanel().querySelector('[data-tool-enabled]').disabled, false);
+  assert.equal(h.rubricPanel().querySelector('[data-freeze-rubric]').disabled, true); assert.equal(h.posts().length, 0);
+});
+
+test('tool editor controls including check toggle are disabled after failed write', async t => {
+  let fail = false;
+  const h = toolEditor(t, { handler: (_url, options) => { if (fail && options.method === 'POST') throw Error('synthetic-failure'); } });
+  await h.panel.load(); await h.click('[data-tab="cases"]'); fail = true; await h.click('#c-1 [data-save-rubric]');
+  for (const el of h.rubricPanel().querySelectorAll('input,textarea,select,button')) assert.equal(el.disabled, true, el.outerHTML);
+  assert.equal(h.posts().length, 1); h.field('[data-tool-name]', 'read');
+  await h.click('[data-cases-mode="list"]'); assert.equal(h.rubricPanel().querySelector('[data-tool-name]').value, 'suggest-goal');
+});
+
 test('assertion editor saves manual changes as new versions, offers eligible models only and freezes the saved hash explicitly', async t => {
   const { createWikiRubric } = require('../../build/server/domain/runtime/badcase-capture/wiki-rubric');
   const h = setup(t, (url, options, saved) => {
@@ -346,8 +499,10 @@ test('assertion editor saves manual changes as new versions, offers eligible mod
   const changed = panel().querySelector('[data-rubric-question]'); changed.value = '尚未保存的修订。'; changed.dispatchEvent(new h.window.Event('input', { bubbles: true }));
   assert.equal(panel().querySelector('[data-freeze-rubric]').disabled, true, 'unsaved text must not freeze an older hash');
   changed.value = '回复先给结论。'; changed.dispatchEvent(new h.window.Event('input', { bubbles: true }));
-  h.accept(false); await h.click('#c-1 [data-freeze-rubric]'); assert.equal(h.posts().length, 1);
-  h.accept(true); await h.click('#c-1 [data-freeze-rubric]'); const frozen = clone(h.saved().rubrics[0]);
+  await h.click('#c-1 [data-freeze-rubric]'); assert.equal(h.posts().length, 1);
+  await h.click('#c-1 [data-rubric-cancel]'); assert.equal(panel().querySelector('[data-rubric-lock]'), null);
+  await h.click('#c-1 [data-freeze-rubric]'); await h.click('#c-1 [data-rubric-lock]'); const frozen = clone(h.saved().rubrics[0]);
+  assert.equal(h.confirms.length, 0, 'rubric freezing is in-panel, not a browser dialog');
   assert.equal(h.posts().at(-1).body.hash, frozen.hash); assert.match(panel().textContent, /已冻结/); assert.equal(panel().querySelector('[data-rubric-question]'), null);
   await h.click('#c-1 [data-edit-rubric]'); await h.click('#c-1 [data-add-assertion]'); assert.equal(panel().querySelectorAll('[data-rubric-question]').length, 2);
   const second = panel().querySelectorAll('[data-rubric-question]')[1]; second.value = '回复解释依据。'; second.dispatchEvent(new h.window.Event('input', { bubbles: true }));
@@ -470,8 +625,10 @@ test('AI assertion drafting is explicit, annotation-only and never freezes or ch
       questions: [{ id: 'q1', question: '回复说明结论 <script>not-html</script>。', evidence: 'reply' }] })]; saved.revision++; return clone(saved);
   });
   h.saved().eligibleJudges = []; await h.panel.load(); await h.click('[data-tab="cases"]');
-  h.accept(false); await h.click('#c-1 [data-draft-rubric]'); assert.equal(h.posts().length, 0);
-  h.accept(true); await h.click('#c-1 [data-draft-rubric]');
+  await h.click('#c-1 [data-draft-rubric]'); assert.equal(h.posts().length, 0);
+  await h.click('#c-1 [data-rubric-cancel]'); assert.equal(h.posts().length, 0);
+  await h.click('#c-1 [data-draft-rubric]'); await h.click('#c-1 [data-rubric-lock]');
+  assert.equal(h.confirms.length, 0);
   assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, caseId: 'c1' });
   assert.match(h.root.querySelector('#c-1 [data-rubric-panel]').textContent, /尚无校准达标/); assert.equal(h.root.querySelector('#c-1 [data-freeze-rubric]').disabled, true);
   assert.equal(h.root.querySelector('#c-1 [data-rubric-panel] script'), null); assert.equal(h.saved().rubrics[0].status, 'draft');
@@ -526,12 +683,37 @@ test('Badcase request action reaches the guarded case API once, disables during 
   h.saved().cases[0].traceBundle = { hash: 'a'.repeat(64), stepCount: 1 };
   h.saved().cases[0].dehydrationRecommendation = { eligible: true };
   await h.panel.load(); await h.click('[data-tab="badcases"]'); assert.equal(h.posts().length, 0);
-  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); button.click();
-  assert.equal(h.posts().length, 1); assert.equal(button.disabled, true);
+  const button = h.root.querySelector('[data-dehydration-recommend="c1"]'); button.click(); assert.equal(h.posts().length, 0);
+  const lock = h.root.querySelector('[data-dehydration-request-lock="c1"]'); lock.click(); lock.click();
+  assert.equal(h.posts().length, 1); assert.equal(lock.disabled, true);
   assert.equal(h.posts()[0].url, '/api/wikiskill/cases/c1/dehydration/recommend');
   assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, traceHash: 'a'.repeat(64) });
   release(); await tick(); await tick(); assert.ok(h.root.querySelector('[data-dehydration-confirm="c1"]'));
   assert.equal(h.root.querySelector('[data-dehydration-recommend="c1"]'), null); assert.equal(h.posts().length, 1);
+});
+test('scene cut writes are followed by a full GET; post snapshots cannot declare frozen, and failed rereads lock the panel', async t => {
+  for (const failedRead of [false, true]) {
+    let sent = false;
+    const h = setup(t, (url, options, saved) => {
+      if (options.method === 'POST' && url === '/api/wikiskill/dehydration-confirm') {
+        sent = true; saved.revision++; saved.dehydrations[0].decision = { kind: 'single', cutStep: 29, level: 'run', hash: 'd'.repeat(64) };
+        return { ...clone(saved), dehydrations: [] }; // Deliberately incomplete POST snapshot; only GET is authoritative.
+      }
+      if (url === '/api/wikiskill' && sent && failedRead) return Promise.reject(Error('read failed'));
+    });
+    const saved = h.saved(), shape = require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items.find(f => f.case === 22 && f.step === 29);
+    Object.assign(saved.cases[0], { kind: 'marked-badcase', role: 'role-family-gpt', sealedCheckpointId: 'scene-22', traceBundle: { hash: 'a'.repeat(64), stepCount: 31 } });
+    saved.dehydrations = [{ caseId: 'c1', traceHash: 'a'.repeat(64), hash: 'c'.repeat(64), request: { state: { steps: [{ step: 29, body: JSON.stringify(shape.toolCalls) }, { step: 31, body: 'marked reply' }] } },
+      recommendation: { schemaVersion: 2, kindSuggestion: 'single', cutStepSuggestion: 29, evidenceVerified: true, answers: { reason: 'Before bad call', evidence: 'bash' } } }];
+    await h.panel.load(); await h.click('[data-tab="badcases"]'); await h.click('[data-dehydration-confirm]'); assert.equal(h.posts().length, 0);
+    const start = h.calls.length; await h.click('[data-dehydration-lock]');
+    assert.deepEqual(clone(h.posts()[0].body), { confirmed: true, expectedRevision: 3, caseId: 'c1', traceHash: 'a'.repeat(64), recommendationHash: 'c'.repeat(64), kind: 'single', cutStep: 29 });
+    assert.equal(h.calls.slice(start).filter(c => c.url === '/api/wikiskill' && c.method !== 'POST').length, 1);
+    assert.equal(h.confirms.length, 0, 'cut consent must not use browser dialogs');
+    if (failedRead) assert.ok([...h.root.querySelectorAll('[data-dehydration-lock],[data-dehydration-confirm]')].every(b => b.disabled));
+    else { assert.equal(h.root.querySelector('[data-dehydration-lock]'), null); assert.match(h.root.querySelector('[data-dehydration]').textContent, /已冻结.*切点检查报告.*trace/s); }
+    assert.equal(h.posts().length, 1); assert.equal(saved.cases[0].split, 'train');
+  }
 });
 test('deleted evidence disappears from knowledge counts/search while the frozen guideline and deletion audit remain', async t => {
   const h = setup(t), s = h.saved(); s.cases = s.cases.filter(c => c.id !== 'c1'); s.caseStates = s.caseStates.filter(c => c.caseId !== 'c1');

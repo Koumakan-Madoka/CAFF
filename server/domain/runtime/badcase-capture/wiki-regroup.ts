@@ -12,9 +12,12 @@ export function planWikiRegroup(state: any, accounting: any[]) {
   // This is a re-grouping plan, not initial assignment. Pending cases must not
   // affect quotas or freeze a proposal whose preserved trace split is null.
   const rows = wikiDisplayCases(state.cases).filter(c => ['train', 'gate', 'test'].includes(c.split)).map(c => {
-    const d = (state.dehydrations || []).findLast((v: any) => v.caseId === c.id && v.traceHash === c.traceBundle?.hash)?.decision;
+    // Scene single-call cuts/reports never invalidate grouping consent. Keep
+    // the historical trace decision, if any, rather than the diagnostic cut.
+    const d = (state.dehydrations || []).findLast((v: any) => v.caseId === c.id && v.traceHash === c.traceBundle?.hash
+      && (!c.sealedCheckpointId || v.decision?.level !== 'run'))?.decision;
     const originals = accounting.filter(r => r.caseId === c.id && r.traceHash === c.traceBundle?.hash && r.decisionHash === d?.hash
-      && r.variant?.kind === 'original' && !r.excludedReason).sort((a, b) => a.id.localeCompare(b.id));
+      && r.variant?.kind === 'original' && !r.excludedReason && !r.reportOnly).sort((a, b) => a.id.localeCompare(b.id));
     const valid = originals.some(r => r.baselineStatus === 'valid_output' && r.caseEligibleForGateAndScreen === true);
     const reason = wikiSourceFamily(c) !== 'GPT' ? 'non_gpt_report_only'
       : [4, 10, 14].includes(wikiGoalCaseNumber(c.id)!) ? 'legacy_test_source'

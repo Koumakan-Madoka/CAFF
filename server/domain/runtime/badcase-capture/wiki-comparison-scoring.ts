@@ -17,10 +17,11 @@ export function wikiObjectiveRules(rules: any): any {
 export function wikiObjectiveAssertionIds(rules: any): string[] {
   return rules.kind === 'file-literals-v1' ? ['files'] : rules.kind === 'read-only-files-v1' ? ['readFiles', 'unchanged'] : [];
 }
-export function projectWikiScoringSummary(v: any, rubric: WikiRubric, binding: WikiJudgeBinding): any {
+export function projectWikiScoringSummary(v: any, rubric: WikiRubric, binding: WikiJudgeBinding | null): any {
   wikiExactKeys(v, ['kind', 'configHash', 'rubricId', 'rubricVersion', 'rubricHash', 'binding', 'inputHash']);
   check(v.kind === 'wiki-score-v2' && v.rubricId === rubric.id && v.rubricVersion === rubric.version && v.rubricHash === rubric.hash && same(v.binding, binding));
-  validateWikiJudgeBinding(v.binding, rubric);
+  if (binding === null) check(rubric.toolCheck && !rubric.questions.length && v.binding === null);
+  else validateWikiJudgeBinding(v.binding, rubric);
   return { kind: v.kind, configHash: digest(v.configHash), rubricId: v.rubricId, rubricVersion: v.rubricVersion, rubricHash: v.rubricHash,
     binding: structuredClone(v.binding), inputHash: digest(v.inputHash) };
 }
