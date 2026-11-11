@@ -36,6 +36,23 @@ test('trace precheck retains a complete validated Goal marker without changing s
   const legacyView = require(base + 'wiki-original-precheck-projection').projectWikiOriginalPrechecks(h.state, [records.read(legacy.id)], h.input.replayChecks)[0];
   assert.equal(Object.hasOwn(legacyView.current, 'goalExecutions'), false);
 });
+test('optional per-output measured usage is immutable, bounded and does not change legacy bytes/hash or scoring', t => {
+  const h = fixture(t), records = storage().createWikiOriginalPrecheckStore(h.scope), plan = h.plan();
+  const old = { status: 'completed', reason: null, runs: rows(['pass', 'pass', 'pass']) }, claim = records.reserve(plan), legacy = records.finish(claim.id, old);
+  const file = path.join(h.scope.globalRoot, 'original-prechecks', claim.id + '.result.json'), before = fs.readFileSync(file);
+  const usage = { input: 10, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 19 };
+  const measured = { ...old, runs: old.runs.map(r => ({ ...r, usage })) }, next = records.reserve(plan), saved = records.finish(next.id, measured);
+  assert.deepEqual(saved.summary, legacy.summary); assert.deepEqual(records.read(next.id).result.runs[0].usage, usage);
+  assert.equal(Object.hasOwn(records.read(claim.id).result.runs[0], 'usage'), false); assert.deepEqual(fs.readFileSync(file), before);
+  const summary = api().summarizeWikiOriginalPrecheck(plan, measured); assert.deepEqual(summary, legacy.summary);
+  for (const change of [u => u.totalTokens++, u => u.input = -1, u => u.output = 1.5, u => u.cacheRead = NaN, u => u.cacheWrite = Infinity,
+    u => u.input = Number.MAX_SAFE_INTEGER, u => u.extra = true, u => delete u.cacheRead]) {
+    const value = structuredClone(measured); change(value.runs[0].usage); assert.throws(() => api().summarizeWikiOriginalPrecheck(plan, value), /wiki_original_precheck_invalid/);
+  }
+  for (const usage of [null, 0, {}, []]) { const value = structuredClone(measured); value.runs[0].usage = usage; assert.throws(() => api().summarizeWikiOriginalPrecheck(plan, value)); }
+  const unknown = structuredClone(measured); unknown.status = 'stopped'; unknown.reason = 'usage_unknown'; unknown.runs[0].usageComplete = false;
+  assert.throws(() => api().summarizeWikiOriginalPrecheck(plan, unknown), /wiki_original_precheck_invalid/);
+});
 test('partial, invalid or non-trace Goal markers are rejected rather than silently marked approximate', t => {
   for (const run of [false, true]) {
     const h = fixture(t, { run }), plan = h.plan(), value = rows(Array(plan.policy.repeats).fill('pass'));

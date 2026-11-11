@@ -35,9 +35,16 @@ export interface WikiOriginalPrecheckPlan {
 // These are references to host-retained, already scored output packets, not an
 // HTTP score submission format. The trusted executor must retain the packet
 // before publishing its hash here. No reply, command text, path or auth is stored.
+export interface WikiOriginalPrecheckUsage {
+  input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number;
+}
 export interface WikiOriginalPrecheckAttempt {
   iteration: number; variant: 'original'; status: 'pass' | 'fail' | 'invalid' | 'error';
   artifactId: string; artifactHash: string; usageComplete: boolean;
+  // New trusted executions retain the sum of ALL worker/judge exchanges for
+  // this whole output, not a native-call mean or cumulative batch counters.
+  // Absent on older/unknown outputs; never backfilled from usageComplete.
+  usage?: WikiOriginalPrecheckUsage;
   // Optional recorded trace metadata; absent on historical/run outputs. Not
   // inferred from the current implementation, source text or a legacy result.
   goalState?: 'approximate-minimal-v1' | 'unseeded'; goalSeedHash?: string; goalExecutionId?: string;
@@ -143,13 +150,19 @@ export function summarizeWikiOriginalPrecheck(plan: WikiOriginalPrecheckPlan, va
   check(['completed', 'stopped', 'failed'].includes(value.status) && Array.isArray(value.runs) && value.runs.length <= plan.policy.repeats);
   check(value.status === 'completed' ? value.reason === null : typeof value.reason === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(value.reason));
   for (const [i, row] of value.runs.entries()) {
-    shape(row, ['iteration', 'variant', 'status', 'artifactId', 'artifactHash', 'usageComplete'], ['goalState', 'goalSeedHash', 'goalExecutionId']);
+    shape(row, ['iteration', 'variant', 'status', 'artifactId', 'artifactHash', 'usageComplete'], ['goalState', 'goalSeedHash', 'goalExecutionId', 'usage']);
     try {
       const marker = projectEvaluationGoalMarker(row);
       check(plan.execution.level === 'trace' || !Object.keys(marker).length);
     } catch { throw fail(); }
     check(row.iteration === i + 1 && row.variant === 'original' && ['pass', 'fail', 'invalid', 'error'].includes(row.status) && typeof row.usageComplete === 'boolean');
     id(row.artifactId); hash(row.artifactHash);
+    if (Object.hasOwn(row, 'usage')) {
+      shape(row.usage, ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']);
+      check(row.usageComplete && Object.values(row.usage!).every(v => Number.isSafeInteger(v) && v >= 0));
+      const u = row.usage!, sum = u.input + u.output + u.cacheRead + u.cacheWrite;
+      check(Number.isSafeInteger(sum) && u.totalTokens === sum);
+    }
   }
   const complete = value.status === 'completed';
   check(!complete || value.runs.length === plan.policy.repeats && value.runs.every(r => r.usageComplete));

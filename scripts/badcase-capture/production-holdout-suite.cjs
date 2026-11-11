@@ -11,6 +11,18 @@ function readProductionHoldoutEvidence(scope,state,targetEntryId){
  return {state,targetEntryId,records:createWikiOriginalPrecheckStore(scope).list(),
   replayChecks:readWikiPipelineInputs(state,createWikiPipelinePrecheckStore(scope))};
 }
+function readProductionHoldoutValidationEvidence(scope,state,targetEntryId,settings){
+ const {wikiExactKeys}=require(base+'wiki-rubric');
+ const {projectWikiHoldoutUsageHistory}=require(base+'wiki-holdout-usage');
+ const {planWikiHoldoutValidation}=require(base+'wiki-holdout-validation');
+ wikiExactKeys(settings,['seed',...(Object.hasOwn(settings,'policy')?['policy']:[]),...(Object.hasOwn(settings,'skippedCaseIds')?['skippedCaseIds']:[])]);
+ const current=readProductionHoldoutEvidence(scope,state,targetEntryId);
+ const {records,replayChecks}=current;
+ const history=projectWikiHoldoutUsageHistory({state,records,replayChecks});
+ const input={...current,...structuredClone(settings),history};
+ planWikiHoldoutValidation(input); // Closed settings/selection, never execution.
+ return input;
+}
 function prepareProductionHoldoutSuite(config,state,targetEntryId){
  if(config.experiment?.definition?.kind!=='wiki-experiment-v3')throw fail('evaluation_gate_config_invalid');
  const input=readProductionHoldoutEvidence({globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},state,targetEntryId);
@@ -30,4 +42,4 @@ function prepareProductionHoldoutSuite(config,state,targetEntryId){
  });
  return {gate,cases,gateCaseIds:gate.caseIds.slice(),targetReproductionCaseIds:gate.caseIds.slice(),reportOnlyCaseIds:[]};
 }
-module.exports={prepareProductionHoldoutSuite,readProductionHoldoutEvidence};
+module.exports={prepareProductionHoldoutSuite,readProductionHoldoutEvidence,readProductionHoldoutValidationEvidence};

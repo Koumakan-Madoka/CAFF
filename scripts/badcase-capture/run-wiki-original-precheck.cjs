@@ -146,6 +146,7 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       try { fresh = prepare(config, dependencies, values); }
       catch { fatal = 'wiki_original_precheck_stale'; break; }
       if (fresh.plan.planHash !== fixed.plan.planHash || wikiValueHash(fresh.scoring) !== wikiValueHash(fixed.scoring)) { fatal = 'wiki_original_precheck_stale'; break; }
+      const usageBefore = budget.snapshot();
       let client, cleanupFailed = false;
       let packet, scored, traceStatus, goalMarker = {};
       try {
@@ -186,7 +187,13 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       const retained = redactTraceKnownValues(artifact, values);
       if (retained.count) { fatal = 'wiki_original_precheck_output_contains_key'; throw fail(fatal); }
       append({ event: 'attempt_result', artifactId, artifactHash, artifact });
-      const b = budget.snapshot(); attempts.push({ iteration, variant: 'original', status, artifactId, artifactHash, usageComplete: b.usageComplete, ...goalMarker });
+      const b = budget.snapshot();
+      // Store complete whole-output cost only. A stopped/unknown or zero-call
+      // slot must not inherit prior usage or masquerade as a zero-cost sample.
+      const usage = b.usageComplete && b.requests > usageBefore.requests
+        ? Object.fromEntries(Object.keys(b.knownUsage).map(k => [k, b.knownUsage[k] - usageBefore.knownUsage[k]])) : undefined;
+      attempts.push({ iteration, variant: 'original', status, artifactId, artifactHash, usageComplete: b.usageComplete,
+        ...(usage === undefined ? {} : { usage }), ...goalMarker });
       if (fatal) break;
     }
     const accounting = budget.snapshot(), all = attempts.length === fixed.plan.policy.repeats;

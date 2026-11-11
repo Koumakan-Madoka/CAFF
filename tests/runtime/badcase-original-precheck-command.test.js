@@ -72,6 +72,7 @@ test('run precheck uses real code scorer, retains immutable outputs, and never c
   assert.ok(h.requests.every(r => r.variant.kind === 'original')); assert.equal(result.budget.requests, 3); assert.equal(result.budget.knownUsage.totalTokens, 39);
   const saved = require(base + 'wiki-original-precheck-store').createWikiOriginalPrecheckStore(h.scope).read(result.id);
   assert.equal(saved.result.summary.pass, 3); assert.equal(saved.reservation.plan.planHash, p.plan.planHash);
+  assert.deepEqual(saved.result.runs.map(r => r.usage), Array.from({ length: 3 }, () => ({ input: 10, output: 2, cacheRead: 1, cacheWrite: 0, totalTokens: 13 })), 'each whole-output cost is a per-attempt delta, never cumulative');
   const records = fs.readFileSync(h.outputFile, 'utf8').trim().split('\n').map(JSON.parse), artifacts = records.filter(e => e.event === 'attempt_result');
   assert.equal(artifacts.length, 3); assert.ok(records.some(e => e.event === 'request_reserved')); assert.ok(records.some(e => e.event === 'request_finished'));
   for (const [i, artifact] of artifacts.entries()) {
@@ -94,6 +95,7 @@ test('reply-judge calls share the worker budget, use production majority scoring
     const h = setup(t, { scene, reply: true, repeats: 1 }), p = await h.plan(), r = await h.run(p);
     assert.equal(r.status, 'completed'); assert.equal(r.summary.pass, 1); assert.equal(h.judgeBodies.length, 3);
     assert.equal(r.budget.workerRequests, 1); assert.equal(r.budget.judgeRequests, 3); assert.equal(r.budget.knownUsage.totalTokens, 28);
+    assert.deepEqual(r.runs[0].usage, { input: 19, output: 8, cacheRead: 1, cacheWrite: 0, totalTokens: 28 }, 'all three judge votes count toward the output estimate');
     assert.ok(h.judgeBodies.every(q => JSON.parse(q.messages[1].content).publicReply === 'Clear result.'));
     assert.equal(fs.readFileSync(h.outputFile, 'utf8').includes('synthetic-judge-key-not-real'), false);
   }
@@ -112,6 +114,7 @@ test('unknown worker usage stops after one retained output; no substitution or a
   } }) });
   assert.equal(r.status, 'stopped'); assert.equal(r.reason, 'usage_unknown'); assert.equal(r.summary.reproduced, false); assert.equal(r.runs[0].usageComplete, false);
   assert.equal(h.requests.length, 1); assert.equal(r.budget.unknownRequests, 1); assert.match(fs.readFileSync(h.outputFile, 'utf8'), /attempt_result/);
+  assert.equal(Object.hasOwn(r.runs[0], 'usage'), false, 'unknown usage cannot become a zero-cost historical sample');
 });
 test('STOP and changed approval stop before auth/client; stale offline support cannot be reused', async t => {
   const h = setup(t), p = await h.plan(); fs.writeFileSync(h.config.stopFile, 'STOP');
@@ -161,6 +164,7 @@ test('unknown judge usage stops at that exchange even when production scorer wan
   } });
   assert.equal(r.status, 'stopped'); assert.equal(r.reason, 'usage_unknown'); assert.equal(r.budget.workerRequests, 1); assert.equal(r.budget.judgeRequests, 1);
   assert.equal(sends, 1); assert.equal(opened, 1); assert.equal(r.runs[0].usageComplete, false);
+  assert.equal(Object.hasOwn(r.runs[0], 'usage'), false, 'known worker tokens do not make unknown judge usage complete');
 });
 test('AI precheck requires the same calibrated configuration as formal evaluation, and pins the attestation', async t => {
   const h = setup(t, { reply: true, repeats: 1 }), p = await h.plan();

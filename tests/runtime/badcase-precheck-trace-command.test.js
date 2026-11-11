@@ -90,6 +90,7 @@ test('trace command uses production comparison and record scorer, retains Goal/n
   const h = setup(t, { callsPerTurn: 2 }), p = await h.plan(), before = JSON.stringify(h.store.read()), r = await h.run(p);
   assert.equal(r.status, 'completed', r.reason); assert.equal(r.summary.pass, 3); assert.equal(r.summary.reproduced, false); assert.equal(r.budget.workerRequests, 6); assert.equal(r.budget.knownUsage.totalTokens, 78);
   assert.equal(h.state.sends, 6); assert.equal(h.state.containers, 3); assert.equal(h.state.closed, 3); assert.equal(h.state.judgeReads, 0);
+  assert.deepEqual(r.runs.map(r => r.usage), Array.from({ length: 3 }, () => ({ input: 20, output: 4, cacheRead: 2, cacheWrite: 0, totalTokens: 26 })), 'trace whole-output cost includes both native worker requests, not 13 tokens per native call');
   const events = fs.readFileSync(h.outputFile, 'utf8').trim().split('\n').map(JSON.parse), artifacts = events.filter(e => e.event === 'attempt_result');
   assert.equal(artifacts.length, 3); assert.equal(events.filter(e => e.event === 'trace_request').length, 6); assert.equal(events.filter(e => e.event === 'trace_response').length, 6);
   for (const [i, a] of artifacts.entries()) {
@@ -113,6 +114,7 @@ test('trace reply checking invokes the same calibrated majority judge under the 
   const h = setup(t, { reply: true, repeats: 1 }), p = await h.plan(), r = await h.run(p);
   assert.equal(r.status, 'completed'); assert.equal(r.summary.pass, 1); assert.equal(r.budget.workerRequests, 1); assert.equal(r.budget.judgeRequests, 3); assert.equal(h.state.judgeSends, 3);
   assert.equal(r.budget.knownUsage.totalTokens, 28); assert.ok(p.plan.judge.freezeHash);
+  assert.deepEqual(r.runs[0].usage, { input: 19, output: 8, cacheRead: 1, cacheWrite: 0, totalTokens: 28 });
 });
 test('trace unknown usage and exact cap stop subsequent exchanges/attempts without replacement', async t => {
   for (const unknown of [false, true]) {
@@ -189,6 +191,7 @@ test('each trace slot must match host-observed exchanges, not inherit known usag
     } } });
     assert.equal(r.status, 'failed'); assert.equal(r.summary.reproduced, false); assert.equal(r.summary.controlEligible, false);
     assert.equal(r.reason, 'wiki_original_precheck_trace_evidence_invalid');
+    if (fault === 'zero-second') assert.equal(Object.hasOwn(r.runs[1], 'usage'), false, 'a zero-request failed slot cannot inherit prior known usage');
   }
 });
 test('runtime drift after offline preparation is refused before auth/container/provider execution', async t => {
