@@ -693,7 +693,7 @@ function containsUnsafeProjection(
   return false;
 }
 
-function safeProjectResult(definition: PiCapabilityDefinition, rawResult: unknown): UnknownRecord {
+export function safeProjectResult(definition: PiCapabilityDefinition, rawResult: unknown): UnknownRecord {
   let projected: unknown;
   try {
     projected = definition.projectResult(rawResult);

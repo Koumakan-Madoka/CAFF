@@ -6,7 +6,7 @@ import { validateWikiToolCheck, type WikiToolCheck } from './wiki-tool-check';
 import { evaluateWikiToolObservations, type WikiToolObservation, type WikiToolCheckResult } from './wiki-tool-rule-result';
 const endpoints: Record<string, string> = {
   'read-context': 'context', 'list-participants': 'participants', 'send-public': 'post-message',
-  'suggest-goal': 'goal/suggest', 'update-goal': 'goal/update',
+  'suggest-goal': 'goal/suggest', 'update-goal': 'goal/update', 'goal_action': 'capabilities/goal_action',
 };
 const unavailable = (): WikiToolCheckResult => ({ status: 'invalid', reason: 'tool_evidence_unavailable' });
 const object = (v: any) => v && Object.getPrototypeOf(v) === Object.prototype;
@@ -14,6 +14,8 @@ function callbackObservation(call: any, endpoint: string): WikiToolObservation {
   if (call.endpoint !== endpoint) return { kind: 'other' };
   if (call.redacted === true) return { kind: 'unknown' };
   const parameters = call.parameters;
+  if (endpoint === 'capabilities/goal_action') return object(parameters.arguments)
+    ? { kind: 'target', parameters: parameters.arguments } : { kind: 'unknown' };
   if (endpoint === 'post-message' && parameters.visibility !== 'public') return { kind: 'other' };
   // Only explicit bridge aliases. No shell flags/stdin/file/JavaScript inference.
   // Values are the parsed HTTP values, even for rejected calls. Keep canonical

@@ -68,7 +68,8 @@ function prepareDirectTurnFiles(repoRoot, dependencyRoot, image, input, profile 
   if (nativeMaxRequests !== undefined && profile !== CODEX_PROFILE) throw fail('evaluation_config_invalid');
   const limits = profile === CODEX_PROFILE ? codexMailboxLimits(nativeMaxRequests) : null;
   assert.equal(input?.kind, 'prepared-caff-turn-v1');
-  const files = prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, input.sessionText === null ? 'fresh' : 'resume');
+  const files = require('./replay-goal-cli.cjs').stageReplayGoalCli(
+    prepareCaffRuntimeFiles(repoRoot, dependencyRoot, image, input.sessionText === null ? 'fresh' : 'resume'));
   files.find(f => f.path === 'probe.cjs').path = 'caff-runtime-bootstrap.cjs';
   for (const [source, destination] of [['direct-model.cjs', 'direct-model.cjs'], ['direct-sdk-container.cjs', 'probe.cjs'], ['restore-replay-dependencies.cjs', 'restore-replay-dependencies.cjs']]) {
     files.push({ path: destination, bytes: readTrustedDistributionFile(path.resolve(repoRoot), 'scripts/badcase-capture/' + source) });

@@ -190,9 +190,16 @@ async function main({ baseUrl, loadModule = s => import(s) } = {}) {
       if (e.type === 'message_end' && e.message?.role === 'assistant') observer.complete(e.message);
       if (e.type === 'tool_execution_start') {
         const args = {}; for (const key of ['path', 'command']) if (typeof e.args?.[key] === 'string') args[key] = e.args[key].slice(0, 8192);
+        // Pi emits start before prepareArguments, even when local validation
+        // rejects the call. Preserve original scalars (no trim/clipping), so a
+        // shortened retry cannot hide an earlier overlong generated reason.
+        if (e.toolName === 'goal_action') for (const key of ['action', 'reason']) {
+          const value = e.args?.[key];
+          if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) args[key] = value;
+        }
         toolArgs.set(e.toolCallId, args);
       }
-      if (e.type === 'tool_execution_end') toolCalls.push({ name: e.toolName, isError: e.isError === true, ...(input.bindings ? { args: toolArgs.get(e.toolCallId) || {} } : {}) });
+      if (e.type === 'tool_execution_end') toolCalls.push({ name: e.toolName, isError: e.isError === true, ...(input.bindings || e.toolName === 'goal_action' ? { args: toolArgs.get(e.toolCallId) || {} } : {}) });
     });
     let threw = false;
     try { await session.prompt(prompt); } catch { threw = true; }
