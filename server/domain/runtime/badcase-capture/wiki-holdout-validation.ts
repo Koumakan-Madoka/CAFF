@@ -161,7 +161,7 @@ function validateResults(s: WikiHoldoutValidationSelection, results: WikiExperim
 export function decideWikiHoldoutValidation(selection: WikiHoldoutValidationSelection, gateOutcome: 'accepted' | 'rejected' | 'indeterminate', results: WikiExperimentCaseResult[]) {
   const s = validateWikiHoldoutValidationSelection(selection);
   ensure(['accepted', 'rejected', 'indeterminate'].includes(gateOutcome), RESULT); validateResults(s, results);
-  ensure(gateOutcome === 'accepted' && s.budgetStatus === 'ready' || results.length === 0, RESULT);
+  ensure(gateOutcome === 'accepted' && s.budgetStatus === 'ready' || results.every(r => r.status === 'not-run' && r.runs.length === 0), RESULT);
   const active = s.cases.filter(c => !c.skipped);
   const totals = (runs: WikiExperimentCaseResult['runs'], variant: 'original' | 'candidate') => {
     const rows = runs.filter(r => r.variant === variant), passed = rows.filter(r => r.status === 'pass').length, failed = rows.filter(r => r.status === 'fail').length;

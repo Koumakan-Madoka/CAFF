@@ -55,6 +55,31 @@ function setup(t, { kind = 'tool', check = toolCheck(), content = real(22, 30), 
     } }) };
   return { root, store, c, item, rubric, request, config, options, requests, outputs, events, judge, judged: () => judged, closed: () => closed, packets: createWikiRunStore(scope), run: () => runSingleCallComparison(config, options) };
 }
+for (const repeats of [1, 3, 5, 20]) test(`validation single-call execution honors ${repeats} valid outputs per version with a separate bounded attempt identity`, async t => {
+  const h = setup(t); h.config.repeats = repeats; const r = await h.run();
+  assert.equal(r.completed, true); assert.equal(h.requests.length, 2 * repeats); assert.equal(r.runs.length, 2 * repeats);
+  assert.ok(r.runs.every(row => row.status === 'pass' && row.iteration <= repeats));
+  for (const row of r.runs) assert.equal(h.packets.read(row.runReplayId).reservation.attempt.validationRepeats, repeats);
+  await assert.rejects(h.run(), { code: 'wiki_run_already_reserved' }); assert.equal(h.requests.length, 2 * repeats);
+});
+test('validation claims have a separate bounded identity and cannot widen legacy 15-slot claims or rewrite them', t => {
+  const h = setup(t), attempt = { planHash: h.options.experimentPlanHash, executionId: h.options.executionId, iteration: 1 };
+  const legacy = h.packets.reserve(h.request, attempt), file = path.join(h.root, 'wiki', 'run-replays', legacy.id + '.json'), before = fs.readFileSync(file);
+  assert.equal(legacy.id, wikiRunHash({ kind: 'wiki-run-attempt-v1', planHash: attempt.planHash, executionId: attempt.executionId,
+    caseId: h.c.id, variant: 'original', iteration: 1 }));
+  assert.throws(() => h.packets.reserve(h.request, { ...attempt, iteration: 16 }), { code: 'wiki_run_attempt_invalid' });
+  for (const patch of [{ validationRepeats: 0 }, { validationRepeats: 21 }, { validationRepeats: 20, iteration: 26 }, { validationRepeats: 1, iteration: 7 }, { validationRepeats: 5, extra: true }])
+    assert.throws(() => h.packets.reserve(h.request, { ...attempt, ...patch }), { code: 'wiki_run_attempt_invalid' });
+  const extended = h.packets.reserve(h.request, { ...attempt, validationRepeats: 20, iteration: 25 });
+  assert.equal(h.packets.read(extended.id).reservation.attempt.validationRepeats, 20); assert.deepEqual(fs.readFileSync(file), before);
+  assert.notEqual(h.packets.reserve(h.request, { ...attempt, validationRepeats: 5 }).id, legacy.id); assert.equal(h.requests.length, 0);
+});
+test('invalid validation repeat counts reject before auth, durable packet claims or a model request', async t => {
+  for (const repeats of [undefined, null, 0, -1, 1.5, 21, Infinity]) {
+    const h = setup(t); h.config.repeats = repeats; await assert.rejects(h.run(), { code: 'wiki_run_validation_repeats_invalid' });
+    assert.equal(h.requests.length, 0); assert.deepEqual(h.packets.list(), []);
+  }
+});
 for (const [caseNumber, step, status] of [[22, 29, 'fail'], [22, 30, 'pass'], [23, 44, 'fail'], [23, 45, 'invalid'], [24, 42, 'fail'], [24, 43, 'pass']]) {
   test(`real #${caseNumber}/${step} tool-only execution is ${status}, one model call per claim and zero judge/tool calls`, async t => {
     const h = setup(t, { content: real(caseNumber, step) }), before = h.store.read(), r = await h.run();

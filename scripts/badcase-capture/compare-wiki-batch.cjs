@@ -27,7 +27,7 @@ async function main(argv = process.argv.slice(2), runtimeOptions = {}) {
   const config = JSON.parse(fs.readFileSync(file, 'utf8')), plan = prepareBatch(config, { ...runtimeOptions, allowDraftCandidate: args['--plan'] === true });
   if (args['--plan']) { process.stdout.write(JSON.stringify({ preparedOnly: true, dockerVerified: false, ...plan.summary }, null, 2) + '\n'); return; }
   if (plan.summary.planHash !== args['--expected-plan']) throw fail('evaluation_batch_confirmation_required');
-  if (plan.summary.kind === 'wiki-mode-holdout-comparison-v2') throw fail('wiki_holdout_validation_execution_not_ready');
+  if (plan.summary.kind === 'wiki-mode-holdout-comparison-v2') throw fail('wiki_holdout_validation_publication_not_ready');
   // Capture public numbering before execution. No source data/numbering is
   // added to the immutable scoring plan or retained comparison envelope.
   const sourceCases = plan.summary.kind === 'wiki-mode-holdout-comparison-v1'

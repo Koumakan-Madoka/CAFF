@@ -87,6 +87,14 @@ for (const [counts, expected] of [[[5, 5], false], [[5, 4], false], [[5, 3], tru
   assert.equal(d.validation.cases[0].degraded, expected); assert.equal(d.adoptionEligible, !expected);
   assert.equal(d.outcome, expected ? 'validation-degraded' : 'validation-partial-coverage');
 });
+test('explicit untouched validation slots are allowed after a rejected gate or budget block, but never any attempted output', () => {
+  const h = setup(), s = select(h), untouched = s.caseIds.map(caseId => ({ caseId, status: 'not-run', runs: [] }));
+  assert.equal(decide(s, 'rejected', untouched).outcome, 'gate-rejected');
+  const over = api().planWikiHoldoutValidation({ ...h.input(), policy: { maxEstimatedTokens: 1 } });
+  assert.equal(decide(over, 'accepted', untouched).validation.status, 'over-limit');
+  assert.throws(() => decide(s, 'rejected', [{ ...untouched[0], status: 'error' }]));
+  assert.throws(() => decide(over, 'accepted', [{ ...untouched[0], runs: runs(5, 5) }]));
+});
 test('any completed case degradation rejects even when other controls gain more passes or another control is not run', () => {
   const s = select(setup()), rows = results(s, [0, 5]); rows[0].runs = runs(5, 3);
   for (const missing of [false, true]) {

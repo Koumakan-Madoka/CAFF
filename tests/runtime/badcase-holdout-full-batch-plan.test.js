@@ -96,14 +96,15 @@ test('full evaluation cannot silently downgrade to gate-only, legacy or caller-s
     const h = fixture(t); mutate(h); assert.throws(h.plan); assert.equal(h.calls.length, 0);
   }
 });
-test('full plans are planning-only until execution/progress/publication is ready; no model/event/output can start', async t => {
-  const h = fixture(t), p = h.plan(); h.config.experiment.plan = p.summary.experiment; const pinned = h.plan(), events = [];
-  const options = { ...h.options, confirmed: true, expectedPlanHash: pinned.summary.planHash, onEvent: e => events.push(e),
-    runProductionComparison: () => assert.fail('No execution permission yet'), runProductionRunComparison: () => assert.fail('No run execution permission yet') };
-  await assert.rejects(batch.runBatch(h.config, options), { code: 'wiki_holdout_validation_execution_not_ready' });
-  await assert.rejects(require('../../scripts/badcase-capture/staged-batch.cjs').runStagedBatch(h.config, pinned, options), { code: 'wiki_holdout_validation_execution_not_ready' });
+test('full kernel requires a pinned confirmation and CLI remains disabled until progress/publication is ready', async t => {
+  const h = fixture(t), p = h.plan(), events = [];
+  const options = { ...h.options, confirmed: true, expectedPlanHash: p.summary.planHash, onEvent: e => events.push(e),
+    runProductionComparison: () => assert.fail('No execution before exact confirmation'), runProductionRunComparison: () => assert.fail('No run execution before exact confirmation') };
+  await assert.rejects(batch.runBatch(h.config, options), { code: 'wiki_experiment_confirmation_required' });
+  await assert.rejects(require('../../scripts/badcase-capture/staged-batch.cjs').runStagedBatch(h.config, p, options), { code: 'wiki_experiment_confirmation_required' });
+  h.config.experiment.plan = p.summary.experiment; const pinned = h.plan(); options.expectedPlanHash = pinned.summary.planHash;
   const file = path.join(h.root, 'full-config.json'), output = path.join(h.root, 'must-not-create.jsonl'); fs.writeFileSync(file, JSON.stringify(h.config));
-  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config', file, '--run', '--confirmed', '--expected-plan', pinned.summary.planHash, '--output', output], options), { code: 'wiki_holdout_validation_execution_not_ready' });
+  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config', file, '--run', '--confirmed', '--expected-plan', pinned.summary.planHash, '--output', output], options), { code: 'wiki_holdout_validation_publication_not_ready' });
   assert.deepEqual(events, []); assert.equal(fs.existsSync(output), false); assert.equal(fs.existsSync(h.config.codexAuthFile), false);
   assert.equal(fs.existsSync(path.join(h.scope.globalRoot, 'batch-executions')), false); assert.equal(fs.existsSync(path.join(h.scope.globalRoot, 'comparisons')), false);
 });
