@@ -563,9 +563,10 @@ or relax validation for a newly submitted ruling. Startup idempotently archives
 recognized legacy rulings in metadata-only batches, preserving absent/legacy
 attribution rather than inventing a user principal.
 
-Agent `suggest-goal` retains its existing technical replacement behavior:
-submitting another proposal may replace a pending proposal without new CLI
-parameters or a Goal revision bump. In that **same transaction**, append a
+Agent Goal proposal tools (`suggest-goal` for set/revise and structured
+`goal_action` for light actions) retain the original service's technical
+replacement behavior: submitting another proposal may replace a pending
+proposal without new parameters or a Goal revision bump. In that **same transaction**, append a
 superseded record containing the old proposal ID/action/full snapshot, the
 replacing agent's identity and `supersedingProposalId` (the new proposal ID),
 then persist the new proposal. The old proposal's attention item becomes

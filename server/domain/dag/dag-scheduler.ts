@@ -164,7 +164,7 @@ function participantIdsOf(conversation: any): string[] {
 function completionProtocolLines(node: any, verifierId: string | null): string[] {
   return [
     '完工协议（D27/D28）：本节点由 session goal 持续驱动，单次回复结束不代表完工。',
-    '达成目标后调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工（reason 会回写为节点 result，≤2000 字符，供下游消费）。',
+    '达成目标后调用结构化工具 goal_action({ action: "complete", reason: "<执行结果摘要>" }) 宣布完工（reason 必填，trim 后 ≤1000 UTF-16 码元，会回写为节点 result，供下游消费）。',
     verifierId
       ? `验收 agent（${verifierId}）将复核你的完工提案：通过则节点标记 done；打回则按反馈改进后重新宣布完工。`
       : '完工提案确认后节点即标记 done。',
@@ -686,7 +686,7 @@ export function createDagScheduler(options: any = {}) {
       node.verify ? `verify 命令：\`${node.verify}\`` : '',
       '',
       '请审查节点目标的达成情况（可查看本会话上下文、worktree 产物与 git diff）。',
-      '裁决方式：通过 → suggest-goal --action accept；打回 → suggest-goal --action reject --reason "<具体反馈>"。',
+      '裁决方式：通过 → goal_action({ action: "accept", reason: "<验收依据>" })；打回 → goal_action({ action: "reject", reason: "<具体反馈>" })。两者均为结构化工具调用，reason 必填，trim 后 ≤1000 UTF-16 码元。',
     ].filter((line) => line !== '').join('\n');
   }
 
@@ -772,7 +772,7 @@ export function createDagScheduler(options: any = {}) {
         content: [
           `[DAG 验收打回] 节点 ${nodeId}：${node.title || nodeId} 的完工提案被 ${verifierName} 驳回。`,
           `验收反馈：${clipText(reasonText, 1500)}`,
-          '请根据反馈继续改进；达成目标后再次调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工。',
+          '请根据反馈继续改进；达成目标后再次调用结构化工具 goal_action({ action: "complete", reason: "<执行结果摘要>" }) 宣布完工（reason 必填，trim 后 ≤1000 UTF-16 码元）。',
         ].join('\n'),
         idempotencyKey: feedbackKey,
         messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId, dagDeliveryKey: feedbackKey },
@@ -1258,7 +1258,7 @@ export function createDagScheduler(options: any = {}) {
       `[DAG 恢复指令] 节点 ${nodeId}：${node.title || nodeId}`,
       'server 重启导致本次执行被中断。请基于当前 worktree 与对话上下文继续完成节点目标：',
       `目标：${node.goal || '(未填写)'}`,
-      '完工协议：达成目标后调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工（D27/D28）。',
+      '完工协议：达成目标后调用结构化工具 goal_action({ action: "complete", reason: "<执行结果摘要>" }) 宣布完工（D27/D28；reason 必填，trim 后 ≤1000 UTF-16 码元）。',
     ].join('\n');
     await resumeNodeConversation({
       ownerConversationId,

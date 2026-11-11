@@ -1138,7 +1138,7 @@ export function createTurnOrchestrator(options: any = {}) {
       `Automatic session-goal continuation (${iteration}/${maxIterations}).`,
       `Objective: ${goal.objective}`,
       'Continue with the next concrete step toward this objective.',
-      'If the objective is finished or blocked, use suggest-goal to create a pending complete or pause proposal instead of continuing indefinitely.',
+      'If the objective is finished or blocked, use the structured goal_action tool with action=complete or pause and a required reason (at most 1000 UTF-16 code units after trim) to create a pending proposal instead of continuing indefinitely.',
     ].join('\n');
   }
 

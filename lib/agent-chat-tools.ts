@@ -586,6 +586,9 @@ async function listParticipants(config: any) {
 
 async function suggestGoal(config: any, flags: any, options: any = {}) {
   const action = String(flags.action || flags.status || '').trim().toLowerCase();
+  if (['pause', 'resume', 'complete', 'clear', 'accept', 'reject'].includes(action)) {
+    throw new Error('suggest-goal light actions have been removed from the CLI. Use the structured goal_action tool with action and required reason (at most 1000 UTF-16 code units after trim).');
+  }
   const objective = String(flags.objective || flags.goal || '').trim();
   const reason = String(flags.reason || '').trim();
   let goal: any = null;
@@ -605,7 +608,7 @@ async function suggestGoal(config: any, flags: any, options: any = {}) {
   }
 
   if (!action) {
-    throw new Error('suggest-goal requires --action set|revise|pause|resume|complete|clear|accept|reject.');
+    throw new Error('suggest-goal requires --action set|revise. For light actions use the structured goal_action tool.');
   }
 
   return requestJson(`${config.apiUrl}/api/agent-tools/goal/suggest`, {

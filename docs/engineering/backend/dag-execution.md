@@ -54,7 +54,8 @@
     — system actor; may bind `spawned_conversation_id` (REST/tool cannot);
     same D16/D18 standards as user writes.
 - Agent tool bridge (`server/domain/runtime/agent-tool-bridge.ts`):
-  - `suggest-goal --action accept|reject` (D28) rules on the PENDING proposal
+  - Structured `goal_action({ action: "accept" | "reject", reason: "..." })`
+    (D28) rules on the PENDING proposal
     instead of creating one; broadcasts `conversation_goal_proposal_cleared`
     with `{ outcome, reason, ruledBy, proposal }` (the pre-clear snapshot).
     The proposer can never rule on their own proposal → 403
@@ -156,15 +157,19 @@
   instructions.
 - **Completion protocol (D27/D28)**: a finished turn NEVER completes a
   goal-driven node. The worker announces completion via
-  `suggest-goal --action complete --reason "<result summary>"`; the
+  structured `goal_action({ action: "complete", reason: "<result summary>" })`;
+  reason is required, nonblank, and at most 1000 UTF-16 code units after trim
+  (the production bash light-action form is removed). The
   scheduler observes `conversation_goal_proposal_updated` and routes the
   pending proposal:
   - verifier present → verification request delivered to the verifier
     participant (idempotent per proposal: node goal + result summary +
     worktree path + verify command + git diff guidance); verifier rules via
-    `suggest-goal --action accept|reject` (bridge blocks self-ruling, 403);
-  - accept → goal complete → `done + result` (reason string, ≤2000 chars,
-    D23), merge nodes still pass `verifyNodeCompletion` first;
+    structured `goal_action({ action: "accept" | "reject", reason: "..." })`
+    with the same required reason limit (bridge blocks self-ruling, 403);
+  - accept → goal complete → `done + result` (completion reason string,
+    ≤1000 UTF-16 code units for the tool; the existing node result storage
+    cap remains 2000, D23), merge nodes still pass `verifyNodeCompletion` first;
   - reject → proposal dismissed, verifier feedback delivered back to the
     worker, goal stays active and continuation re-drives — unbounded rounds
     (goal budget + conversation depth are the backstop);
