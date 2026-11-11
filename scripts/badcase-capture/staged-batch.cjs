@@ -14,6 +14,7 @@ const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
   // Never send v4 through the legacy gate/test policy. The versioned kernel
   // also enforces its own confirmation and fresh current-evidence checks.
+  if(plan.summary.kind==='wiki-mode-holdout-comparison-v2')throw fail('wiki_holdout_validation_execution_not_ready');
   if(plan.summary.kind==='wiki-mode-holdout-comparison-v1')return require('./holdout-gate-batch.cjs').runHoldoutGateBatch(config,plan,options);
   const judgeFor=item=>config.experiment?.definition?.kind==='wiki-experiment-v2'
     ? (Object.hasOwn(options.judges || {},item.sourceCaseId)?options.judges[item.sourceCaseId]:undefined) : options.judge;

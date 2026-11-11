@@ -66,6 +66,15 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
     hardAssertions:wikiObjectiveRules(replay.rules),rubric:scoring.rubric});
   },
   finish(){
+   if(holdout&&suite.validation){
+    const {readProductionHoldoutValidationEvidence}=require('./production-holdout-suite.cjs');
+    const {createWikiHoldoutFullExperimentPlan,assertWikiHoldoutFullExperimentPlan}=require(base+'wiki-holdout-validation-plan');
+    const current=readProductionHoldoutValidationEvidence(scope,require(base+'wiki-store').createWikiStore(scope).read(),candidate.entryIds[0],config.evaluation.validation);
+    const plan=createWikiHoldoutFullExperimentPlan(definition,catalog,suite.gate,suite.validation);
+    assertWikiHoldoutFullExperimentPlan(plan,definition,catalog,current);
+    if(experiment.plan!==undefined)assertWikiHoldoutFullExperimentPlan(experiment.plan,definition,catalog,current);
+    return plan;
+   }
    if(holdout){
     const {readProductionHoldoutEvidence}=require('./production-holdout-suite.cjs');
     const {createWikiHoldoutExperimentPlan,assertWikiHoldoutExperimentPlan}=require(base+'wiki-holdout-plan');

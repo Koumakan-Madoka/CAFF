@@ -7,7 +7,7 @@ const {pageDehydrationCause}=require(base+'wiki-dehydration');
 const {wikiValueHash}=require(base+'wiki-rubric');
 const {wikiScoringSummary}=require('./wiki-receipt-scoring.cjs');
 const fail=code=>Object.assign(Error(code),{code});
-function prepareProductionRun({config,store,source,item,record,candidate,scoringPlan,toolset}) {
+function prepareProductionRun({config,store,source,item,record,candidate,scoringPlan,toolset,repeats}) {
  if(!scoringPlan)throw fail('wiki_run_scoring_required');
  if(['repository','dependencies','replayVersionId','rulesRevision','topicExemption'].some(k=>item[k]!==undefined))throw fail('evaluation_batch_cases_invalid');
  const bundle=store.readCaseTrace(source.id),decision=store.getDehydration(source.id)?.decision;
@@ -21,11 +21,11 @@ function prepareProductionRun({config,store,source,item,record,candidate,scoring
  const originalRequestHash=wikiRunHash(original),candidateRequestHash=wikiRunHash(changed);
  const execution={level:'run',traceBundleHash:source.traceBundle.hash,dehydrationHash:decision.hash,requestHash:originalRequestHash};
  const scoring=scoringPlan.forRun(source,item,pageDehydrationCause(bundle).text);
- const summary={kind:'wikiskill-run-comparison-v1',execution,originalRequestHash,candidateRequestHash,
+ const summary={kind:'wikiskill-run-comparison-v1',...(repeats===undefined?{}:{repeats}),execution,originalRequestHash,candidateRequestHash,
   commonInputHash:wikiValueHash({originalRequestHash,candidateRequestHash}),scoring:wikiScoringSummary(scoring,{runChecks:true})};
  scoringPlan.recordRun(source,execution,scoring);
  return {...record,supported:true,execution,comparison:summary,comparisonConfig:{kind:summary.kind,
-  globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree,caseId:source.id,toolset:structuredClone(toolset),candidate:replacement,
+  ...(repeats===undefined?{}:{repeats}),globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree,caseId:source.id,toolset:structuredClone(toolset),candidate:replacement,
   originalRequestHash,candidateRequestHash,scoring,modelProfile:config.modelProfile,codexAuthFile:config.codexAuthFile,
   ...(config.timeoutMs===undefined?{}:{timeoutMs:config.timeoutMs}),
   ...(config.knownKeySources===undefined?{}:{knownKeySources:config.knownKeySources})}};

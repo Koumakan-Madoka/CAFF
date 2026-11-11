@@ -51,8 +51,8 @@ module.exports = function batchFixture(t) {
     prepareProductionComparison(c) { calls.push(c); return { supported: true, summary: { checkpointId: c.request.association.checkpointId,
       checkpointHash: store.read().replayCases.find(r => r.sourceCaseId === c.scoring.rubric.caseId).checkpointHash,
       rulesHash: hash(c.rules), commonInputHash: hash('synthetic common input'), scoring: require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').wikiScoringSummary(c.scoring) } }; } };
-  function makeRun24() {
-    const id = h.marked[7].id, s = store.read(), source = s.cases.find(c => c.id === id);
+  function makeRunCase(number = 24, { pass = false, usage } = {}) {
+    const id = h.marked[number - 17].id, s = store.read(), source = s.cases.find(c => c.id === id);
     delete source.sealedCheckpointId; delete source.traceBundle; s.replayCases = s.replayCases.filter(r => r.sourceCaseId !== id); s.revision++; snapshot(s);
     const target = require('../../build/lib/agent-prompt-targets').getGlobalPromptTarget('global-harness-behavior-v1'), task = 'Synthetic run triggering task';
     const bundle = { schemaVersion: 1, kind: 'wikiskill-trace-bundle', source: source.source, origin: 'mark', frozenAt: '2026-11-11T00:00:00Z', complete: false,
@@ -69,12 +69,12 @@ module.exports = function batchFixture(t) {
     const state = store.read(), rubric = state.rubrics.find(r => r.caseId === id);
     const plan = require(base + 'wiki-original-precheck').createWikiOriginalPrecheckPlan({ state, caseId: id, rubricHash: rubric.hash, inputHash: hash('synthetic run precheck input'),
       replayChecks: require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(state, cache), judge: null });
-    const claim = records.reserve(plan); records.finish(claim.id, { status: 'completed', reason: null, runs: Array.from({ length: plan.policy.repeats }, (_, i) => ({ iteration: i + 1, variant: 'original', status: 'fail',
-      artifactId: 'synthetic-run-' + i, artifactHash: hash('synthetic run output ' + i), usageComplete: true })) });
+    const claim = records.reserve(plan); records.finish(claim.id, { status: 'completed', reason: null, runs: Array.from({ length: plan.policy.repeats }, (_, i) => ({ iteration: i + 1, variant: 'original', status: pass ? 'pass' : 'fail',
+      artifactId: 'synthetic-run-' + i, artifactHash: hash('synthetic run output ' + i), usageComplete: true, ...(usage ? { usage } : {}) })) });
     const selection = config.cases.find(c => c.sourceCaseId === id); delete selection.repository; delete selection.dependencies;
     options.runToolset = { codingAgentVersion: '0.85.1', capabilitiesSha: 'a'.repeat(40), capabilitiesFileHash: 'b'.repeat(64), definitions: [{ name: 'bash', description: 'synthetic inert schema', parameters: { type: 'object' } }] };
     return { id, task, decision, item, bundle };
   }
-  return { ...h, root, scope, store, records, cache, config, options, calls, snapshot, makeRun24, plan: () => require('../../scripts/badcase-capture/batch-comparison.cjs').prepareBatch(config, options),
+  return { ...h, root, scope, store, records, cache, config, options, calls, snapshot, makeRunCase, makeRun24: () => makeRunCase(24), plan: () => require('../../scripts/badcase-capture/batch-comparison.cjs').prepareBatch(config, options),
     mutate(change) { const s = store.read(); change(s); s.revision++; snapshot(s); return s; } };
 };
