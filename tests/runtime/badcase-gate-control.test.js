@@ -16,13 +16,35 @@ test('eligible gate controls require exact panel consent and freeze immutable ca
   assert.equal(rows[0].precheck.reproduced, false); assert.equal(rows[0].control.status, 'confirmed'); assert.equal(rows[0].inLibrary, true);
 });
 test('not all passed, missing confirmed label, wrong split or stale consent cannot create a control', t => {
-  for (const options of [{ statuses: ['pass', 'pass', 'fail'] }, { statuses: ['pass', 'pass', 'invalid'] }, { statuses: ['pass', 'pass', 'error'] }, { split: 'train' }, { split: 'test' }, { label: false }]) {
+  for (const options of [{ statuses: ['pass', 'pass', 'fail'] }, { statuses: ['pass', 'pass', 'invalid'] }, { statuses: ['pass', 'pass', 'error'] }, { split: 'train' }, { label: false }]) {
     const h = fixture(t, options), before = JSON.stringify(h.store.read()); assert.equal(h.view().eligible, false);
     assert.throws(() => h.confirm(), /wiki_control_case_ineligible/); assert.equal(JSON.stringify(h.store.read()), before);
   }
   const h = fixture(t); assert.throws(() => h.confirm({ proposalHash: 'f'.repeat(64) }), /wiki_control_case_stale/);
   assert.throws(() => h.confirm({ expectedRevision: 0 }), /wiki_revision_conflict/);
   assert.throws(() => h.confirm({ candidateId: 'not-allowed' }), /wiki_invalid_input/);
+});
+for (const legacy of [false, true]) test(`original test-split ${legacy ? 'historical' : 'new'} prechecks can be confirmed without changing split or prior records`, t => {
+  const h = fixture(t, { split: 'test' }), original = h.store.read().cases[0], bytes = fs.readFileSync(h.file);
+  const resultFile = path.join(h.scope.globalRoot, 'original-prechecks', h.reservation.id + '.result.json');
+  if (legacy) {
+    const envelope = JSON.parse(fs.readFileSync(resultFile, 'utf8')); envelope.result.summary.controlEligible = false;
+    envelope.hash = require(base + 'wiki-rubric').wikiValueHash(envelope.result); fs.writeFileSync(resultFile, JSON.stringify(envelope));
+  }
+  const precheckBytes = fs.readFileSync(resultFile);
+  assert.equal(h.view().status, 'eligible'); const confirmation = h.confirm();
+  assert.equal(h.view().status, 'confirmed'); assert.equal(h.view().confirmation.hash, confirmation.hash);
+  assert.deepEqual(h.store.read().cases[0], original); assert.equal(original.split, 'test'); assert.deepEqual(fs.readFileSync(h.file), bytes);
+  const rows = require(base + 'wiki-pipeline').projectWikiPipelineStates({ state: h.store.read(), replayChecks: require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(h.store.read(), h.cache), originalPrechecks: h.records.list() });
+  assert.equal(rows[0].inLibrary, true); assert.equal(rows[0].control.confirmed, true); assert.deepEqual(fs.readFileSync(resultFile), precheckBytes);
+});
+test('historical gate confirmations keep their exact text and hash and remain confirmed', t => {
+  const h = fixture(t), state = h.store.read(), confirmation = require(base + 'wiki-gate-control').createWikiGateControlConfirmation(state, h.c.id, h.view().proposalHash, h.records.list(), require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(state, h.cache));
+  confirmation.confirmationRecord = '用户在 WikiSkill 面板确认原版预检结果、冻结断言、门槛组及模式身份；冻结为其他模式的防误伤对照，不表示采纳候选或授权执行。';
+  const { hash: oldHash, ...payload } = confirmation; confirmation.hash = require(base + 'wiki-rubric').wikiValueHash(payload);
+  state.controlConfirmations = [confirmation]; const before = JSON.stringify(state);
+  const view = require(base + 'wiki-gate-control').projectWikiGateControls(state, h.records.list(), require(base + 'wiki-pipeline-prechecks').readWikiPipelineInputs(state, h.cache))[0];
+  assert.equal(view.status, 'confirmed'); assert.equal(view.confirmation.hash, confirmation.hash); assert.equal(JSON.stringify(state), before);
 });
 test('a guessed or incomplete classification cannot masquerade as the confirmed control pattern', t => {
   const h = fixture(t, { label: false }), state = h.store.read();

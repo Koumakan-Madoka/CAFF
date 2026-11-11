@@ -37,7 +37,7 @@ function fixture(t, { controlMode = null, confirm = true, controlSplit = 'gate' 
     return claim;
   }
   sources.forEach((_, n) => save(n));
-  if (confirm && controlSplit === 'gate') {
+  if (confirm && ['gate', 'test'].includes(controlSplit)) {
     const view = store.getGateControls().find(r => r.caseId === sources[1].id);
     store.confirmGateControl({ caseId: sources[1].id, proposalHash: view.proposalHash, expectedRevision: store.read().revision });
   }
@@ -65,6 +65,13 @@ test('eligible without panel confirmation is not a control, even if every preche
 test('control must be a gate member outside candidate target mode', t => {
   const same = fixture(t, { controlMode: 'entry-1' }); assert.throws(same.proof, /wiki_experiment_control_target_mode/);
   for (const split of ['train', 'test']) { const h = fixture(t, { controlSplit: split }); assert.throws(h.proof, /(?:wiki|evaluation)_[a-z_]+/); }
+});
+test('legacy v2/v3 admission still rejects original test-split controls even after holdout consent', t => {
+  const h = fixture(t, { controlSplit: 'test' });
+  assert.equal(h.store.getGateControls().find(r => r.caseId === h.sources[1].id).confirmed, true);
+  assert.throws(h.proof, /wiki_experiment_partition_changed/);
+  h.definition.cases[1].stage = 'test'; assert.throws(h.proof, /wiki_experiment_control_required/);
+  h.definition.kind = 'wiki-experiment-v3'; assert.throws(h.proof, /wiki_experiment_control_required/);
 });
 test('original failures, invalids and errors cannot replace a confirmed passing control', t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });

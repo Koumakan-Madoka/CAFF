@@ -143,7 +143,7 @@ test('three-way labels use named inline consent and locked evaluation roles, nev
   choose('none'); host().querySelector('[data-pattern-confirm]').click(); assert.match(host().textContent, /共用一组.*不算任何模式的目标用例/);
   h.panel.setWritable(false); assert.equal(host().querySelector('[data-pattern-lock]').disabled, true); host().querySelector('[data-pattern-lock]').click(); assert.equal(sent.length, 1);
   h.data.casePatterns[1] = { ...h.data.casePatterns[1], confirmed: true, entryId: 'entry-1', patternKey: 'entry-1' }; h.panel.render(h.data); h.panel.focus(4);
-  assert.match(host().textContent, /已锁定.*<script>pattern<\/script>.*测试组.*目标复现题/s); assert.equal(host().querySelector('[data-pattern-confirm]'), null);
+  assert.match(host().textContent, /已锁定.*<script>pattern<\/script>.*留出组.*目标复现题/s); assert.equal(host().querySelector('[data-pattern-confirm]'), null);
 });
 test('new-mode suggestions default to pending create/join, validate names and bind refreshed label hashes', t => {
   const sent = [], h = setup(t, null, { onConfirmPatternLabel: body => sent.push(body) });
@@ -210,7 +210,7 @@ test('pending boards warn without blocking and offer immutable inline linking pl
   h.root.querySelector('[data-pending-link-lock]').click(); assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { pendingPatternId: 'pending-1', entryId: 'entry-1' });
   h.data.pendingPatternLinks = [{ pendingPatternId: 'pending-1', entryId: 'entry-1' }];
   for (const l of h.data.casePatterns) { l.entryId = l.patternKey = 'entry-1'; l.options = [{ entryId: 'entry-1', title: 'Approved constraints' }]; }
-  h.panel.render(h.data); assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：#1.*测试目标复现题：#19/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
+  h.panel.render(h.data); assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /留出目标复现题：#1、#19/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
   assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /目标复现题已经确定.*用于评测.*冻结断言.*通过回放检查.*上面.*缺项/s);
   assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测候选：缺可用本模式留出目标题/);
 });
@@ -418,7 +418,7 @@ test('initial split preview never activates groups until explicit per-pattern ha
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="entry-1"]').click(); assert.equal(h.calls.length, 0); assert.equal(sent.length, 0);
   let host = h.root.querySelector('[data-initial-split]'); assert.ok(host); assert.match(host.textContent, /尚未生效|你确认后/);
   host.querySelector('[data-initial-split-confirm]').click(); assert.equal(sent.length, 0); host = h.root.querySelector('[data-initial-split]');
-  assert.match(host.querySelector('[data-split-consent]').textContent, /模式一.*#1.*训练.*#19.*门槛/s);
+  assert.match(host.querySelector('[data-split-consent]').textContent, /模式一.*#1.*训练.*#19.*留出/s);
   host.querySelector('[data-initial-split-lock]').click();
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { proposalHash: 'd'.repeat(64), patternKey: 'entry-1' });
   assert.equal(h.data.cases[0].split, null); assert.equal(h.data.cases[1].split, null);
@@ -686,8 +686,8 @@ test('mode-first board has solid effective groups, dashed proposals, per-mode qu
   h.data.initialSplitProposal = { hash: 'd'.repeat(64), seed: 'fixed', rows, patterns: [{ patternKey: 'p1', rows, existingCounts: { trace: { train: 0, gate: 0, test: 0 }, run: { train: 1, gate: 0, test: 0 } }, counts: { trace: { train: 0, gate: 1, test: 0 }, run: { train: 1, gate: 0, test: 0 } } }] };
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
   const board = h.root.querySelector('[data-grouping]'); assert.ok(board);
-  assert.equal(board.querySelectorAll('[data-board-column]').length, 4);
-  assert.ok(board.querySelector('[data-board-column="gate"] .prop[data-bc-pick="c2"]'));
+  assert.equal(board.querySelectorAll('[data-board-column]').length, 3);
+  assert.ok(board.querySelector('[data-board-column="holdout"] .prop[data-bc-pick="c2"]'));
   assert.ok(board.querySelector('[data-initial-split-confirm="p1"]'));
   assert.ok(board.querySelector('[data-board-quotas]')); assert.equal(board.querySelector('script'), null);
   assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2, 'unconfirmed labels never silently join a suggested mode');
@@ -697,12 +697,29 @@ test('mode-first board has solid effective groups, dashed proposals, per-mode qu
   assert.ok(board.querySelector('[data-pattern-overview]')); assert.equal(board.querySelector('[data-bc-pick]'), null, 'overview contains counts, not mixed-case chips');
   assert.match(board.textContent, /不能|尚不能|缺/); assert.equal(h.calls.length, 0);
 });
+test('board and case details merge gate/test into holdout without mutating frozen membership or hashes', t => {
+  const sent = [], h = setup(t, null, { onConfirmInitialSplit: body => sent.push(body) });
+  const options = [{ entryId: 'p1', title: 'First mode' }];
+  h.data.cases = h.data.cases.slice(0, 3);
+  h.data.casePatterns = h.data.cases.map(c => ({ caseId: c.id, confirmed: true, entryId: 'p1', patternKey: 'p1', options }));
+  const row = { caseId: 'c3', patternKey: 'p1', proposedSplit: 'test' };
+  h.data.initialSplitConfirmations = [{ hash: 'e'.repeat(64), patternKey: 'p1', proposal: { hash: 'f'.repeat(64), rows: [row] } }];
+  const before = JSON.stringify(h.data); h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
+  assert.deepEqual([...h.root.querySelectorAll('[data-board-column] h4')].map(e => e.textContent), ['训练', '留出', '不参与 / 待分配']);
+  assert.deepEqual([...h.root.querySelectorAll('[data-board-column="holdout"] [data-bc-pick]')].map(e => e.dataset.bcPick).sort(), ['c2', 'c3']);
+  for (const n of [19, 4]) { h.panel.focus(n); assert.match(h.root.querySelector('.bc-meta').textContent, /留出组/); assert.doesNotMatch(h.root.querySelector('.bc-meta').textContent, /门槛组|测试组/); }
+  h.root.querySelector('[data-bc-pattern="all"]').click();
+  assert.deepEqual([...h.root.querySelectorAll('[data-pattern-overview] thead th')].map(e => e.textContent), ['模式', '训练', '留出', '不参与 / 待分配', '能评测候选吗']);
+  const cells = h.root.querySelector('[data-pattern-overview] tbody tr').children;
+  assert.equal(cells[1].textContent, '1'); assert.equal(cells[2].textContent, '2');
+  assert.equal(JSON.stringify(h.data), before); assert.equal(sent.length, 0); assert.equal(h.calls.length, 0);
+});
 test('board gate counts do not claim readiness from grouping alone or treat legacy sources as runnable trace cases', t => {
   const h = setup(t); const options = [{ entryId: 'p1', title: 'First mode' }];
   h.data.casePatterns = h.data.cases.map(c => ({ caseId: c.id, confirmed: true, entryId: 'p1', patternKey: 'p1', options }));
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
   assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能|不能|缺/);
-  assert.ok(h.root.querySelector('[data-board-column="test"] .old[data-bc-pick="c3"]'));
+  assert.ok(h.root.querySelector('[data-board-column="holdout"] .old[data-bc-pick="c3"]'));
   h.root.querySelector('[data-bc-filter="stop"]').click();
   assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 2);
   h.panel.focus(19); assert.equal(h.root.querySelector('[data-case-id]').dataset.caseId, 'c2');
@@ -739,12 +756,22 @@ test('candidate-readiness overview never treats unconfirmed labels as an eligibl
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
   assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用本模式留出目标题.*其他模式缺对照只标未覆盖/); assert.equal(h.calls.length, 0);
 });
+test('validation availability includes other-mode original test controls but never own-mode controls', t => {
+  const h = setup(t), options = [{ entryId: 'p1', title: 'Candidate mode' }, { entryId: 'p2', title: 'Other mode' }];
+  h.data.cases = h.data.cases.slice(0, 3); h.data.cases[2].n = 30;
+  h.data.versions = [{ entries: options.map(e => ({ id: e.entryId, title: e.title, status: 'approved' })) }];
+  h.data.casePatterns = h.data.cases.map((c, i) => ({ caseId: c.id, confirmed: true, entryId: i === 2 ? 'p2' : 'p1', patternKey: i === 2 ? 'p2' : 'p1', options }));
+  h.data.pipelineStates = h.data.cases.map(c => ({ caseId: c.id, assertion: { status: 'frozen', version: 1, questions: [] }, replay: { status: 'supported' }, original: { valid: 0 }, precheck: { reproduced: false }, control: { status: 'confirmed', confirmed: true }, inLibrary: true }));
+  h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
+  const validation = h.root.querySelector('[data-holdout-stage="validation"]');
+  assert.match(validation.textContent, /Other mode：有已确认对照 #30/); assert.doesNotMatch(validation.textContent, /#19|#1\b/); assert.equal(h.calls.length, 0);
+});
 test('approved modes with zero active members remain selectable with zero quotas, not silently removed', t => {
   const h = setup(t); h.data.versions = [{ entries: [{ id: 'empty-mode', title: 'Empty approved mode', status: 'approved' }, { id: 'draft-mode', title: 'Draft mode', status: 'draft' }] }];
   h.panel.render(h.data); const tab = h.root.querySelector('[data-bc-pattern="empty-mode"]'); assert.ok(tab); assert.match(tab.textContent, /0/);
   assert.equal(h.root.querySelector('[data-bc-pattern="draft-mode"]'), null);
   tab.click(); assert.equal(h.root.querySelectorAll('[data-bc-row]').length, 0); assert.equal(h.root.querySelectorAll('[data-case-id]').length, 0);
-  assert.match(h.root.querySelector('[data-board-quotas]').textContent, /训练 0.*门槛 0.*测试 0/); assert.equal(h.calls.length, 0);
+  assert.match(h.root.querySelector('[data-board-quotas]').textContent, /训练 0.*留出 0/); assert.equal(h.calls.length, 0);
 });
 test('list-only selection preserves open frozen viewer DOM, and returning to a case reuses its cached packet', async t => {
   const h = setup(t); await h.expand();

@@ -140,7 +140,11 @@ export function validateWikiOriginalPrecheckRecord(reservation: any, result: any
     shape(result, ['kind', 'id', 'finishedAt', 'planHash', 'status', 'reason', 'runs', 'summary']);
     check(result.kind === 'wiki-original-precheck-result-v1' && result.id === reservation.id && result.planHash === plan.planHash
       && timestamp(result.finishedAt) && result.finishedAt >= reservation.createdAt);
-    check(wikiValueHash(result.summary) === wikiValueHash(summarizeWikiOriginalPrecheck(plan, { status: result.status, reason: result.reason, runs: result.runs })));
+    const summary = summarizeWikiOriginalPrecheck(plan, { status: result.status, reason: result.reason, runs: result.runs });
+    // Earlier v1 records excluded the test split from controls. Accept only that
+    // exact historical summary as well; retain its bytes/hash, never migrate it.
+    const legacy = plan.split === 'test' ? { ...summary, controlEligible: false } : summary;
+    check([summary, legacy].some(s => wikiValueHash(result.summary) === wikiValueHash(s)));
   }
   return structuredClone({ reservation, result });
 }
@@ -174,5 +178,5 @@ export function summarizeWikiOriginalPrecheck(plan: WikiOriginalPrecheckPlan, va
     reproduced: !plan.reportOnly && complete && valid > 0 && failureRatio! > plan.policy.failureThreshold,
     // A control needs measured valid answers for the entire configured sample,
     // not an apparently perfect ratio obtained by dropping technical failures.
-    controlEligible: !plan.reportOnly && plan.split === 'gate' && complete && valid === plan.policy.repeats && passRatio! >= plan.policy.controlThreshold };
+    controlEligible: !plan.reportOnly && (plan.split === 'gate' || plan.split === 'test') && complete && valid === plan.policy.repeats && passRatio! >= plan.policy.controlThreshold };
 }

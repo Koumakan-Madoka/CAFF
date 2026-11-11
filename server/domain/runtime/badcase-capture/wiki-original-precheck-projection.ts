@@ -1,6 +1,6 @@
 // Read-only small-record projection. No frozen trace reads, Git restoration,
 // runtime materialization, model calls or writes. Formal results are NOT input.
-import { createWikiOriginalPrecheckPlan, validateWikiOriginalPrecheckRecord } from './wiki-original-precheck';
+import { createWikiOriginalPrecheckPlan, validateWikiOriginalPrecheckRecord, summarizeWikiOriginalPrecheck } from './wiki-original-precheck';
 import { projectEvaluationGoalMarker } from './evaluation-goal-evidence';
 const fail = () => Object.assign(Error('wiki_original_precheck_record_invalid'), { code: 'wiki_original_precheck_record_invalid' });
 export function projectWikiOriginalPrechecks(state: any, records: any[], replayChecks: any[]) {
@@ -39,7 +39,12 @@ export function projectWikiOriginalPrechecks(state: any, records: any[], replayC
     // stopped or error-only latest result never falls back to a favorable older
     // sample. Reports and stale identities remain explicitly separate history.
     const current = history.find(r => r.current) ?? null;
+    const measured = checked.find(r => r.reservation.id === current?.id);
+    // Current admission uses today's holdout scope, not the historical stored
+    // test-split eligibility bit. Expose historical summaries unchanged above.
+    const result = measured?.result;
+    const controlEligible = result ? summarizeWikiOriginalPrecheck(measured!.reservation.plan, { status: result.status, reason: result.reason, runs: result.runs }).controlEligible : false;
     return { caseId: source.id, status: current?.status ?? 'missing', current, history,
-      reproduced: current?.summary?.reproduced === true, controlEligible: current?.summary?.controlEligible === true, notFormalStatistics: true };
+      reproduced: current?.summary?.reproduced === true, controlEligible, notFormalStatistics: true };
   });
 }

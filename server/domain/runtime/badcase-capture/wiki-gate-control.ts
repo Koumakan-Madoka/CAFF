@@ -1,4 +1,4 @@
-// Immutable panel consent over a measured ORIGINAL-passing gate case. This is
+// Immutable panel consent over a measured ORIGINAL-passing holdout case. This is
 // not execution permission, an automatic approval, or a formal scoring result.
 import { wikiValueHash } from './wiki-rubric';
 import { projectWikiOriginalPrechecks } from './wiki-original-precheck-projection';
@@ -40,7 +40,8 @@ export function projectWikiGateControls(state: any, records: any[], replayChecks
     try { classification = wikiConfirmedClassification(state, source); } catch { /* A label suggestion is not confirmation. */ }
     const patternReady = label?.confirmed && (!label.pendingPatternId || label.entryId !== null)
       && classification && classification.entryId === label.entryId;
-    const eligible = source.split === 'gate' && precheck?.controlEligible && patternReady;
+    const holdout = source.split === 'gate' || source.split === 'test';
+    const eligible = holdout && precheck?.controlEligible && patternReady;
     const record = records.find(r => r.reservation.id === precheck?.current?.id);
     const binding = eligible && record?.result ? { kind: 'wiki-gate-control-input-v1', caseId: source.id, caseHash: wikiValueHash(source),
       rubricHash: record.reservation.plan.rubricHash, precheckId: record.reservation.id, precheckPlanHash: record.reservation.plan.planHash,
@@ -49,7 +50,7 @@ export function projectWikiGateControls(state: any, records: any[], replayChecks
     const confirmed = !!saved && saved.proposalHash === proposalHash;
     return { caseId: source.id, status: saved ? confirmed ? 'confirmed' : 'stale' : eligible ? 'eligible' : 'ineligible',
       eligible: !!eligible, confirmed, proposalHash, binding, confirmation: saved ?? null,
-      reason: saved && !confirmed ? 'control_binding_changed' : source.split !== 'gate' ? 'control_gate_required'
+      reason: saved && !confirmed ? 'control_binding_changed' : !holdout ? 'control_holdout_required'
         : !precheck?.controlEligible ? 'control_precheck_required' : !patternReady ? 'control_pattern_confirmation_required' : null };
   });
 }
@@ -60,6 +61,6 @@ export function createWikiGateControlConfirmation(state: any, caseId: string, pr
   if (!view.eligible) throw fail('wiki_control_case_ineligible');
   if (!digest(proposalHash) || proposalHash !== view.proposalHash) throw fail('wiki_control_case_stale');
   const payload = { kind: 'wiki-gate-control-v1', caseId, binding: view.binding, proposalHash, source: 'badcase-page', confirmedRevision: state.revision,
-    confirmedAt: new Date().toISOString(), confirmationRecord: '用户在 WikiSkill 面板确认原版预检结果、冻结断言、门槛组及模式身份；冻结为其他模式的防误伤对照，不表示采纳候选或授权执行。' };
+    confirmedAt: new Date().toISOString(), confirmationRecord: '用户在 WikiSkill 面板确认原版预检结果、冻结断言、留出组及模式身份；冻结为其他模式的防误伤对照，不表示采纳候选或授权执行。' };
   return validateWikiGateControl({ ...payload, hash: wikiValueHash(payload) });
 }
