@@ -18,7 +18,7 @@ module.exports = async function fixture(t, { scenario = 'partial' } = {}) {
   }
   if (scenario === 'uncovered') { h.mutate(s => s.controlConfirmations = []); h.sync(); }
   if (scenario === 'budget') h.config.evaluation.validation.policy = { maxEstimatedTokens: 1 };
-  const f = require('./wiki-holdout-full-execution.cjs')(h, { gateCandidatePasses: scenario === 'rejected' ? 0 : 6, validationLoss: scenario === 'degraded' ? 2 : 0 });
+  const f = require('./wiki-holdout-full-execution.cjs')(h, { gateCandidatePasses: scenario === 'rejected' ? 0 : 6, validationLoss: ['degraded', 'degraded-last'].includes(scenario) ? 2 : 0 });
   const result = require(base + 'wiki-comparison-store').createWikiComparisonStore(h.config).save(await f.run());
   function data() {
     const s = h.store.read();

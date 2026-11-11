@@ -508,7 +508,7 @@
       const ignoredReason = { non_gpt_report_only: '非GPT来源，仅报告', precheck_missing: '缺当前预检', precheck_incomplete: '预检未完成', precheck_not_reproduced: '当前预检未复现' };
       const validationNote = v.status === 'not-planned' ? '验证尚未规划；本门槛结果不可提交采纳。' : d.outcome !== 'accepted' ? '门槛未通过；验证未运行。'
         : v.status === 'over-limit' ? '用量估算超上限；验证未运行。由操作方决定是否跳过最贵的题，不自动跳题。'
-        : v.status === 'usage-unknown' ? '历史用量未知；验证未运行。' : v.status === 'degraded' ? '已有验证题劣化，停止后续题；未运行不表示未劣化。'
+        : v.status === 'usage-unknown' ? '历史用量未知；验证未运行。' : v.status === 'degraded' ? (result.cases.some(c => c.stage === 'validation' && c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation') ? '已有验证题劣化，停止后续题；未运行不表示未劣化。' : '已有验证题劣化；验证不通过。')
         : v.status === 'incomplete' ? '验证未完成；错误和未运行不表示没有劣化。' : '逐题检查，不合并统计判定；任何一题劣化即不通过。';
       const coverage = (v.uncovered || []).map(c => `${entryChip(c.entryId, undefined, true)}（${c.reason === 'operator-skipped' ? '操作方跳过' : '无已确认对照题'}）`).join('、');
       $('#impact-runs').innerHTML = `${comparisonHistory(result)}<p class="scoring-label"><b>判分：硬断言＋AI 裁判</b> · 字面指标只作参考；仅工具检查时不调用裁判。</p>
@@ -575,7 +575,7 @@
         const label=executionLabel(result), interrupted=interruptedComparison(result);
         if (interrupted) events.push({at:result.createdAt,kind:'中断',text:`${label}：中断，不计入判定；记录保留，不与完整重跑拼接。`});
         else if (isHoldout(result)) {
-          events.push({ at: result.createdAt, kind: '留出评测', text: `${label}：${holdoutOutcome(result.outcome)}；合计单侧 Fisher p=${result.gateDecision.repair.pValue ?? 'N/A'}。候选保留，不自动采纳。` });
+          events.push({ at: result.createdAt, kind: '留出评测', text: `${label}：${holdoutOutcome(result.outcome)}；合计单侧 Fisher p=${result.gateDecision.repair.pValue == null ? 'N/A' : Number(result.gateDecision.repair.pValue).toPrecision(4)}。候选保留，不自动采纳。` });
           if (result.validation.uncovered?.length) events.push({ at: result.createdAt, kind: '未覆盖', text: result.validation.uncovered.map(c => findEntry(c.entryId).entry?.title || '历史模式').join('、') + '；未覆盖不等于验证通过。' });
         }
         else if (result.gateDecision) events.push({ at:result.createdAt,kind:'门槛判定',text:`${label}：门槛判定：${outcomeText(result.gateDecision.outcome)}；修好${result.gateDecision.repair.passed?'满足':'不满足'}、无误伤${result.gateDecision.noHarm.passed?'满足':'不满足'}。候选和 diff 保留，不自动采纳。` });
