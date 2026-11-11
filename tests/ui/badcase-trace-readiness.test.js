@@ -38,7 +38,7 @@ function setup(t, data, { full = false, onConfirmControl, handler } = {}) {
   return { root, panel, calls, window: dom.window, card: () => root.querySelector('[data-case-id]'),
     click: async selector => { const el = root.querySelector(selector); assert.ok(el, selector); el.click(); await tick(); await tick(); } };
 }
-test('mode overview requires a current confirmed other-mode control, never another reproduction or favorable unconfirmed precheck', t => {
+test('v4 overview requires local holdouts, not another-mode reproduction or mandatory control coverage', t => {
   const real = fixture(t), data = real.snapshot(), source = data.cases[0], row = data.pipelineStates[0];
   data.cases = [{ ...source, id: 'target-gate', n: 23 }, { ...source, id: 'target-test', n: 24, split: 'test' }, source];
   const options = [{ entryId: 'mode-6', title: '目标模式' }, { entryId: 'mode-1', title: '其他模式' }];
@@ -48,16 +48,16 @@ test('mode overview requires a current confirmed other-mode control, never anoth
   const board = () => h.root.querySelector('[data-board-readiness]').textContent;
   const external = data.pipelineStates[2];
   for (const value of [{ status: 'ineligible', confirmed: false }, { status: 'eligible', confirmed: false }, { status: 'stale', confirmed: false }, null]) {
-    external.control = value; h.panel.render(data); assert.match(board(), /尚不能.*已确认.*对照/);
+    external.control = value; h.panel.render(data); assert.match(board(), /有可用本模式留出目标题.*缺对照只标未覆盖/);
     h.root.querySelector('[data-bc-pattern="all"]').click();
-    assert.match(h.root.querySelector('[data-pattern-overview] tbody tr').textContent, /尚不能.*已确认.*对照/);
+    assert.match(h.root.querySelector('[data-pattern-overview] tbody tr').textContent, /有可用本模式留出目标题/);
     h.root.querySelector('[data-bc-pattern="mode-6"]').click();
   }
-  external.control = { status: 'confirmed', confirmed: true }; h.panel.render(data); assert.match(board(), /^有可用门槛、测试.*已确认/);
-  const oldSplit = source.split; source.split = 'test'; h.panel.render(data); assert.match(board(), /尚不能/); source.split = oldSplit;
-  external.inLibrary = false; h.panel.render(data); assert.match(board(), /尚不能/); external.inLibrary = true;
-  // A control cannot also stand in as the target mode's reproduction.
-  data.pipelineStates[0].precheck.reproduced = false; h.panel.render(data); assert.match(board(), /尚不能.*可用门槛题/);
+  external.control = { status: 'confirmed', confirmed: true }; h.panel.render(data); assert.match(board(), /^有可用本模式留出目标题/);
+  external.inLibrary = false; h.panel.render(data); assert.match(board(), /^有可用本模式留出目标题/); external.inLibrary = true;
+  // Original test-group targets also count in the gate; no separate test phase.
+  data.pipelineStates[0].precheck.reproduced = false; h.panel.render(data); assert.match(board(), /^有可用本模式留出目标题/);
+  data.pipelineStates[1].precheck.reproduced = false; h.panel.render(data); assert.match(board(), /尚不能.*可用本模式留出目标题/);
   assert.equal(h.calls.length, 0);
 });
 test('run independent precheck can reach library without any legacy raw output; assertions precede precheck in the funnel', t => {
@@ -164,7 +164,7 @@ test('current independent precheck shows counts, configured strict threshold and
   const box = h.root.querySelector('[data-original-precheck]'); assert.ok(box);
   assert.match(box.textContent, /通过 1.*失败 1.*无效 1.*错误 1/s);
   assert.match(box.textContent, /失败比例 50%.*严格超过 40%/s); assert.match(box.textContent, /已复现/);
-  assert.match(box.textContent, /不进入正式门槛或测试统计.*无效和错误不进分母/s);
+  assert.match(box.textContent, /不进入正式门槛或验证统计.*无效和错误不进分母/s);
   assert.match(box.textContent, /v1/); assert.ok(box.textContent.includes(data.pipelineStates[0].precheck.current.rubricHash));
   assert.equal(h.card().querySelector('.stepper').children[7].className, 'done');
   assert.equal(h.root.querySelector('[data-start-replay],[data-run-precheck],[data-start-precheck]'), null);

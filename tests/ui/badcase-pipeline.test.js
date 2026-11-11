@@ -212,7 +212,7 @@ test('pending boards warn without blocking and offer immutable inline linking pl
   for (const l of h.data.casePatterns) { l.entryId = l.patternKey = 'entry-1'; l.options = [{ entryId: 'entry-1', title: 'Approved constraints' }]; }
   h.panel.render(h.data); assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：#1.*测试目标复现题：#19/s); assert.equal(h.root.querySelector('[data-pending-link]'), null);
   assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /目标复现题已经确定.*用于评测.*冻结断言.*通过回放检查.*上面.*缺项/s);
-  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测候选：缺可用门槛题、可用 trace 测试题/);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能评测候选：缺可用本模式留出目标题/);
 });
 
 function pendingBoard(t, entries) {
@@ -737,7 +737,7 @@ test('candidate-readiness overview never treats unconfirmed labels as an eligibl
   h.panel.render(h.data); assert.match(h.root.querySelector('[data-board-readiness]').textContent, /尚不能|不能/);
   for (const label of h.data.casePatterns.slice(0, 2)) Object.assign(label, { confirmed: true, entryId: 'p1', patternKey: 'p1' });
   h.panel.render(h.data); h.root.querySelector('[data-bc-pattern="p1"]').click();
-  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用门槛、测试和其他模式的已确认防误伤对照/); assert.equal(h.calls.length, 0);
+  assert.match(h.root.querySelector('[data-board-readiness]').textContent, /有可用本模式留出目标题.*其他模式缺对照只标未覆盖/); assert.equal(h.calls.length, 0);
 });
 test('approved modes with zero active members remain selectable with zero quotas, not silently removed', t => {
   const h = setup(t); h.data.versions = [{ entries: [{ id: 'empty-mode', title: 'Empty approved mode', status: 'approved' }, { id: 'draft-mode', title: 'Draft mode', status: 'draft' }] }];

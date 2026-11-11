@@ -925,7 +925,7 @@ test('new pattern proposal remains a normal editable draft; review approval conf
 test('target page preserves readable candidate comparison, generation and hash-bound confirmation without unified diff', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="targets"]');
   const page = h.root.querySelector('#target-page'), text = page.textContent;
-  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '每题原版本和候选各跑 10 次', '先跑门槛', '接受才跑测试']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['全局系统提示词', 'Shared harness prose.', '新增 1 条准则', '先完成用户明确要求。', '来自模式 1', '确认此候选', '门槛每题每版 10 次', '门槛通过后才跑', '验证，默认每题每版 5 次']) assert.ok(text.includes(literal), literal);
   for (const marker of ['--- a/x', '+++ b/x', '@@', 'No newline']) assert.equal(text.includes(marker), false);
   assert.equal(page.querySelector('.orig').open, false);
   h.accept(false); await h.click('[data-confirm-candidate="candidate-global"]'); assert.equal(h.posts().length, 0);
