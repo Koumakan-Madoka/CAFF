@@ -45,8 +45,19 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
   check(same(experiment.runner, { model: base.model, settings: base.modelConfig }) && same(experiment.variants,
     [{ id: 'original', promptHash: base.candidate.baseHash }, { id: 'candidate', promptHash: base.candidate.candidateHash }]));
   check(experiment.cases.length === base.cases.filter((c: any) => !c.reportOnly).length);
-  const cases = base.cases.map((c: any, i: number) => {
-    const raw = input.cases[i]; check(raw.topicExemption === undefined);
+  const cases = projectWikiScoredCases(base.cases, input.cases, experiment, totals);
+  const gate = decideWikiExperimentGate(experiment, cases.filter((c: any) => !c.reportOnly).map((c: any) => ({ caseId: c.sourceCaseId, status: c.status,
+    runs: c.runs.map(wikiExperimentRun) })));
+  check(same(gate, mixed ? input.gateDecision : base.gateDecision));
+  return { ...base, kind: input.kind, disclosures: structuredClone(input.disclosures), experiment, cases,
+    ...(mixed || structured ? { gateDecision: gate, byStage: Object.fromEntries(['gate', 'test'].map(s => [s, totals(cases.filter((c: any) => c.stage === s), 10)])) } : {}) };
+}
+// Shared scoring evidence projection only. Callers must first validate their
+// own versioned membership/schedule/decision structure. Never run v1's gate
+// against v4; keeping this layer common preserves the scoring contract.
+export function projectWikiScoredCases(baseCases: any[], rawCases: any[], experiment: { cases: any[] }, totals: (cases: any[], repeats: number) => any): any[] {
+  return baseCases.map((c: any, i: number) => {
+    const raw = rawCases[i]; check(raw.topicExemption === undefined);
     if (c.reportOnly) { check(raw.rubric === undefined && raw.runs.length === 0); return c; }
     const selection = experiment.cases.find(p => p.caseId === c.sourceCaseId);
     check(selection && ['stage', 'category', 'targetReproduction'].every(k => (selection as any)[k] === c[k]));
@@ -106,9 +117,4 @@ export function projectProductionResultV2(input: any, totals: (cases: any[], rep
     const result = { ...c, ...(run ? { execution: structuredClone(raw.execution) } : {}), comparison, runs, rubric, hardAssertionIds: [...hardAssertionIds] };
     return run || traceTool ? { ...result, totals: totals([result], 10) } : result;
   });
-  const gate = decideWikiExperimentGate(experiment, cases.filter((c: any) => !c.reportOnly).map((c: any) => ({ caseId: c.sourceCaseId, status: c.status,
-    runs: c.runs.map(wikiExperimentRun) })));
-  check(same(gate, mixed ? input.gateDecision : base.gateDecision));
-  return { ...base, kind: input.kind, disclosures: structuredClone(input.disclosures), experiment, cases,
-    ...(mixed || structured ? { gateDecision: gate, byStage: Object.fromEntries(['gate', 'test'].map(s => [s, totals(cases.filter((c: any) => c.stage === s), 10)])) } : {}) };
 }
