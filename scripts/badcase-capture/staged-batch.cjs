@@ -12,9 +12,9 @@ const {wikiObjectiveAssertionIds}=require('../../build/server/domain/runtime/bad
 const { wikiGoalCaseNumber } = require('../../build/server/domain/runtime/badcase-capture/wiki-suite');
 const fail = code=>Object.assign(Error(code),{code});
 async function runStagedBatch(config, plan, options) {
-  // Planning can expose v4 before its versioned execution/publication path is
-  // complete. Never send models through the legacy gate/test executor.
-  if(plan.summary.kind==='wiki-mode-holdout-comparison-v1')throw fail('wiki_holdout_execution_not_ready');
+  // Never send v4 through the legacy gate/test policy. The versioned kernel
+  // also enforces its own confirmation and fresh current-evidence checks.
+  if(plan.summary.kind==='wiki-mode-holdout-comparison-v1')return require('./holdout-gate-batch.cjs').runHoldoutGateBatch(config,plan,options);
   const judgeFor=item=>config.experiment?.definition?.kind==='wiki-experiment-v2'
     ? (Object.hasOwn(options.judges || {},item.sourceCaseId)?options.judges[item.sourceCaseId]:undefined) : options.judge;
   if(plan.summary.experiment){

@@ -79,7 +79,7 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, { ...options, allowDraftCandidate: false });
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
-  if (plan.summary.kind==='wiki-mode-holdout-comparison-v1') throw fail('wiki_holdout_execution_not_ready');
+  if (plan.summary.kind==='wiki-mode-holdout-comparison-v1') return require('./holdout-gate-batch.cjs').runHoldoutGateBatch(fixed, plan, options);
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;

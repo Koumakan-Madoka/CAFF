@@ -1,4 +1,4 @@
-const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs');
+const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const fixture = require('../helpers/wiki-holdout-batch.cjs');
 const base = '../../build/server/domain/runtime/badcase-capture/';
 const { wikiValueHash: hash } = require(base + 'wiki-rubric');
@@ -79,11 +79,11 @@ test('new evaluation cannot silently downgrade to legacy/literal plans or accept
     const h = fixture(t); mutate(h); assert.throws(h.plan); assert.equal(h.calls.length, 0);
   }
 });
-test('until staged v4 execution/publication is wired, both public and direct staged entry points fail closed before any event/send', async t => {
+test('CLI stays fail-closed before output/model sends until v4 immutable result publication is wired', async t => {
   const h = fixture(t), p = h.plan(); h.config.experiment.plan = p.summary.experiment;
-  const pinned = h.plan(), events = [], options = { ...h.options, confirmed: true, expectedPlanHash: pinned.summary.planHash,
-    onEvent: e => events.push(e), runProductionComparison: () => assert.fail('No execution in this planning slice') };
-  await assert.rejects(batch().runBatch(h.config, options), { code: 'wiki_holdout_execution_not_ready' });
-  await assert.rejects(require('../../scripts/badcase-capture/staged-batch.cjs').runStagedBatch(h.config, pinned, options), { code: 'wiki_holdout_execution_not_ready' });
-  assert.deepEqual(events, []); assert.equal(fs.existsSync(h.config.codexAuthFile), false);
+  const pinned = h.plan(), events = [], options = { ...h.options,
+    onEvent: e => events.push(e), runProductionComparison: () => assert.fail('No execution before publication support') };
+  const config = path.join(h.root, 'holdout-config.json'), output = path.join(h.root, 'never-created-output.jsonl'); fs.writeFileSync(config, JSON.stringify(h.config));
+  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config', config, '--run', '--confirmed', '--expected-plan', pinned.summary.planHash, '--output', output], options), { code: 'wiki_holdout_publication_not_ready' });
+  assert.deepEqual(events, []); assert.equal(fs.existsSync(h.config.codexAuthFile), false); assert.equal(fs.existsSync(output), false);
 });
