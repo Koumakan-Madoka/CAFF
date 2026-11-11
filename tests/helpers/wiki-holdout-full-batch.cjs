@@ -34,5 +34,13 @@ module.exports = function fullBatchFixture(t) {
     if (!h.config.cases.some(c => c.sourceCaseId === id)) h.config.cases.push(item(id));
     const made = h.makeRunCase(18, { pass: true, usage: usage(200) }); confirm(id); sync(); return made;
   }
-  return { ...h, sync, select, run18, confirm, usage };
+  function twoControls() {
+    const id = h.marked[1].id;
+    h.mutate(s => {
+      s.controlConfirmations = s.controlConfirmations.filter(c => c.caseId !== id);
+      s.patternLabels.find(c => c.caseId === id).entryId = 'entry-2';
+    });
+    confirm(id); sync();
+  }
+  return { ...h, sync, select, run18, confirm, usage, twoControls };
 };

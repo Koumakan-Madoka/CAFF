@@ -97,7 +97,8 @@ function validate(record: any) {
   check(record.gateOutcome === null || ['accepted', 'rejected', 'indeterminate'].includes(record.gateOutcome));
   check(record.comparisonId === null || id(record.comparisonId));
   if (record.status === 'completed') check(['accepted', 'rejected'].includes(record.gateOutcome) && record.comparisonId !== null
-    && record.cases.filter((c: any) => !c.reportOnly && (c.stage === 'gate' || record.gateOutcome === 'accepted')).every((c: any) => c.status === 'completed'));
+    && record.cases.filter((c: any) => !c.reportOnly && (c.stage === 'gate' || record.gateOutcome === 'accepted')).every((c: any) => c.status === 'completed'
+      || record.plan.kind === 'wiki-mode-holdout-comparison-v2' && record.reason === 'wiki_validation_prior_degradation' && c.stage === 'validation' && c.status === 'not-run'));
   if (record.current !== null) {
     const current = record.current, c = record.cases.find((r: any) => r.sourceCaseId === current.sourceCaseId);
     check(Object.keys(current).sort().join(',') === 'iteration,sourceCaseId,stage,variant' && record.status === 'running' && c && !c.reportOnly && c.status === 'pending');
@@ -197,6 +198,7 @@ export function createWikiBatchExecutionStore(options: any) {
           for (const v of variants) for (const k of Object.keys(c.totals[v])) check(c.totals[v][k] === (result.totals[v][k] ?? (holdout && k === 'invalid' ? 0 : undefined)));
         }
         r.comparisonId = id(saved.id); r.status = saved.completed ? 'completed' : 'stopped';
+        if (full && saved.outcome === 'validation-degraded' && saved.cases.some((c: any) => c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation')) r.reason = 'wiki_validation_prior_degradation';
       });
     },
     fail(recordId: string, code: string) { return update(recordId, r => { r.status = 'failed'; r.current = null; r.reason = reason(code); }); },

@@ -73,9 +73,16 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  emit({event:'gate_decision',executionId,candidate:plan.summary.candidate,gateDecision:gate});
  const skipReason=gate.outcome!=='accepted'?'gate_'+gate.outcome:selection.budgetStatus==='over-limit'?'validation_token_estimate_exceeded'
   :selection.budgetStatus==='usage-unknown'?'validation_usage_unknown':null;
- for(const item of plan.prepared.filter(c=>c.stage==='validation'))await executeCase(item,skipReason);
+ let validationSkip=skipReason;
+ for(const item of plan.prepared.filter(c=>c.stage==='validation')){
+  await executeCase(item,validationSkip);
+  if(!validationSkip&&decideWikiHoldoutFullExperiment(experiment,decisionRows(results)).validation.status==='degraded')validationSkip='wiki_validation_prior_degradation';
+ }
  const decision=decideWikiHoldoutFullExperiment(experiment,decisionRows(results));
- const completed=gate.outcome==='rejected'||gate.outcome==='accepted'&&selection.budgetStatus==='ready'&&results.every(c=>c.status==='completed');
+ // A decisive degradation is a finished negative evaluation, even though the
+ // remaining controls were deliberately not run. Never count them as passes.
+ const completed=gate.outcome==='rejected'||gate.outcome==='accepted'&&selection.budgetStatus==='ready'&&results.every(c=>c.status==='completed'
+  ||decision.outcome==='validation-degraded'&&c.stage==='validation'&&c.status==='not-run'&&c.reason==='wiki_validation_prior_degradation');
  const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible,
   byStage:{gate:totals(results.filter(c=>c.stage==='gate'),10),validation:totals(results.filter(c=>c.stage==='validation'),selection.policy.repeats)},
   modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
@@ -94,7 +101,10 @@ function formatHoldoutValidationBatch(result,sourceCases=[]){
  if(result.gateDecision.outcome!=='accepted')lines.push('门槛未通过；验证未运行。');
  else if(v.status==='over-limit')lines.push('用量估算超上限；验证未运行。操作方可明确跳过最贵的题后重新确认计划，不自动跳题。');
  else if(v.status==='usage-unknown')lines.push('历史用量未知；验证未运行。');
- for(const c of v.cases)lines.push(`${label(c.caseId)}（${c.entryId} / ${c.level}）原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${c.degraded===null?'未完成':c.degraded?'劣化':'未劣化'}（少通过 ${c.loss} 次）`);
+ for(const c of v.cases){
+  const stopped=result.cases.find(row=>row.sourceCaseId===c.caseId)?.reason==='wiki_validation_prior_degradation';
+  lines.push(`${label(c.caseId)}（${c.entryId} / ${c.level}）原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${stopped?'not-run（已有劣化而停止）':c.degraded===null?'未完成':(c.degraded?'劣化':'未劣化')+`（少通过 ${c.loss} 次）`}`);
+ }
  for(const level of ['trace','run']){const t=v.byLevel[level];lines.push(`${level} 级验证：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；失败 ${t.original.failed}/${t.candidate.failed}，无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);}
  lines.push('未覆盖：'+(v.uncovered.length?v.uncovered.map(c=>c.entryId+(c.reason==='operator-skipped'?'（操作方跳过）':'（无已确认对照题）')).join(', '):'无'),
   '结果：'+({'gate-rejected':'门槛未通过','validation-passed':'门槛通过、验证通过','validation-degraded':'门槛通过、验证劣化',

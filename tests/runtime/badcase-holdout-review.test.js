@@ -16,6 +16,17 @@ test('v4 non-adoption distinguishes gate rejection, degraded validation and user
     const draft = after.experiences.at(-1); assert.equal(draft.summary.reviewId, reviewed.id); assert.match(draft.methods, /本轮未采纳/);
   }
 });
+test('early-stopped degradation can be rejected and written back as experience, but never adopted', async t => {
+  const h = fixture(t); h.twoControls(); const saved = comparisons(h).save(await execution(h, { validationLoss: 2 }).run());
+  assert.equal(saved.cases.at(-1).status, 'not-run'); assert.equal(saved.completed, true);
+  assert.throws(() => h.store.reviewComparison(reviewInput(h, saved, 'adopted', 'user_accepted')), { code: 'wiki_comparison_review_invalid' });
+  const review = h.store.reviewComparison(reviewInput(h, saved, 'not-adopted', 'validation_degraded'));
+  assert.equal(review.reason, 'validation_degraded'); assert.equal(review.validationOutcome, 'degraded');
+  assert.equal(h.store.read().baselines.length, 0);
+  const draft = h.store.read().experiences.at(-1);
+  assert.equal(draft.summary.validation.cases.at(-1).degraded, null); assert.match(draft.methods, /#18.*已有劣化而停止/);
+  assert.doesNotMatch(draft.methods, /#18[^；\n]*未劣化/);
+});
 test('v4 adoption remains explicit human action and records partial, absent or full coverage exactly', async t => {
   for (const coverage of ['partial', 'none', 'full']) {
     const h = fixture(t);

@@ -24,6 +24,41 @@ for (const [loss, outcome, eligible] of [[1, 'validation-partial-coverage', true
   assert.equal(r.outcome, outcome); assert.equal(r.validation.cases[0].loss, loss); assert.equal(r.validation.cases[0].degraded, !eligible);
   assert.equal(r.adoptionEligible, eligible); assert.equal(r.completed, true);
 });
+test('first degraded control stops later trace/run controls without extra requests, preserving not-run reason and a completed degraded decision', async t => {
+  for (const run of [false, true]) {
+    const h = fixture(t); h.twoControls(); if (run) h.run18();
+    const e = execution(h, { validationLoss: 2 }), r = await e.run();
+    assert.deepEqual(e.executions.map(c => c.caseId), [...r.evaluation.gateCaseIds, h.marked[0].id]);
+    assert.equal(r.outcome, 'validation-degraded'); assert.equal(r.completed, true); assert.equal(r.adoptionEligible, false);
+    assert.equal(r.modelCallsKnown, 50); assert.equal(r.callsUnavailable, false);
+    const skipped = r.cases.at(-1); assert.equal(skipped.sourceCaseId, h.marked[1].id);
+    assert.equal(skipped.status, 'not-run'); assert.equal(skipped.reason, 'wiki_validation_prior_degradation');
+    assert.deepEqual(skipped.runs, []); assert.equal(skipped.modelCallsKnown, 0);
+    assert.equal(r.validation.cases[0].degraded, true); assert.equal(r.validation.cases[1].degraded, null);
+    assert.equal(r.validation.cases[1].status, 'not-run'); assert.equal(r.byStage.validation.original.notRun, 5);
+    assert.equal(e.events.filter(c => c.event === 'case_summary' && c.reason === 'wiki_validation_prior_degradation').length, 1);
+  }
+});
+test('one-pass fluctuation does not stop later validation; configured one-loss threshold does', async t => {
+  for (const threshold of [2, 1]) {
+    const h = fixture(t); h.twoControls(); h.config.evaluation.validation.policy = { degradationThreshold: threshold };
+    const e = execution(h, { validationLoss: 1 }), r = await e.run();
+    assert.equal(e.executions.length, threshold === 2 ? 4 : 3); assert.equal(r.completed, true);
+    assert.equal(r.outcome, threshold === 2 ? 'validation-passed' : 'validation-degraded');
+    assert.equal(r.adoptionEligible, threshold === 2);
+  }
+});
+test('technical failure with later controls stops as incomplete, never disguised as decisive degradation', async t => {
+  const h = fixture(t); h.twoControls(); const e = execution(h);
+  e.options.runProductionComparison = async (c, o) => {
+    if (c.scoring.rubric.caseId === h.marked[0].id) throw Error('Synthetic validation failure');
+    return e.compare(c, o);
+  };
+  const r = await e.run(); assert.equal(r.outcome, 'indeterminate'); assert.equal(r.completed, false); assert.equal(r.adoptionEligible, false);
+  assert.equal(r.validation.status, 'incomplete'); assert.equal(r.cases.at(-1).status, 'not-run');
+  assert.equal(r.cases.at(-1).reason, 'prior_integrity_error'); assert.equal(r.modelCallsKnown, 40);
+  assert.equal(e.executions.length, 2); assert.equal(r.callsUnavailable, true);
+});
 test('configured three-output validation and one-loss threshold are honored by the execution dispatcher', async t => {
   const h = fixture(t); h.config.evaluation.validation.policy = { repeats: 3, degradationThreshold: 1 }; const e = execution(h, { validationLoss: 1 }), r = await e.run();
   assert.equal(r.outcome, 'validation-degraded'); assert.equal(r.validation.cases[0].original.total, 3); assert.equal(r.byStage.validation.original.planned, 3);

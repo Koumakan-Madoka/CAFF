@@ -124,6 +124,19 @@ test('full progress records gate then validation, configured counts, stage/level
  const forged = saved(r); forged.cases.at(-1).totals.original.planned = 10; assert.throws(() => store.finish(start.id, forged));
  assert.equal(store.read()[0].status, 'running'); const finish = store.finish(start.id, saved(r)); assert.equal(finish.status, 'completed'); assert.deepEqual(store.read()[0], finish);
 });
+test('degradation early-stop survives projection, progress finish and reread with untouched remaining control slots', async t => {
+ const h = fixture(t); h.twoControls(); h.run18();
+ const f = execution(h, { validationLoss: 2 }), store = require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(h.config), start = store.start(f.pinned.summary);
+ const r = await f.run(); assert.equal(r.cases.at(-1).status, 'not-run'); const p = project(r);
+ assert.equal(p.outcome, 'validation-degraded'); assert.equal(p.completed, true); assert.equal(p.adoptionEligible, false);
+ assert.equal(p.cases.at(-1).status, 'not-run'); assert.equal(p.cases.at(-1).reason, 'wiki_validation_prior_degradation');
+ assert.equal(p.byStage.validation.original.notRun, 5); assert.equal(p.validation.byLevel.run.original.total, 0);
+ assert.equal(p.validation.cases.at(-1).degraded, null); assert.deepEqual(project(p), p);
+ for (const e of f.events) store.event(start.id, e);
+ const finish = store.finish(start.id, saved(r)); assert.equal(finish.status, 'completed');
+ assert.equal(finish.reason, 'wiki_validation_prior_degradation'); assert.equal(finish.cases.at(-1).status, 'not-run');
+ assert.equal(finish.summary.byStage.validation.original.notRun, 5); assert.deepEqual(store.read()[0], finish);
+});
 test('full progress handles skipped validation, budget blocks, and early technical failure without fabricating outputs', async t => {
  for (const scenario of ['reject', 'budget', 'fatal']) {
   const h = fixture(t); if (scenario === 'budget') h.config.evaluation.validation.policy = { maxEstimatedTokens: 1 };

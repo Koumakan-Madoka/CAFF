@@ -64,6 +64,15 @@ test('full v4 rejected gate, degraded validation and blocked budgets remain hone
     } finally { process.exitCode = exit; }
   }
 });
+test('early-stop CLI publishes a degraded result and explains unexecuted controls, never presenting them as no degradation', async t => {
+  const h = fixture(t); h.twoControls(); const f = execution(h, { validationLoss: 2 });
+  const { text } = await invoke(h, f), saved = comparisons(h).read()[0];
+  assert.equal(saved.outcome, 'validation-degraded'); assert.equal(saved.completed, true); assert.equal(saved.adoptionEligible, false);
+  assert.equal(f.executions.length, 3); assert.match(text, /#18.*not-run.*已有劣化而停止/);
+  assert.doesNotMatch(text, /#18.*未劣化/); assert.match(text, /门槛通过、验证劣化/);
+  const progress = require(base + 'wiki-batch-execution-store').createWikiBatchExecutionStore(h.config).read()[0];
+  assert.equal(progress.status, 'completed'); assert.equal(progress.reason, 'wiki_validation_prior_degradation');
+});
 test('all modes without controls are explicitly uncovered and require human adoption, never fabricated validation attempts', async t => {
   const h = fixture(t); h.mutate(s => s.controlConfirmations = []); h.sync();
   const f = execution(h), { text } = await invoke(h, f), saved = comparisons(h).read()[0];

@@ -75,7 +75,10 @@ export function buildWikiExperienceDraft(state: any, result: any, observations: 
   const v = result.validation, repair = result.gateDecision.repair;
   const lines = [`本轮改法：${candidate.appendedSection.trim()}`, ...(holdout ? [
     `门槛（本模式）：${result.gateDecision.outcome}；合计原版 ${repair.original.passed}/${repair.original.total}，候选 ${repair.candidate.passed}/${repair.candidate.total}；单侧 Fisher p=${repair.pValue ?? 'N/A'}（阈值 0.05）；${stageLine('gate')}。`,
-    `验证（其他模式对照题）：${v.status}；` + (v.cases.map((c: any) => `#${numbers.get(c.caseId)} 原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${c.degraded === null ? '未完成' : c.degraded ? '劣化' : '未劣化'}（少通过 ${c.loss} 次）`).join('；') || '没有可运行的对照题') + '。',
+    `验证（其他模式对照题）：${v.status}；` + (v.cases.map((c: any) => {
+      const stopped = result.cases.find((row: any) => row.sourceCaseId === c.caseId)?.reason === 'wiki_validation_prior_degradation';
+      return `#${numbers.get(c.caseId)} 原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${stopped ? 'not-run（已有劣化而停止）' : c.degraded === null ? '未完成' : (c.degraded ? '劣化' : '未劣化') + `（少通过 ${c.loss} 次）`}`;
+    }).join('；') || '没有可运行的对照题') + '。',
     '未覆盖：' + (v.uncovered.map((c: any) => c.entryId + (c.reason === 'operator-skipped' ? '（操作方跳过）' : '（无已确认对照题）')).join('、') || '无') + '。未覆盖不等于验证通过。',
   ] : [`门槛：${result.gateDecision.outcome}；${stageLine('gate')}。`, `测试：${stageLine('test')}。`])];
   if (opening.length) lines.push('有效/无效观察：“开头先给结论”字面检查：' + opening.map((r: any) =>

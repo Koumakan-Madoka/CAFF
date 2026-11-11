@@ -31,7 +31,8 @@ export function projectWikiHoldoutFullResult(input: any, totals: (cases: any[], 
   const cases = projectWikiHoldoutScoredCases(input.cases, experiment, splits, stageTotals);
   check(cases.every(c => c.status !== 'completed' || !c.callsUnavailable));
   const decision = decideWikiHoldoutFullExperiment(experiment, cases.map(c => ({ caseId: c.sourceCaseId, status: c.status, runs: c.runs.map(wikiExperimentRun) })));
-  const completed = decision.gate.outcome === 'rejected' || decision.gate.outcome === 'accepted' && selection.budgetStatus === 'ready' && cases.every(c => c.status === 'completed');
+  const completed = decision.gate.outcome === 'rejected' || decision.gate.outcome === 'accepted' && selection.budgetStatus === 'ready' && cases.every(c => c.status === 'completed'
+    || decision.outcome === 'validation-degraded' && c.stage === 'validation' && c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation');
   check(same(input.gateDecision, decision.gate) && same(input.validation, decision.validation) && input.outcome === decision.outcome
     && input.adoptionEligible === decision.adoptionEligible && input.completed === completed);
   const modelCallsKnown = cases.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable = cases.some(c => c.callsUnavailable);
