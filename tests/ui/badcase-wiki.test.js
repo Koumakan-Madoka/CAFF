@@ -404,6 +404,21 @@ for (const [label, selector, value] of [['bad target', '[data-tool-name]', 'x;rm
   await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
 });
 
+test('goal_action editor rejects CAFF target and saves native target without changing saved history', async t => {
+  const config = toolConfig(); config.target.name = 'goal_action';
+  const h = toolEditor(t, { toolCheck: config }), original = clone(h.saved().rubrics[0]);
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /goal_action.*原生工具/);
+  assert.equal(h.rubricPanel().querySelector('[data-freeze-rubric]').disabled, true);
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
+  assert.deepEqual(clone(h.saved().rubrics[0]), original);
+  h.field('[data-tool-kind]', 'native', 'change');
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /goal_action.*reason.*1000/);
+  await h.click('#c-1 [data-save-rubric]');
+  assert.deepEqual(clone(h.posts()[0].body.toolCheck.target), { kind: 'native', name: 'goal_action' });
+  assert.deepEqual(clone(h.saved().rubrics[0]), original);
+});
+
 test('tool rule editor supports allowed/forbidden values, forbid preview, rule add/remove and escapes text', async t => {
   const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]');
   h.field('[data-tool-mode]', 'forbid', 'change'); h.field('[data-tool-rule-kind]', 'forbidden-values', 'change');

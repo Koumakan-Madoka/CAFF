@@ -1099,7 +1099,12 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Internal `goal_action` calls the existing authenticated Goal suggestion/ruling
   service and returns its Goal/proposal/outcome/cleared projection, never the
   unrelated Room history. Its action/reason-only arguments cannot override
-  identity, Goal JSON, revision or proposal IDs.
+  identity, Goal JSON, revision or proposal IDs. The Pi extension rejects invalid
+  reasons before HTTP; rejected attempts remain native tool events, not callback
+  records. Trace checks therefore use the native `goal_action` target only.
+  WikiSkill opens exactly this facade on its per-execution Goal store; its
+  [replay-only historical CLI entry](badcase-capture-replay.md#goal-轻动作工具与历史-cli-兼容)
+  does not restore bash light actions in production.
 - Internal `conversation_notify/request` entries call the existing Phase A
   delivery service and return a bounded delivery/status projection.
 - MCP entries are server-configured allowlist records with a fixed stdio

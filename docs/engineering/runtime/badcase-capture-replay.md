@@ -62,9 +62,17 @@
 
 返回一致性仅指**同一显式种子状态**与生产 handler/错误序列化相同：pause 理由 `.trim()` 后 UTF-16 长度1000为200、1001为400且没有 `code`；无 Goal 的 pause 为404；pending 验收标准的 complete 为409、先于理由长度；再次 pause 替换提案为200；自审403；update 缺 Goal 对象或含 action 为400。成功响应中的新提案/裁决 ID 与时间是本次独立生成值，不复用历史身份。
 
-Goal store 还存追加式调用账：每个已认证、JSON/路由准入后的受支持接口调用保存 endpoint、解析后参数、HTTP状态、错误 code（可为null）和返回包，绑定 execution ID 与顺序。Goal 状态写入和对应调用记录在同一SQLite事务；公共接口保留原行为后另追加记录，不为记录而改写其响应。表的 UPDATE/DELETE 被触发器拒绝；可信 worker 只能读快照，读者改动不影响账。这不是对可直接改数据库/删触发器的同OS受信操作者的安全边界。认证字段不入账；参数夹带本次认证材料或秘密哨兵时，拒绝并存 redacted/null 参数，不把秘密写入SQLite/WAL。未通过认证、非JSON、未知路由等协议流量不算已执行工具调用，不记录为模型调用证据。私信、委派、附件、能力及其他原不支持的接口仍404，不模拟。
+Goal store 还存追加式调用账：每个已认证、JSON/路由准入后的受支持接口调用保存 endpoint、解析后参数、HTTP状态、错误 code（可为null）和返回包，绑定 execution ID 与顺序。Goal 状态写入和对应调用记录在同一SQLite事务；公共接口保留原行为后另追加记录，不为记录而改写其响应。表的 UPDATE/DELETE 被触发器拒绝；可信 worker 只能读快照，读者改动不影响账。这不是对可直接改数据库/删触发器的同OS受信操作者的安全边界。认证字段不入账；参数夹带本次认证材料或秘密哨兵时，拒绝并存 redacted/null 参数，不把秘密写入SQLite/WAL。未通过认证、非JSON、未知路由等协议流量不算已执行工具调用，不记录为模型调用证据。私信、委派、附件及其他原不支持的接口仍404，不模拟；能力接口仅开放下节的 `goal_action`，其他 facade 仍404。
 
 trace worker 在关闭前读取完整 `goalEvidence`；宿主验证 seed hash/执行绑定/调用顺序后保留在独占操作方输出（JSON原始报告），判分结果与正式结果投影携带 `goalState/goalSeedHash/goalExecutionId`，AI 裁判输入不增加这些字段。可读报告注明“Goal 状态近似”；页面按记录汇总一行，逐次种子 hash/执行 ID 放入默认折叠详情。旧回执没有这些字段时不补造、不迁移旧结果或hash。有无近似标记属于不同回放条件，不直接比较。M2 的 trace 工具检查已从上述调用账取 CAFF 实参、从本次会话工具轨迹取原生结构化参数，复用 run 的代码规则，不解析 bash、不用 AI 猜参数；参数缺失/脱敏或接口未支持不会误判通过，完整性错误不回退 shell 解析。新计划标记、工具优先合并、invalid 分母及旧计划/结果兼容见[判分契约](wikiskill-scoring.md#trace-级结构化工具调用检查m2)。真实验证仍须另获额度批准。
+
+### Goal 轻动作工具与历史 CLI 兼容
+
+- 正式 trace 批量 `direct-comparison` 和 trace 预检 `wiki-precheck-trace` 都通过 `direct-docker.cjs` 打包。`stageReplayGoalCli` 只在一次性回放发行包内把当前 CLI 放到 `agent-chat-tools-current.js`，在原 `build/lib/agent-chat-tools.js` 路径生成最小兼容入口：仅 `suggest-goal` 沿旧解析/HTTP 请求/错误显示，其他命令转交当前 CLI。历史轻动作超长理由仍由原服务端判为400，不变成生产的本地“已移除”错误。生产 CLI 无环境变量或参数可恢复旧写法；不改归档包、冻结提示词、session 或 hash，不声称恢复整个历史运行时。
+- 当前扩展的 `goal_action(action,reason)` 照常本地校验；回调仅开放 `POST /api/agent-tools/capabilities/goal_action`，用同一参数校验器、原 Goal handler 和安全返回投影，沿本次独立 Goal store 的同步事务记入参数/结果。禁止通用 capability 透传或自选身份/数据库，不改生产服务规则。
+- 容器会话保留 `goal_action` 校验前原始参数，不 trim、不截断，包括本地拒绝而没有 HTTP 的尝试。工具检查必须用 native 目标读取这些事件；caff-chat 目标不支持 `goal_action`，不能拿只有成功重试的回调账本冒充全部尝试。先超长、后改短仍判工具规则失败。回调账本只记录实际收到的调用；两类证据不混同，见[评分契约](wikiskill-scoring.md#trace-级结构化工具调用检查m2)。
+- `retained-caff-initialization.cjs` 用于封存初始化/桥接探针，`sdk-docker-validation.cjs` 用于全新实例验证，`verify-sdk-model-gateway.cjs` 用于合成网关验证；它们虽使用 `prepareCaffRuntimeFiles`，不执行历史 trace，保留当前 CLI，不接历史兼容入口。
+- 回归只用合成库、假模型/裁判/容器；新工具实际模型冒烟的凭据范围和用量必须另获批准。本契约不授权读生产 `.pi-sandbox` 或调用真实模型。
 
 ### 2026-11-02 生产同配置扩展（历史 Goal）
 

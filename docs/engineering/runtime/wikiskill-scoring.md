@@ -1,6 +1,6 @@
 # WikiSkill 判分 v2：硬断言与 AI 判断言
 
-本契约描述截至 2026-11-11 模式留出评测 S1 的代码行为，包括按模式划分的 v4 门槛/验证、人工裁决与经验写回、模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
+本契约描述模式留出评测及训练/留出展示、Goal 轻动作结构化工具收尾时的代码行为，包括按模式划分的 v4 门槛/验证、人工裁决与经验写回、模型类别提议/用户确认、训练限定归纳及审核后原子关联/目标解析，以及 run 双检查、无现场正式计划和有现场切点报告，取代新实验的纯字面判分；部署、真实验证完整性和最终接受分别由 Goal 记录，不因本契约更新自动成立。原采集、回放、环境和基线边界仍见[采集/回放契约](badcase-capture-replay.md)。代码交付的接受、提示词候选的采纳、生产发布是三个不同决定；本文件不授权推送、部署、迁移或再次消耗模型额度。
 
 ## 四层职责
 
@@ -43,7 +43,7 @@
 
 ## trace 回放 Goal 状态与证据披露（2026-11-10 M1）
 
-trace 回调用每次执行独立的最小 Goal store，两个 Goal 接口复用生产 handler 和错误序列化；context/participants/post-message 的公共库及响应不变。冻结模型输入不加种子，但成功 Goal 返回原样带出种子/提案，可影响后续步骤；不宣称历史状态完全还原。完整边界、记录范围、返回顺序与不支持清单见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。
+trace 回调用每次执行独立的最小 Goal store，`goal/suggest`、`goal/update` 及唯一开放的 `capabilities/goal_action` 复用生产 handler 和错误序列化；context/participants/post-message 的公共库及响应不变。冻结模型输入不加种子，但成功 Goal 返回原样带出种子/提案，可影响后续步骤；不宣称历史状态完全还原。完整边界、记录范围、返回顺序与不支持清单见[回放契约](badcase-capture-replay.md#2026-11-10-trace-回放的独立-goal-store)。
 
 worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行绑定的调用记录）；宿主评分的 referenceMetrics、逐次结果/事件和正式结果投影保留 `goalState: approximate-minimal-v1`、`goalSeedHash`、`goalExecutionId`，文字报告标明“Goal 状态近似”。这些元数据不进入 AI 裁判输入。页面在预检及正式结果按实际标记汇总为一行“n 次（均）为 Goal 状态近似”，说明独立最小种子、不还原历史及不可直接比较；逐次种子 hash/执行 ID 保留在默认折叠详情中。只有该组全部执行都带近似标记才写“均”；`unseeded` 单独计数并写明未播种，不标为近似，旧结果无标记不补造。独立预检的 trace attempts 可选保存同一组 `goalState/goalSeedHash/goalExecutionId`，三者须完整且沿用生产 marker 校验；run/report 不接受。GET 只投影这些小型元数据为可选 `goalExecutions`，不读取大输出包；旧 attempts/summary/计划及结果字节/hash 不补字段、不重算。**有无近似标记属于不同回放条件，不直接比较**：trace 默认开启 Goal 工具，旧结果中的 404 与最小种子下的生产返回不是同一执行条件。M2 按下面的结构化证据规则接入工具检查，不以 bash 文本解析冒充调用记录。
 
@@ -68,10 +68,12 @@ worker 和独占操作方 JSON 保留 `goalEvidence`（种子、hash、按执行
 `wiki-trace-tool-checks.ts` 只读已执行证据，复用 run 的标量/trim/UTF-16、on-call/forbid、多次调用逐次合规规则；不解析 bash、不解释 JavaScript、不执行命令，也不让 AI 猜工具参数。
 
 - CAFF 聊天工具从本次 `goalEvidence.calls` 取接口身份和解析后的 HTTP 参数，验证 execution ID、顺序、seed hash 及错误序列化。支持 context/participants/post-message/goal/suggest/goal/update 对应的桥子命令和显式参数别名；公共发言仅匹配 visibility=public。不支持接口或缺失账本记 `invalid/tool_evidence_unavailable`，不能用空数组伪造「没有调用」。HTTP 拒绝仍可判实参：reason=1001 的 400 记录违反≤1000规则，正常的 200 本身也不证明参数合规。
-- 原生工具从本次会话 `toolCalls[].args` 取结构化参数；缺少轨迹记证据不可得。管道、heredoc、内联 Node 等外层写法不参与判定；bash 文本无论包含什么都不能覆盖回调实参。完整性损坏抛错，不回退 shell 解析；缺失、非标量、已脱敏目标实参记 invalid，已观察到的规则违规仍优先。
+- 原生工具从本次会话 `toolCalls[].args` 取结构化参数；缺少轨迹记证据不可得。新 `goal_action` **只配置为 `{kind:'native',name:'goal_action'}`**：会话保留参数校验前的原始 action/reason，包括本地拒绝而没有 HTTP 的尝试，不 trim、不截断；先超长、后改短仍为 fail。`caff-chat/goal_action` 不受支持，trace 判 `invalid/tool_evidence_unavailable`，页面阻止保存/冻结此误配，不改历史断言/hash。回调里的新工具记录仍用于 Goal 操作取证，不能代替原生调用轨迹。管道、heredoc、内联 Node 等外层写法不参与判定；bash 文本无论包含什么都不能覆盖回调实参。完整性损坏抛错，不回退 shell 解析；缺失、非标量、已脱敏目标实参记 invalid，已观察到的规则违规仍优先。
 - 环境错误维持 error；工具违规先定 fail、零裁判调用；其余仍须满足既有 completed/publicReply/文件硬断言。硬断言通过后，工具证据不可判为 invalid；工具单检 pass 即 pass、on-call 未调用即 `invalid/no_check_reached`。有 AI 问题时仍判全部配置依据的原问题，工具未调用不拦截可判 AI 问题，证据/三票/引用/技术错误规则不变。无 toolCheck 的评分与旧实现不变。
 - invalid 不占回复槽位，不进有效分母，与可恢复环境错误共用每题两版最多5次替补。裁判技术错误仍占原槽位、不补回复。不可变正式结果只保留 `assessment.tool={status,reason}` 与原硬断言/票数/参考指标，验证整题合并状态、空票短路、完整 rubric/judge 及计划标记；完整调用账本只留操作方证据，不塞入页面摘要或 AI 裁判。
 - 新 trace 计划有 toolCheck 时追加逐题 `traceToolCheck:'structured-v1'`，纳入原计划 hash；工具单检 `judge=null`，不需要名单或适配器。有 AI 问题仍要求原资格绑定。pipeline 不再把工具单检标 incompatible。历史 marker-free 计划/结果/断言按旧形状读取，不补字段、不改字节/hash；历史 co-frozen toolCheck 仍是当时忽略的条件。重建执行时拒绝把旧确认静默套用新语义，须显式确认新计划。
+
+历史 bash 轻动作只在 trace 回放打包中恢复旧 CLI 解析/请求行为：超长理由仍交给原服务端按当时顺序返回（例如 400），不是生产 CLI 的“已移除”错误；不是全版本历史运行时还原。新工具用当前扩展本地校验及独立 Goal 回调，参数进入调用记录。生产没有恢复旧写法的开关；set/revise/update-goal 不变。精确入口与非回放探针边界见[回放契约](badcase-capture-replay.md#goal-轻动作工具与历史-cli-兼容)。
 
 ### 同一冻结版本的 trace 与现场报告
 
@@ -104,13 +106,13 @@ trace 新计划接受「有问题 + toolCheck」和工具单检，计划及回�
 显式配置 `evaluation.kind:'wikiskill-mode-holdout-v1'`、实验定义 `kind:'wiki-experiment-v3'`，生成 `wiki-experiment-plan-v4` 及完整 `wiki-mode-holdout-comparison-v2`。这不是静默升级旧计划；M1 留存的 `wikiskill-holdout-gate-v1` / `wiki-mode-holdout-comparison-v1` 仅有门槛，`validation.status=not-planned`、`adoptionEligible=false`，不能采纳。完整计划复用原 CLI 的规划、固定计划/确认 hash 和新建独占输出路径，不提供网页启动入口。
 
 - **门槛（本模式）**：只选候选唯一目标模式的冻结留出题（原 `gate` 和 `test` 都算），不改 `split`、首次分组确认或训练集合。当前独立原版预检为已复现且符合来源/执行条件者才为目标题；其他留出题列出原因但不进入分母。至少一道即可，只有一道时标「只有 1 道门槛题」。每题每版 10 次有效输出、原版/候选交替；合计单侧 Fisher `p<0.05` 且候选合计通过数大于原版才接受，不做门槛内逐题劣化或防误伤检查。0→6 加 0→0 可以合计通过，第二题没有单独否决权。
-- **验证（其他模式对照题）**：门槛接受后才执行，每个其他已通过模式最多一道当前已确认对照题。优先 run 级，其次历史单次完整输出平均 token 最低，再按固定种子排序；不选本模式、未确认题或其他模式的全部留出题。对照仍沿原路径：原门槛组中原版独立预检全部通过、用户精确确认且当前未失效；不实现候选采纳后将已修题转对照。
+- **验证（其他模式对照题）**：门槛接受后才执行，每个其他已通过模式最多一道当前已确认对照题。优先 run 级，其次历史单次完整输出平均 token 最低，再按固定种子排序；不选本模式或未确认题，也不把其他模式的全部留出题都拿来跑验证。对照来源为其他模式全部留出题（原门槛组或测试组），须满足既有预检资格、原版独立预检完整且有效次数等于计划次数、全部通过、用户精确确认且当前未失效；训练题不行，#4/#10/#14 的 `legacy_source` 预检限制仍保留。旧测试组预检 summary 按旧语义原样校验，不重写 `controlEligible`；当前对照投影按已验证 runs 判资格，原确认继续有效。旧 v1–v3 对照仍只准门槛组，不实现候选采纳后将已修题转对照。
 - 配置 `evaluation.validation:{seed,policy?,skippedCaseIds?}`，其中 `policy` 可设置 `repeats`（1–20，默认5）、`degradationThreshold`（默认2）、`maxEstimatedTokens`（默认20,000,000）。每题每版收集规定有效输出，原版/候选交替；候选少通过达到阈值即劣化，默认少1次是波动、少2次即劣化。不合并各验证题做显著性检验，任何一道完成题劣化即验证劣化。首次劣化后不再调用剩余题，保留 `not-run/wiki_validation_prior_degradation`（已有劣化而停止），不伪造通过；若此前还有技术不完整，即使已知劣化也保持 `completed=false`。
 - 历史用量只读当前已确认对照自己的独立预检记录，包含每份完整输出的 worker 与 judge 全部交换，不取普通比较摘要或 raw 回复猜成本。新预检可保留逐输出 `usage`；旧记录缺数值仍为未知，不回填、不触发模型。验证总 token 估算包含两版计划次数及每题共享5次替补余量；未知或超限则不发验证请求、不可采纳。操作方可显式跳过最贵题并重新规划/确认，禁止自动跳题或用其他题填补；没有对照或操作方跳过的模式列为未覆盖。
 - 门槛与验证均可用无现场 run（冻结切点上单次调用、不执行工具）或 trace；取消 **v4 评测选题** 的 run≤trace 比例及独立测试阶段，不修改首次分组算法/历史配额。现场题仍必须走 trace，切点报告不进评测。两阶段各按 trace/run 分列通过、失败、无效和错误；逐输出硬断言、工具检查、裁判及共享替补规则不变。
 - 结果有五种完成判定：`gate-rejected`、`validation-passed`、`validation-degraded`、`validation-uncovered`、`validation-partial-coverage`，另有技术/用量不完整的 `indeterminate`。门槛拒绝可以是完整的负结论；早停也可完整地证明劣化，不表示所有次数均已执行。只有完整且 `adoptionEligible`（门槛接受、验证无劣化且无技术/用量阻塞）的结果可提交采纳；全/部分未覆盖允许人工决定，但必须明确披露「未覆盖不等于验证通过」，不保证跨模式无回归。
 - 人工裁决仍用 `POST /api/wikiskill/comparison-review` 及既有受信 store，服务端核验结果、候选和 `adoptionEligible`。v4 不采纳理由为 `gate_rejected`、`validation_degraded`、`user_declined`，分别验证门槛未通过、验证劣化或用户拒绝，不接受旧 `test_not_passed`。经验写回复用既有两栏草稿/审核流程，按本次门槛/验证证据区分成功与失败，保留未覆盖和早停说明；不自动确认对照、不改生产提示词。
-- Badcase 模式总览和结果按两段只读显示：门槛合计检验、验证逐题两版次数/劣化、早停原因和未覆盖模式。演进记录与门槛区的 p 值同为4位有效数字；仅确实有早停 not-run 才写「停止后续题」。人工裁决、演进记录和候选卡片区分三种未采纳理由。不新增评审/采纳表单、确认流程或评测/预检/回放启动按钮。
+- Badcase 分组看板、模式总览的分组计数、用例详情与筛选显示「训练 / 留出」，原 `gate/test` 合并展示为留出；冻结成员、分组确认与 hash 不变，不重新分组。旧 v1–v3 结果和演进记录保留原阶段名。模式总览和结果按两段只读显示：门槛合计检验、验证逐题两版次数/劣化、早停原因和未覆盖模式。演进记录与门槛区的 p 值同为4位有效数字；仅确实有早停 not-run 才写「停止后续题」。人工裁决、演进记录和候选卡片区分三种未采纳理由。不新增评审/采纳表单、确认流程或评测/预检/回放启动按钮。
 - 旧 v1–v3 计划、结果、基线和经验保留原读取/判分/显示路径，不迁移、重算或改写字节/hash。已有完整性校验保留，本次不新增防篡改/自校验层。v4 沿用逐题当前冻结证据重读、裁判资格和唯一候选槽位等既有安全边界。
 
 ### 旧 v1–v3：历史兼容路径

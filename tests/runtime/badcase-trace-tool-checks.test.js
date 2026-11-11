@@ -164,15 +164,23 @@ function replayCli(t) {
   return { root, cli: path.join(root, current.path) };
 }
 
-test('new goal_action endpoint uses only parsed nested arguments; native rejected args need no HTTP', () => {
-  const c = check({ target: { kind: 'caff-chat', name: 'goal_action' } });
-  for (const length of [1000, 1001]) {
-    const args = { action: 'pause', reason: 'x'.repeat(length) };
-    const r = receipt({ endpoint: 'capabilities/goal_action', parameters: { arguments: args } });
-    expect(result(r, c), length === 1000 ? 'pass' : 'fail', length === 1000 ? null : 'tool_rule_failed');
-    expect(result({ toolCalls: [{ name: 'goal_action', args, isError: length > 1000 }] },
-      check({ target: { kind: 'native', name: 'goal_action' } })), length === 1000 ? 'pass' : 'fail', length === 1000 ? null : 'tool_rule_failed');
+test('goal_action is native-only: callback success cannot hide a locally rejected first attempt', () => {
+  const caff = check({ target: { kind: 'caff-chat', name: 'goal_action' } });
+  const native = check({ target: { kind: 'native', name: 'goal_action' } });
+  const short = { action: 'pause', reason: 'x'.repeat(1000) };
+  const long = { action: 'pause', reason: 'x'.repeat(1001) };
+  // Only the corrected call reaches HTTP. The session still records both raw
+  // attempts, including the first one rejected by local argument preparation.
+  const r = receipt({ endpoint: 'capabilities/goal_action', parameters: { arguments: short } });
+  r.toolCalls = [{ name: 'goal_action', args: long, isError: true }, { name: 'goal_action', args: short, isError: false }];
+  for (const mode of ['on-call', 'forbid']) {
+    expect(result(r, { ...caff, mode }), 'invalid', 'tool_evidence_unavailable');
+    expect(result(r, { ...native, mode }), 'fail', 'tool_rule_failed');
+    expect(result(receipt(), { ...caff, mode }), 'invalid', 'tool_evidence_unavailable');
   }
+  expect(result({ toolCalls: [r.toolCalls[0]] }, native), 'fail', 'tool_rule_failed');
+  expect(result({ toolCalls: [r.toolCalls[1]] }, native), 'pass');
+  expect(result({ toolCalls: [] }, native), 'unreached', 'target_not_called');
 });
 
 test('production CLI still refuses while replay-only path works for literal and injected paths', async t => {

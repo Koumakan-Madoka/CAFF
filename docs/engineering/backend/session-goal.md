@@ -211,7 +211,12 @@ accepted architecture rationale.
   Production bash light actions fail locally before reading stdin or issuing
   HTTP, with guidance to `goal_action`; no flag/environment compatibility
   switch restores them. `set`, `revise`, and `update-goal` keep their existing
-  CLI input forms.
+  CLI input forms. WikiSkill alone stages a
+  [replay-only historical CLI entry](../runtime/badcase-capture-replay.md#goal-轻动作工具与历史-cli-兼容)
+  to preserve historical bash request/error behavior; its new `goal_action`
+  callback still uses the same production logic on an independent Goal store.
+  Native session events retain locally rejected arguments for trace checks;
+  callback records cannot prove that no local attempt was rejected.
 - `update-goal` submits factual delivery state and must include `goalRevision`
   (or `revision`) in its Goal JSON. Agents call it only when a work-item or
   criterion status changes or a milestone needs proof. Every accepted update

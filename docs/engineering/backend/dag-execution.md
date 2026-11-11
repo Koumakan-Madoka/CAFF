@@ -159,7 +159,9 @@
   goal-driven node. The worker announces completion via
   structured `goal_action({ action: "complete", reason: "<result summary>" })`;
   reason is required, nonblank, and at most 1000 UTF-16 code units after trim
-  (the production bash light-action form is removed). The
+  (the production bash light-action form is removed). Invalid arguments are
+  returned to the worker for correction before HTTP: they create no proposal
+  and do not complete the node; only a subsequent valid call can do so. The
   scheduler observes `conversation_goal_proposal_updated` and routes the
   pending proposal:
   - verifier present → verification request delivered to the verifier

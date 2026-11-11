@@ -313,6 +313,7 @@
       if (!t) return '';
       const name = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
       if (t.method !== 'code' || !['caff-chat', 'native'].includes(t.target.kind) || !name.test(t.target.name) || !['on-call', 'forbid'].includes(t.mode)) return '请先修正目标工具名称或检查模式。';
+      if (t.target.kind === 'caff-chat' && t.target.name === 'goal_action') return '请先修正 goal_action 的目标类型：选择原生工具，才能检查本地被拦下的调用。';
       if (!t.rules.length || t.rules.length > 32) return '请先修正规则数量（1–32条）。';
       for (const r of t.rules) {
         if (!name.test(r.parameter)) return '请先修正规则的参数名称（不带 --）。';
