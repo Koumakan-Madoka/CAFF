@@ -29,7 +29,8 @@ module.exports = function execution(h, { gateCandidatePasses = 6, validationLoss
         assessment = await require('../../scripts/badcase-capture/wiki-receipt-scoring.cjs').scoreWikiReceipt({ receipt, rules: config.rules, scoring: config.scoring }); status = assessment.status;
       }
       const row = { variant, iteration, status, ...(assessment ? { assessment } : {}), ...(checks ? { checks, toolExecutions: 0 } : {}),
-        ...(status === 'error' ? { reason: 'model_error' } : {}), replySource: 'public', cleaned: true, finalText: 'Synthetic private reply.' };
+        ...(status === 'error' ? { reason: 'model_error' } : (checks?.reason ?? assessment?.reason) ? { reason: checks?.reason ?? assessment.reason } : {}),
+        replySource: 'public', cleaned: true, finalText: 'Synthetic private reply.' };
       if (['pass', 'fail'].includes(status)) valid[variant]++;
       options.onEvent({ event: 'run_start', variant, iteration }); options.onEvent({ event: 'model_call', variant, iteration, model: h.config.modelProfile });
       runs.push(row); options.onEvent({ event: 'run', ...row }); next = next === 'original' ? 'candidate' : 'original';

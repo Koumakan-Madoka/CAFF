@@ -10,6 +10,9 @@ import { containsSecretSentinel } from './secrets';
 import { validateWikiExperimentPlan, wikiExperimentRunSceneHash } from './wiki-experiment-plan';
 import { wikiValueHash } from './wiki-rubric';
 import { validateWikiHoldoutExperimentPlan } from './wiki-holdout-plan';
+import { validateWikiHoldoutFullExperimentPlan } from './wiki-holdout-validation-plan';
+import { projectWikiHoldoutFullResult } from './wiki-holdout-full-result';
+import { wikiComparisonTotals } from './wiki-comparison-totals';
 const fail = (code = 'wiki_execution_invalid') => Object.assign(Error(code), { code });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
@@ -18,22 +21,29 @@ const id = (v: any) => { check(typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/
 const count = (v: any) => { check(Number.isSafeInteger(v) && v >= 0); return v; };
 const reason = (v: any) => /^(evaluation|wiki)_[a-z_]{1,100}$/.test(v || '') ? v : 'evaluation_failed';
 const variants = ['original', 'candidate'];
+const isHoldout = (kind: string) => ['wiki-mode-holdout-comparison-v1', 'wiki-mode-holdout-comparison-v2'].includes(kind);
+const repeatsFor = (plan: any, c: any) => plan.kind === 'wiki-mode-holdout-comparison-v2' && c.stage === 'validation' ? plan.validationRepeats : 10;
 function projectPlan(v: any) {
-  const v2 = v?.kind === 'wiki-staged-batch-comparison-v2', holdout = v?.kind === 'wiki-mode-holdout-comparison-v1';
+  const v2 = v?.kind === 'wiki-staged-batch-comparison-v2', full = v?.kind === 'wiki-mode-holdout-comparison-v2', holdout = isHoldout(v?.kind);
   check((v2 || holdout || v?.kind === 'wiki-staged-batch-comparison-v1') && v.model === 'openai-codex/gpt-6.1-sol' && v.repeats === 10);
-  const experiment = holdout && v.experiment !== undefined ? validateWikiHoldoutExperimentPlan(v.experiment) : undefined;
+  const experiment = holdout && v.experiment !== undefined ? full ? validateWikiHoldoutFullExperimentPlan(v.experiment) : validateWikiHoldoutExperimentPlan(v.experiment) : undefined;
+  const validationRepeats = full ? (experiment as any)?.validation.policy.repeats ?? v.validationRepeats : undefined;
+  if (full) check(Number.isSafeInteger(validationRepeats) && validationRepeats >= 1 && validationRepeats <= 20
+    && (v.validationRepeats === undefined || v.validationRepeats === validationRepeats));
   const modelConfig = { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' };
   check(same(v.modelConfig, modelConfig));
   check(Array.isArray(v.cases) && v.cases.length > 0 && v.cases.length <= 20);
   if (experiment) check(v.cases.length === experiment.cases.length && wikiValueHash(experiment.runner) === wikiValueHash({ model: v.model, settings: modelConfig }));
   const cases = v.cases.map((c: any, n: number) => {
-    check(['gate', 'test'].includes(c.stage) && ['reproduction', 'probe', 'control'].includes(c.category) && typeof c.reportOnly === 'boolean');
+    check((full ? ['gate', 'validation'] : ['gate', 'test']).includes(c.stage) && ['reproduction', 'probe', 'control'].includes(c.category) && typeof c.reportOnly === 'boolean');
     const selected = experiment?.cases[n];
-    if (holdout) check(c.stage === 'gate' && c.category === 'reproduction' && !c.reportOnly && (!selected || selected.caseId === c.sourceCaseId));
+    if (holdout) check((full ? ['gate', 'validation'].includes(c.stage) && c.category === (c.stage === 'gate' ? 'reproduction' : 'control')
+      : c.stage === 'gate' && c.category === 'reproduction') && !c.reportOnly
+      && (!selected || selected.caseId === c.sourceCaseId && selected.stage === c.stage));
     const traceToolCheck = selected?.traceToolCheck ?? c.traceToolCheck;
     if (holdout && traceToolCheck !== undefined) check(c.execution === undefined && traceToolCheck === 'structured-v1');
     if (c.execution !== undefined) {
-      check((v2 || holdout) && !c.reportOnly && c.execution.level === 'run' && c.stage === 'gate');
+      check((v2 || holdout) && !c.reportOnly && c.execution.level === 'run' && (c.stage === 'gate' || full && c.stage === 'validation'));
       wikiExperimentRunSceneHash(c.execution);
       if (v.experiment !== undefined) check(wikiValueHash(v.experiment.cases.find((p: any) => p.caseId === c.sourceCaseId)?.execution) === wikiValueHash(c.execution));
     }
@@ -46,7 +56,7 @@ function projectPlan(v: any) {
   const experimentHash = holdout ? experiment?.planHash ?? v.experimentHash : v2 ? (v.experiment === undefined ? v.experimentHash : validateWikiExperimentPlan(v.experiment).planHash) : undefined;
   if (v2 || holdout) check(typeof experimentHash === 'string' && /^[a-f0-9]{64}$/.test(experimentHash) && (v.scoringKind === undefined || v.scoringKind === 'wiki-score-v2'));
   return { kind: v.kind, model: v.model, modelConfig, variants: [...variants], repeats: 10, cases,
-    ...(v2 || holdout ? { scoringKind: 'wiki-score-v2', experimentHash } : {}) };
+    ...(v2 || holdout ? { scoringKind: 'wiki-score-v2', experimentHash } : {}), ...(full ? { validationRepeats } : {}) };
 }
 const empty = (planned: number, run = false) => ({ planned, attempted: 0, passed: 0, failed: 0, errors: 0, ...(run ? { invalid: 0 } : {}), notRun: planned });
 function summarize(record: any) {
@@ -58,8 +68,8 @@ function summarize(record: any) {
   return { plannedRuns: totals.original.planned + totals.candidate.planned, completedRuns: totals.original.attempted + totals.candidate.attempted,
     knownTokens: record.cases.some((c: any) => c.knownTokens !== null) ? knownTokens : null,
     usageComplete: record.cases.some((c: any) => c.totals.original.attempted + c.totals.candidate.attempted > 0) && record.cases.every((c: any) => c.usageComplete),
-    totals, byStage: Object.fromEntries((record.plan.kind === 'wiki-mode-holdout-comparison-v1' ? ['gate'] : ['gate', 'test']).map(s => [s, sum(record.cases.filter((c: any) => c.stage === s))])),
-    ...(record.plan.kind === 'wiki-mode-holdout-comparison-v1' ? { byLevel: Object.fromEntries(['trace', 'run'].map(level => [level,
+    totals, byStage: Object.fromEntries((record.plan.kind === 'wiki-mode-holdout-comparison-v2' ? ['gate', 'validation'] : record.plan.kind === 'wiki-mode-holdout-comparison-v1' ? ['gate'] : ['gate', 'test']).map(s => [s, sum(record.cases.filter((c: any) => c.stage === s))])),
+    ...(isHoldout(record.plan.kind) ? { byLevel: Object.fromEntries(['trace', 'run'].map(level => [level,
       sum(record.cases.filter((_: any, n: number) => (record.plan.cases[n].execution?.level ?? 'trace') === level))])) } : {}) };
 }
 function validate(record: any) {
@@ -75,14 +85,14 @@ function validate(record: any) {
     if (c.knownTokens !== null) count(c.knownTokens);
     check(Object.keys(c.totals).join(',') === variants.join(','));
     for (const v of variants) {
-      const t = c.totals[v], run = record.plan.cases[i].execution?.level === 'run' || record.plan.kind === 'wiki-mode-holdout-comparison-v1' && record.plan.cases[i].traceToolCheck === 'structured-v1';
+      const t = c.totals[v], run = record.plan.cases[i].execution?.level === 'run' || isHoldout(record.plan.kind) && record.plan.cases[i].traceToolCheck === 'structured-v1';
       check(Object.keys(t).sort().join(',') === Object.keys(empty(0, run)).sort().join(','));
       Object.values(t).forEach(count);
-      check(t.planned === (c.reportOnly ? 0 : 10) && t.attempted === t.passed + t.failed + t.errors + (t.invalid ?? 0) && t.notRun === t.planned - t.passed - t.failed);
+      check(t.planned === (c.reportOnly ? 0 : repeatsFor(record.plan, c)) && t.attempted === t.passed + t.failed + t.errors + (t.invalid ?? 0) && t.notRun === t.planned - t.passed - t.failed);
       check(c.status !== 'completed' || t.notRun === 0);
       check(!c.reportOnly || t.attempted === 0);
     }
-    check(c.totals.original.attempted + c.totals.candidate.attempted <= 25);
+    check(c.totals.original.attempted + c.totals.candidate.attempted <= 2 * repeatsFor(record.plan, c) + 5);
   }
   check(record.gateOutcome === null || ['accepted', 'rejected', 'indeterminate'].includes(record.gateOutcome));
   check(record.comparisonId === null || id(record.comparisonId));
@@ -137,7 +147,7 @@ export function createWikiBatchExecutionStore(options: any) {
         return write({ id: 'batch-execution-' + crypto.randomUUID(), createdAt: now, updatedAt: now, status: 'running', plan, planHash: input.planHash,
           current: null, gateOutcome: null, comparisonId: null, reason: null,
           cases: plan.cases.map((c: any) => ({ sourceCaseId: c.sourceCaseId, stage: c.stage, reportOnly: c.reportOnly, status: 'pending', knownTokens: null, usageComplete: true,
-            totals: Object.fromEntries(variants.map(v => [v, empty(c.reportOnly ? 0 : 10, c.execution?.level === 'run' || plan.kind === 'wiki-mode-holdout-comparison-v1' && c.traceToolCheck === 'structured-v1')])) })) }, true);
+            totals: Object.fromEntries(variants.map(v => [v, empty(c.reportOnly ? 0 : repeatsFor(plan, c), c.execution?.level === 'run' || isHoldout(plan.kind) && c.traceToolCheck === 'structured-v1')])) })) }, true);
       });
     },
     heartbeat(recordId: string) { return update(recordId, () => {}); },
@@ -158,7 +168,7 @@ export function createWikiBatchExecutionStore(options: any) {
         check(!c.reportOnly && variants.includes(e.variant) && (c.stage === 'gate' ? r.gateOutcome === null : r.gateOutcome === 'accepted'));
         const t = c.totals[e.variant]; check(e.iteration === t.attempted + 1 && t.notRun > 0);
         if (e.event === 'run_start') {
-          check(r.current === null && c.totals.original.attempted + c.totals.candidate.attempted < 25);
+          check(r.current === null && c.totals.original.attempted + c.totals.candidate.attempted < 2 * repeatsFor(r.plan, c) + 5);
           r.current = { sourceCaseId: c.sourceCaseId, stage: c.stage, variant: e.variant, iteration: e.iteration }; return;
         }
         check(r.current?.sourceCaseId === c.sourceCaseId && r.current.variant === e.variant && r.current.iteration === e.iteration
@@ -176,8 +186,10 @@ export function createWikiBatchExecutionStore(options: any) {
         check(saved.model === r.plan.model && saved.planHash === r.planHash && typeof saved.completed === 'boolean' && saved.gateDecision?.outcome === r.gateOutcome);
         check(r.current === null && r.cases.every((c: any) => c.status !== 'pending'));
         if (r.plan.scoringKind === 'wiki-score-v2') check(saved.kind === r.plan.kind && saved.experiment?.planHash === r.plan.experimentHash);
-        const holdout = r.plan.kind === 'wiki-mode-holdout-comparison-v1';
-        if (holdout) check(saved.cases?.length === r.cases.length && saved.adoptionEligible === false && same(saved.validation, { status: 'not-planned' }));
+        const holdout = isHoldout(r.plan.kind), full = r.plan.kind === 'wiki-mode-holdout-comparison-v2';
+        if (holdout) check(saved.cases?.length === r.cases.length);
+        if (full) projectWikiHoldoutFullResult(saved, wikiComparisonTotals);
+        else if (holdout) check(saved.adoptionEligible === false && same(saved.validation, { status: 'not-planned' }));
         for (const planned of r.plan.cases.filter((c: any) => holdout || c.execution?.level === 'run')) {
           const c = r.cases.find((c: any) => c.sourceCaseId === planned.sourceCaseId), result = saved.cases?.find((c: any) => c.sourceCaseId === planned.sourceCaseId);
           check(result && (planned.execution === undefined ? result.execution === undefined : wikiValueHash(result.execution) === wikiValueHash(planned.execution)));
