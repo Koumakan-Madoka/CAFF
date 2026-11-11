@@ -1211,7 +1211,8 @@ export function createWikiStore(options: any) {
       return change(state => {
         if (input.expectedRevision !== undefined && input.expectedRevision !== state.revision) throw fail('wiki_revision_conflict');
         const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
-        if (result.kind !== 'wiki-staged-batch-comparison-v1' || result.evaluation?.splitPolicy !== 'd15-frozen-v1') throw fail('wiki_experience_invalid');
+        if (!(result.kind === 'wiki-staged-batch-comparison-v1' && result.evaluation?.splitPolicy === 'd15-frozen-v1'
+          || result.kind === 'wiki-mode-holdout-comparison-v2')) throw fail('wiki_experience_invalid');
         const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
         const observations = mergeWikiLiteralObservations(result, previous?.literalObservations || [], input.observations);
         const draft = buildWikiExperienceDraft(state, result, observations, previous);
@@ -1227,22 +1228,25 @@ export function createWikiStore(options: any) {
       shape(input, ['comparisonId', 'candidateHash', 'expectedRevision', 'decision', 'reason', 'interpretation']);
       const comparisonId = id(input.comparisonId), interpretation = text(input.interpretation, 16384);
       if (!global || !Number.isSafeInteger(input.expectedRevision) || !/^[a-f0-9]{64}$/.test(input.candidateHash)
-        || !(input.decision === 'not-adopted' && ['gate_rejected', 'test_not_passed', 'user_declined'].includes(input.reason)
+        || !(input.decision === 'not-adopted' && ['gate_rejected', 'test_not_passed', 'validation_degraded', 'user_declined'].includes(input.reason)
           || input.decision === 'adopted' && input.reason === 'user_accepted')) throw fail('wiki_invalid_input');
       return change(state => {
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         // Read the exact stored result, not client aggregates, worker text or a
         // latest-20 page projection. Human interpretation never changes scoring.
         const result = readWikiComparisonRecord(captureRoot, comparisonId, value => projectStagedResult(value, wikiComparisonTotals));
-        if (result.evaluation?.splitPolicy !== 'd15-frozen-v1' || !result.completed) throw fail('wiki_comparison_review_invalid');
+        const holdout = result.kind === 'wiki-mode-holdout-comparison-v2';
+        if (!(holdout || result.evaluation?.splitPolicy === 'd15-frozen-v1') || !result.completed) throw fail('wiki_comparison_review_invalid');
         const candidate = state.candidates.find((c: any) => c.id === result.candidate.id && c.kind === 'global-wiki-candidate-v1');
         if (!candidate || candidate.candidateHash !== input.candidateHash || result.candidate.candidateHash !== input.candidateHash) throw fail('wiki_candidate_not_found');
         if (input.reason === 'gate_rejected' && result.gateDecision.outcome !== 'rejected'
-          || input.reason === 'test_not_passed' && (result.gateDecision.outcome !== 'accepted'
+          || input.reason === 'validation_degraded' && (!holdout || result.gateDecision.outcome !== 'accepted' || result.validation.status !== 'degraded')
+          || input.reason === 'test_not_passed' && (holdout || result.gateDecision.outcome !== 'accepted'
             || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && c.totals.candidate.failed > 0))) throw fail('wiki_comparison_review_invalid');
         const payload = { comparisonId, planHash: result.planHash, candidateId: candidate.id, candidateHash: input.candidateHash,
           targetId: candidate.targetId, decision: input.decision, reason: input.reason, interpretation,
-          gateOutcome: result.gateDecision.outcome, baselineChanged: input.decision === 'adopted' };
+          gateOutcome: result.gateDecision.outcome, baselineChanged: input.decision === 'adopted',
+          ...(holdout ? { outcome: result.outcome, validationOutcome: result.validation.status, uncovered: structuredClone(result.validation.uncovered) } : {}) };
         const current = state.comparisonReviews.find((r: any) => r.comparisonId === comparisonId);
         if (current) {
           const { id: oldId, createdAt, ...old } = current;
@@ -1251,15 +1255,21 @@ export function createWikiStore(options: any) {
         }
         const saved = { id: 'review-' + hash(JSON.stringify(payload)), createdAt: new Date().toISOString(), ...payload };
         if (input.decision === 'adopted') {
-          // No new automatic test acceptance formula: this is an explicit human
-          // judgment after a completed gate + test report, never a gate side effect.
+          // Human action only. V4 requires the rederived full validation result;
+          // retained v1-v3 keep their original completed test-stage contract.
           if (result.model !== 'openai-codex/gpt-6.1-sol' || result.modelConfig?.thinking !== 'xhigh' || result.gateDecision.outcome !== 'accepted'
-            || !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && !c.reportOnly)
-            || result.cases.some((c: any) => c.stage === 'test' && !c.reportOnly && c.status !== 'completed')) throw fail('wiki_comparison_review_invalid');
+            || (holdout ? result.adoptionEligible !== true : !result.cases.some((c: any) => c.stage === 'test' && c.targetReproduction && !c.reportOnly)
+              || result.cases.some((c: any) => c.stage === 'test' && !c.reportOnly && c.status !== 'completed'))) throw fail('wiki_comparison_review_invalid');
           resolveGlobalWikiCandidate(state, candidate.id, candidate.targetId, candidate.baseHash, []);
           state.baselines.push(buildWikiBaseline(state, candidate, saved));
         }
         state.comparisonReviews.push(saved);
+        if (holdout) {
+          const previous = state.experiences.filter((e: any) => e.comparisonId === comparisonId).at(-1);
+          const draft = buildWikiExperienceDraft(state, result, previous?.literalObservations || [], previous);
+          state.experiences.push(draft);
+          appendEvent(state, { type: 'experience-drafted', experienceId: draft.id, comparisonId, entryId: draft.entryId });
+        }
         appendEvent(state, { type: 'comparison-reviewed', comparisonId, reviewId: saved.id });
         return { changed: true, value: saved };
       }).value;

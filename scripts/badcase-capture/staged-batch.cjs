@@ -82,6 +82,7 @@ async function runStagedBatch(config, plan, options) {
   emit({event:'batch_summary',...result}); return result;
 }
 function formatStagedBatch(result, sourceCases) {
+  if(result.kind==='wiki-mode-holdout-comparison-v2')return require('./holdout-validation-batch.cjs').formatHoldoutValidationBatch(result, sourceCases);
   if(result.kind==='wiki-mode-holdout-comparison-v1')return require('./holdout-gate-batch.cjs').formatHoldoutGateBatch(result, sourceCases);
   const labels={gate:'门槛',test:'测试'}, categories={reproduction:'复现题',probe:'探针题',control:'防误伤题'};
   const native=result.model===CODEX_PROFILE;

@@ -82,4 +82,25 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible});
  emit({event:'batch_summary',...result});return result;
 }
-module.exports={runHoldoutValidationBatch};
+function formatHoldoutValidationBatch(result,sourceCases=[]){
+ const numbers=new Map(require(base+'wiki-suite').wikiDisplayCases(sourceCases).map(c=>[c.id,c.displayNumber]));
+ const label=id=>numbers.has(id)?'#'+numbers.get(id):'编号不可用';
+ const lines=require('./holdout-gate-batch.cjs').holdoutGateReportLines(result,sourceCases);
+ lines[0]='WikiSkill 门槛（本模式）';
+ for(const c of result.cases.filter(c=>c.stage==='gate'))lines.push(`${label(c.sourceCaseId)} 原版 ${c.totals.original.passed}/${c.totals.original.scored}，候选 ${c.totals.candidate.passed}/${c.totals.candidate.scored}；${c.status}`);
+ const v=result.validation;
+ lines.push('验证（其他模式对照题）',`每题每版 ${v.repeats} 次；少通过 ${v.degradationThreshold} 次及以上算劣化`,
+  `总 token 估算：${v.estimatedTokens??'未知'}；上限 ${v.maxEstimatedTokens}`);
+ if(result.gateDecision.outcome!=='accepted')lines.push('门槛未通过；验证未运行。');
+ else if(v.status==='over-limit')lines.push('用量估算超上限；验证未运行。操作方可明确跳过最贵的题后重新确认计划，不自动跳题。');
+ else if(v.status==='usage-unknown')lines.push('历史用量未知；验证未运行。');
+ for(const c of v.cases)lines.push(`${label(c.caseId)}（${c.entryId} / ${c.level}）原版 ${c.original.passed}/${c.original.total}，候选 ${c.candidate.passed}/${c.candidate.total}；${c.degraded===null?'未完成':c.degraded?'劣化':'未劣化'}（少通过 ${c.loss} 次）`);
+ for(const level of ['trace','run']){const t=v.byLevel[level];lines.push(`${level} 级验证：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；失败 ${t.original.failed}/${t.candidate.failed}，无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);}
+ lines.push('未覆盖：'+(v.uncovered.length?v.uncovered.map(c=>c.entryId+(c.reason==='operator-skipped'?'（操作方跳过）':'（无已确认对照题）')).join(', '):'无'),
+  '结果：'+({'gate-rejected':'门槛未通过','validation-passed':'门槛通过、验证通过','validation-degraded':'门槛通过、验证劣化',
+   'validation-uncovered':'门槛通过、验证全部未覆盖','validation-partial-coverage':'门槛通过、验证部分未覆盖',indeterminate:'无法判定'}[result.outcome]),
+  result.adoptionEligible?'可提交人工评审；是否采纳由人决定，未覆盖不等于验证通过。':'不可提交采纳；未完成不等于没有劣化。',
+  '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（存在未知/不完整记录）':''));
+ return lines.join('\n')+'\n';
+}
+module.exports={runHoldoutValidationBatch,formatHoldoutValidationBatch};
