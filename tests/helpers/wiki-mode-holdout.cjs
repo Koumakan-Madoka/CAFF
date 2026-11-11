@@ -30,9 +30,9 @@ module.exports = function fixture({ run24 = true } = {}) {
   const replayChecks = marked.map(c => c.sealedCheckpointId ? { caseId: c.id, level: 'trace', status: 'supported', checkpointHash: state.replayCases.find(r => r.sourceCaseId === c.id).checkpointHash }
     : { caseId: c.id, level: 'run', status: 'supported', traceHash: c.traceBundle.hash, decisionHash: state.dehydrations.find(r => r.caseId === c.id).decision.hash, cutStep: 42 });
   const records = [];
-  function save(number, statuses, { status = 'completed', reserve = false, createdAt = now } = {}) {
-    const c = marked[number - 17], rubric = state.rubrics.find(r => r.caseId === c.id);
-    const plan = createWikiOriginalPrecheckPlan({ state, caseId: c.id, rubricHash: rubric.hash, inputHash: hash('synthetic original request ' + number), replayChecks, judge: null,
+  function save(number, statuses, { status = 'completed', reserve = false, createdAt = now, judge = null } = {}) {
+    const c = marked[number - 17], rubric = state.rubrics.filter(r => r.caseId === c.id).sort((a, b) => b.version - a.version)[0];
+    const plan = createWikiOriginalPrecheckPlan({ state, caseId: c.id, rubricHash: rubric.hash, inputHash: hash('synthetic original request ' + number), replayChecks, judge,
       ...(statuses?.length ? { policy: { repeats: statuses.length } } : {}) });
     statuses ??= Array.from({ length: plan.policy.repeats }, (_, i) => i < Math.ceil(plan.policy.repeats / 2) ? 'fail' : 'pass');
     const id = 'precheck-00000000-0000-4000-8000-' + String(records.length + 1).padStart(12, '0');
