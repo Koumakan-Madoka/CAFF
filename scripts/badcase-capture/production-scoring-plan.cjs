@@ -28,7 +28,9 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  const experiment=config.experiment;
  wikiExactKeys(experiment,['definition',...(experiment?.plan===undefined?[]:['plan'])]);
  const definition=experiment.definition,catalog=[],scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree};
- const selections=suite.cases.filter(c=>!c.reportOnly).map(c=>({caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction}));
+ const holdout=definition?.kind==='wiki-experiment-v3',perCase=['wiki-experiment-v2','wiki-experiment-v3'].includes(definition?.kind);
+ const selections=suite.cases.filter(c=>!c.reportOnly).map(c=>holdout?{caseId:c.sourceCaseId}
+  :{caseId:c.sourceCaseId,stage:c.stage,category:c.category,targetReproduction:c.targetReproduction});
  if(!same(definition?.variants,[{id:'original',promptHash:candidate.baseHash},{id:'candidate',promptHash:candidate.candidateHash}])
    || !same(definition?.runner,{model:config.modelProfile,settings:modelConfig})
    || !same(definition?.cases?.map(({judge,...selection})=>selection),selections))throw fail('wiki_experiment_changed');
@@ -36,13 +38,13 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
  for(const selection of definition.cases){
   const item=config.cases.find(c=>c.sourceCaseId===selection.caseId);
   const rubric=resolveFrozenWikiRubric(state,selection.caseId,item?.rubricHash);
-  if(!(rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(definition.kind==='wiki-experiment-v2'?selection.judge:definition.judge,
+  if(!(rubric.toolCheck&&!rubric.questions.length))assertWikiEligibleConfiguration(perCase?selection.judge:definition.judge,
    eligibleJudges??=readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG));
  }
  function scoringFor(source,item,task){
   if(item.topicExemption!==undefined || item.rulesRevision!==undefined)throw fail('evaluation_batch_cases_invalid');
   const rubric=resolveFrozenWikiRubric(state,source.id,item.rubricHash);
-  const judge=definition.kind==='wiki-experiment-v2'?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
+  const judge=perCase?definition.cases.find(c=>c.caseId===source.id)?.judge:definition.judge;
   return {kind:'wiki-score-v2',rubric,binding:rubric.toolCheck&&!rubric.questions.length?null:bindWikiJudge(judge,rubric),task,expected:source.expected};
  }
  return {
@@ -64,6 +66,17 @@ function prepareProductionScoring(config,state,candidate,suite,options,modelConf
     hardAssertions:wikiObjectiveRules(replay.rules),rubric:scoring.rubric});
   },
   finish(){
+   if(holdout){
+    const {readProductionHoldoutEvidence}=require('./production-holdout-suite.cjs');
+    const {createWikiHoldoutExperimentPlan,assertWikiHoldoutExperimentPlan}=require(base+'wiki-holdout-plan');
+    const current=readProductionHoldoutEvidence(scope,state,candidate.entryIds[0]);
+    const plan=createWikiHoldoutExperimentPlan(definition,catalog,suite.gate);
+    // This also reconstructs current prechecks, never trusts a saved selection
+    // merely because its author recomputed a local hash.
+    assertWikiHoldoutExperimentPlan(plan,definition,catalog,current);
+    if(experiment.plan!==undefined)assertWikiHoldoutExperimentPlan(experiment.plan,definition,catalog,current);
+    return plan;
+   }
    const admission=createWikiExperimentAdmission({state,definition,catalog,targetEntryId:candidate.entryIds[0],
     records:createWikiOriginalPrecheckStore(scope).list(),replayChecks:readWikiPipelineInputs(state,createWikiPipelinePrecheckStore(scope))});
    const plan=createWikiExperimentPlan(definition,catalog,admission);

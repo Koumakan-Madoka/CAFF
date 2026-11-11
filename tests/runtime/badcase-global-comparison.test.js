@@ -130,6 +130,11 @@ test('trace tool-check alternating slots exclude invalid and share five replacem
 });
 test('global batch delegates scene reads through mapped imports while raw roots remain immutable identities', t => {
   const h = setup(t), destinationAgentDir = path.join(h.root, 'migrated');
+  const previous = process.env.CAFF_WIKISKILL_DATA_DIR;
+  process.env.CAFF_WIKISKILL_DATA_DIR = path.join(h.root, 'migration-wiki-data');
+  t.after(() => { if (previous === undefined) delete process.env.CAFF_WIKISKILL_DATA_DIR; else process.env.CAFF_WIKISKILL_DATA_DIR = previous; });
+  // A command-level data root may be shared by concurrent test files. Each
+  // migration owns a distinct destination even when that root is configured.
   // Migrations honor the isolated configured data directory. Do not assume
   // that the agent fallback wins over CAFF_WIKISKILL_DATA_DIR in test runs.
   const destination = require('../../build/server/domain/runtime/badcase-capture/wiki-data-directory').resolveWikiDataDirectory(destinationAgentDir);

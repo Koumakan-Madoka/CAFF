@@ -33,14 +33,17 @@ test('offline production fixture versions preserve task/files/rules/input, old s
 });
 test('migrated sample parents read only imports when the original capture root is unavailable',t=>{
  const h=setup(t),root=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'sample-migration-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const previous=process.env.CAFF_WIKISKILL_DATA_DIR;process.env.CAFF_WIKISKILL_DATA_DIR=path.join(root,'migration-wiki-data');
+ t.after(()=>{if(previous===undefined)delete process.env.CAFF_WIKISKILL_DATA_DIR;else process.env.CAFF_WIKISKILL_DATA_DIR=previous;});
  const sourceGlobal=path.join(root,'source-global');fs.cpSync(h.scope.globalRoot,sourceGlobal,{recursive:true});
  const migration=require('../../scripts/badcase-capture/migrate-wiki-layout.cjs'),config={globalRoot:sourceGlobal,sourceWorktree:h.scope.sourceWorktree,captureRoots:[h.f.root],destinationAgentDir:path.join(root,'copy')};
  const p=migration.prepareMigration(config);migration.migrateWikiLayout(config,{confirmed:true,expectedPlanHash:p.summary.planHash});
+ const destination=p.config.destinationAgentDir;
  const old=process.env.CAFF_WIKISKILL_DATA_DIR;process.env.CAFF_WIKISKILL_DATA_DIR=config.destinationAgentDir;
- const scope={...h.scope,globalRoot:path.join(config.destinationAgentDir,'badcase-global')},store=require('../../build/server/domain/runtime/badcase-capture/wiki-store').createWikiStore(scope),before=store.read();
+ const scope={...h.scope,globalRoot:path.join(destination,'badcase-global')},store=require('../../build/server/domain/runtime/badcase-capture/wiki-store').createWikiStore(scope),before=store.read();
  h.config={...h.config,...scope}; // Explicit destination, never environment redirection.
  const imported=require('../../build/server/domain/runtime/badcase-capture/wiki-replay-location').resolveWikiReplayRequest(scope,h.parent.request);
- assert.ok(imported.captureRoot.startsWith(path.join(config.destinationAgentDir,'badcase-capture/imports')+path.sep));
+ assert.ok(imported.captureRoot.startsWith(path.join(destination,'badcase-capture/imports')+path.sep));
  const offline=h.f.root+'-offline';fs.renameSync(h.f.root,offline);
  try{
   const {prepareSampleVersions,materializeSampleVersions}=require('../../scripts/badcase-capture/prepare-sample-model-versions.cjs'),options={knownValues:[]};

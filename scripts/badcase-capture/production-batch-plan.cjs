@@ -20,9 +20,11 @@ const {hashJson:hash}=require('./replay-streams.cjs');
 function prepareProductionBatch(config,options={}){
  config=resolveWikiStorageOptions(config);
  const scope={globalRoot:config.globalRoot,sourceWorktree:config.sourceWorktree},store=createWikiStore(scope),state=store.read();
+ const holdout=config.evaluation?.kind==='wikiskill-holdout-gate-v1';
+ if(!holdout&&config.experiment?.definition?.kind==='wiki-experiment-v3')throw fail('evaluation_gate_config_invalid');
  if(config.modelProfile!==CODEX_PROFILE || config.keySource!=='caff-codex-access' || config.repeats!==10
    || !config.evaluation || Object.keys(config.evaluation).sort().join(',')!=='kind,targetEntryId'
-   || config.evaluation.kind!=='wikiskill-gate-v1')throw fail('evaluation_gate_config_invalid');
+   || !['wikiskill-gate-v1','wikiskill-holdout-gate-v1'].includes(config.evaluation.kind))throw fail('evaluation_gate_config_invalid');
  const saved=state.candidates.find(c=>c.id===config.candidateId && c.kind==='global-wiki-candidate-v1');
  if(!saved || !(saved.status==='confirmed' || options.allowDraftCandidate===true && saved.status==='draft'))throw fail('wiki_candidate_confirmation_required');
  if(saved.target?.kind!=='global-system-prompt')throw fail('evaluation_target_unsupported');
@@ -30,11 +32,12 @@ function prepareProductionBatch(config,options={}){
  for(const item of config.cases)if(!item || Object.keys(item).some(k=>!['sourceCaseId','category','repository','dependencies','replayVersionId','rulesRevision','topicExemption',...(config.experiment===undefined?[]:['rubricHash'])].includes(k))
    || item.rulesRevision!==undefined && item.rulesRevision!=='snapshot-head-exemption-v1'
    || config.experiment!==undefined && (item.rulesRevision!==undefined || item.topicExemption!==undefined))throw fail('evaluation_batch_cases_invalid');
- const suite=planWikiEvaluationSuite(state,config.cases,saved.entryIds[0]);
+ const suite=holdout?require('./production-holdout-suite.cjs').prepareProductionHoldoutSuite(config,state,saved.entryIds[0])
+  :planWikiEvaluationSuite(state,config.cases,saved.entryIds[0]);
  // Require a genuine GPT target in each frozen stage. Other model families are
  // visible report-only rows, not GPT failures or favorable denominator slots.
- if(!suite.targetReproductionCaseIds.length || !suite.targetTestReproductionCaseIds.length
-   || !suite.cases.some(c=>c.stage==='gate' && c.category==='control' && !c.reportOnly))throw fail('evaluation_gate_config_invalid');
+ if(!suite.targetReproductionCaseIds.length || !holdout&&(!suite.targetTestReproductionCaseIds.length
+   || !suite.cases.some(c=>c.stage==='gate' && c.category==='control' && !c.reportOnly)))throw fail('evaluation_gate_config_invalid');
  const candidate=resolveGlobalWikiCandidate(state,saved.id,saved.targetId,saved.baseHash,(options.collectProductionCandidateFiles || collectWikiCandidateFiles)(state,scope),{allowDraft:options.allowDraftCandidate===true});
  const version=state.versions.find(v=>v.id===candidate.versionId);
  if(version.caseIds.some(id=>suite.cases.some(c=>c.sourceCaseId===id && ['gate','test'].includes(c.stage)
@@ -89,14 +92,18 @@ function prepareProductionBatch(config,options={}){
   }
   return {...record,replayId:replay.id,fixture:replay.fixture,...(topicExemption?{topicExemption}:{}),...(plan.supported?{supported:true,comparison:plan.summary,comparisonConfig}:{supported:false,reason:plan.reason})};
  });
- const evaluation={kind:'wikiskill-gate-v1',splitPolicy:'d15-frozen-v1',targetEntryId:candidate.entryIds[0],
+ const evaluation=holdout?{kind:'wikiskill-holdout-gate-v1',splitPolicy:'mode-holdout-frozen-v1',targetEntryId:candidate.entryIds[0],
+  gateCaseIds:suite.gateCaseIds,targetReproductionCaseIds:suite.targetReproductionCaseIds,
+  ignoredCaseIds:suite.gate.cases.filter(c=>!c.eligible).map(c=>c.caseId),maxExtraAttemptsPerCase:5}
+  :{kind:'wikiskill-gate-v1',splitPolicy:'d15-frozen-v1',targetEntryId:candidate.entryIds[0],
   gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds,targetReproductionCaseIds:suite.targetReproductionCaseIds,
   targetTestReproductionCaseIds:suite.targetTestReproductionCaseIds,reportOnlyCaseIds:suite.reportOnlyCaseIds,maxExtraAttemptsPerCase:5};
  const experiment=scoringPlan?.finish();
- const summary={kind:experiment?'wiki-staged-batch-comparison-v2':'wiki-staged-batch-comparison-v1',scope:'global',evaluation,...(experiment?{experiment}:{}),configHash:hash(config),model:CODEX_PROFILE,modelConfig:{...CODEX_CONFIG},
+ const summary={kind:holdout?'wiki-mode-holdout-comparison-v1':experiment?'wiki-staged-batch-comparison-v2':'wiki-staged-batch-comparison-v1',scope:'global',evaluation,...(experiment?{experiment}:{}),configHash:hash(config),model:CODEX_PROFILE,modelConfig:{...CODEX_CONFIG},
   candidate:{id:candidate.id,targetId:candidate.targetId,baseHash:candidate.baseHash,candidateHash:candidate.candidateHash,versionId:candidate.versionId,entryIds:candidate.entryIds,...(candidate.experienceHash?{experienceHash:candidate.experienceHash}:{})},
   ...(saved.status==='draft'?{candidateConfirmationRequired:true}:{}),
-  split:{policy:'d15-frozen-v1',caseIds:suite.cases.map(c=>c.sourceCaseId),gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds},
+  split:holdout?{policy:'mode-holdout-frozen-v1',rows:suite.cases.map(c=>({sourceCaseId:c.sourceCaseId,split:c.split})),gateCaseIds:suite.gateCaseIds}
+   :{policy:'d15-frozen-v1',caseIds:suite.cases.map(c=>c.sourceCaseId),gateCaseIds:suite.gateCaseIds,testCaseIds:suite.testCaseIds},
   additionalTrainingCaseIds:[],excludedSplitTrainingCaseIds:[],repeats:10,wikiTrainingCount:version.caseIds.length,
   preparedReplayableCount:prepared.filter(c=>c.supported).length,
   disclosures:[experiment?'literal_metrics_reference_only':'literal_rules_not_semantic_judgment','small_sample','model_configuration_bound','non_gpt_sources_report_only',

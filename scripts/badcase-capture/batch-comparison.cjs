@@ -16,7 +16,7 @@ function prepareBatch(config, options = {}) {
   if (Number.isSafeInteger(config?.timeoutMs) && config.timeoutMs > 45 * 60 * 1000) throw fail('evaluation_timeout_limit');
   const scopeFields = config?.globalRoot === undefined ? ['captureRoot', 'projectId'] : ['globalRoot'];
   if (!config || Object.keys(config).some(k => ![...scopeFields, 'sourceWorktree', 'candidateId', 'repoRoot', 'dependencyRoot', 'image', 'repeats', 'timeoutMs', 'cases', ...(config.globalRoot !== undefined ? ['evaluation', 'modelProfile', 'keySource', 'codexAuthFile', 'knownKeySources', 'dockerBackend', 'experiment'] : [])].includes(k))
-    || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > 20
+    || !Array.isArray(config.cases) || !config.cases.length || config.cases.length > (config.evaluation?.kind==='wikiskill-holdout-gate-v1'?1000:20)
     || !path.isAbsolute(config.repoRoot || '') || !path.isAbsolute(config.dependencyRoot || '')
     || !/^sha256:[a-f0-9]{64}$/.test(config.image?.imageId || '')
     || !Number.isSafeInteger(config.repeats ?? 3) || (config.repeats ?? 3) < 1 || (config.repeats ?? 3) > 20
@@ -79,6 +79,7 @@ function prepareBatch(config, options = {}) {
 async function runBatch(config, options = {}) {
   const fixed = structuredClone(config), plan = prepareBatch(fixed, { ...options, allowDraftCandidate: false });
   if (options.confirmed !== true || options.expectedPlanHash !== plan.summary.planHash) throw fail('evaluation_batch_confirmation_required');
+  if (plan.summary.kind==='wiki-mode-holdout-comparison-v1') throw fail('wiki_holdout_execution_not_ready');
   if (plan.summary.evaluation) return require('./staged-batch.cjs').runStagedBatch(fixed, plan, options);
   const emit = options.onEvent || (() => {}), results = [], executionId = crypto.randomUUID();
   let key, stopped = false, runtimeHash = null;
