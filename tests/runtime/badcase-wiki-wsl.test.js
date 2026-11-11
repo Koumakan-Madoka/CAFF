@@ -1,6 +1,7 @@
 // Windows page induction: no real provider credentials/network/Docker in unit tests.
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
 const key = 'synthetic-wiki-host-only-key';
 const load = () => require('../../scripts/badcase-capture/wiki-host-model.cjs');
 const input = { phase: 'preclassification', cases: [{ id: 'c1', actual: 'a', expected: 'b' }], approvedEntries: [] };
@@ -12,7 +13,7 @@ test('same classification code crosses a credential-free mailbox; host pins body
   const { createWikiHostExchange, createWikiMailboxFetch } = load(); let sent = 0, destroyed = 0;
   const dispatcher = { destroy: async () => { destroyed++; } };
   const transport = createWikiHostExchange({ key, expectedBody: body() }, {
-    createDispatcher: uri => { assert.equal(uri, 'http://127.0.0.1:17890'); return dispatcher; },
+    createDispatcher: uri => { assert.equal(uri, hostProxy.url); return dispatcher; },
     fetch: async (url, options) => {
       sent++; assert.equal(url, 'https://api.deepseek.com/chat/completions'); assert.equal(options.dispatcher, dispatcher);
       assert.equal(options.headers.authorization, 'Bearer ' + key); assert.equal(options.redirect, 'error');
@@ -67,6 +68,20 @@ test('Windows relay stages only checked inputs/code, no key, and explicitly sele
       ran = true; assert.equal(options.key, undefined); assert.equal(options.network, 'none'); assert.equal(options.runDocker, runner);
       assert.equal(staged.some(f => f.path === 'wiki-host-relay.json'), true);
       assert.equal(staged.some(f => f.path === 'container-model-adapter.cjs'), true);
+      // The worker loads the host module for mailbox fetch only. Every local
+      // require must resolve from the staged bundle, not the host checkout.
+      const vm = require('node:vm'), modules = new Map();
+      const loadStaged = name => {
+        if (modules.has(name)) return modules.get(name).exports;
+        const file = staged.find(f => f.path === name); assert.ok(file, 'missing staged ' + name);
+        const module = { exports: {} }; modules.set(name, module);
+        vm.runInNewContext(file.bytes.toString(), { module, require: ref => {
+          assert.match(ref, /^\.\//); return loadStaged(ref.slice(2));
+        } });
+        return module.exports;
+      };
+      assert.equal(typeof loadStaged('wiki-host-model.cjs').createWikiMailboxFetch, 'function');
+      assert.equal(loadStaged('host-proxy.cjs').url, hostProxy.url);
       assert.equal(staged.some(f => f.bytes.includes(key)), false); assert.equal(options.limits.maxRequests, 1);
       return { cleaned: true, receipt: { ok: true, results: [result], calls: [] } };
     },

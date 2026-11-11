@@ -368,7 +368,7 @@ Two more issues surfaced during the real Codex acceptance conversation:
    answered `unsupported_country_region_territory` (403), and direct requests
    to chatgpt.com are GFW-reset. The preview instance now runs with
    `NODE_USE_ENV_PROXY=1`, `HTTPS_PROXY`/`HTTP_PROXY` pointing at the local
-   proxy (Clash on 127.0.0.1:17890), and `NO_PROXY=localhost,127.0.0.1`.
+   proxy (Clash on 127.0.0.1:10090), and `NO_PROXY=localhost,127.0.0.1`.
    Login (token exchange) and the codex conversation then both work.
    Note: Node's built-in WebSocket does not honor the env proxy, so the
    codex WS transport fails fast on the first message of each conversation
@@ -427,6 +427,6 @@ Recommended production configuration replacing fix 2's env set:
 
 ```text
 PROXY_ONLY_HOSTS=auth.openai.com,chatgpt.com,api.openai.com,api.anthropic.com
-HTTP_PROXY=http://127.0.0.1:17890
-HTTPS_PROXY=http://127.0.0.1:17890
+HTTP_PROXY=http://127.0.0.1:10090
+HTTPS_PROXY=http://127.0.0.1:10090
 ```

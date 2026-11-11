@@ -1,7 +1,7 @@
 // Wiki-only, one-request mailbox. Provider connection and auth stay on the
 // trusted host; no HTTP listener, credentials or network inside WSL/Docker.
 const ENDPOINT = 'https://api.deepseek.com/chat/completions';
-const PROXY = 'http://127.0.0.1:17890';
+const PROXY = require('./host-proxy.cjs').url;
 const LIMITS = Object.freeze({ maxRequests: 1, maxRequestBytes: 4 * 1024 * 1024, maxResponseBytes: 1024 * 1024 });
 const fail = code => Object.assign(Error('wiki_host_' + code), { code: 'wiki_host_' + code });
 function decode(text) {
@@ -92,7 +92,7 @@ async function runWikiHostTask(image, files, options, dependencies = {}) {
   require('./direct-model.cjs').validKey(options.key);
   if (files.some(f => f.bytes.includes(options.key) || f.bytes.includes(JSON.stringify(options.key).slice(1, -1)))) throw fail('input_contains_key');
   const staged = [...files, { path: 'wiki-host-relay.json', bytes: Buffer.from('{"kind":"wiki-host-relay-v1"}') },
-    ...['wiki-host-model.cjs', 'container-model-adapter.cjs'].map(name => ({ path: name, bytes: fs.readFileSync(path.join(__dirname, name)) }))];
+    ...['wiki-host-model.cjs', 'host-proxy.cjs', 'container-model-adapter.cjs'].map(name => ({ path: name, bytes: fs.readFileSync(path.join(__dirname, name)) }))];
   const transport = (dependencies.createExchange || createWikiHostExchange)({ key: options.key, expectedBody });
   try {
     return await (dependencies.execute || require('./direct-docker.cjs').runHostModelDockerTask)(image, staged, {

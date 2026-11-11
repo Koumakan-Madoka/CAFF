@@ -70,7 +70,7 @@ node scripts/badcase-capture/migrate-wiki-layout.cjs --config '<绝对migration.
 ## 5. 单独批准上线真实GPT复测和模型用量
 
 - 使用一条用户批准的真实GPT用例：真实仓库clone、采集开启、正常消息标记→预分类→人工归类；不要把正常探针冒标badcase凑数。也可在明确批准后对迁入的真实GPT登记题做只读准入和原版回放。
-- 确认该题完整材料、记录HEAD、依赖、回调、resume前缀（如适用）、模型 `openai-codex/gpt-6.1-sol` / xhigh / Fast关闭 / SSE；宿主access仅内存，经17890，无refresh/直连回退。安全扫描的SQLite单行读取权限另确认；不要借复测自动扩大读取范围。
+- 确认该题完整材料、记录HEAD、依赖、回调、resume前缀（如适用）、模型 `openai-codex/gpt-6.1-sol` / xhigh / Fast关闭 / SSE；宿主access仅内存，经10090，无refresh/直连回退。安全扫描的SQLite单行读取权限另确认；不要借复测自动扩大读取范围。
 - 用受版本管理的 `run-wiki-evaluation.cjs --plan` 核对新计划；批准本次额度和规则后才 `--run --confirmed --expected-plan <hash> --output <新JSONL>`。页面只读观察进度、完成结果和已知token，确认容器删除、日志/产物无凭据。真实输出、持续时间、用量与准入/行为结论分别报告；原版单例不产生采纳结论。
 - 旧字面M4候选bc807f8a未采纳。本轮评分v2候选050be1fb已获批并完成唯一D8批次，#20不过，按D7不采纳；#10技术error致验证不完整。上线单例复测不是重判/补齐该批或第三批开跑的授权，也不允许自动改生产提示词。基线叠加仍须另有明确采纳。
 

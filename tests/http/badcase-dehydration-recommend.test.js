@@ -2,6 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { PassThrough } = require('node:stream');
+const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
 const { createBadcaseWikiController } = require('../../build/server/api/badcase-wiki-controller');
 const { createWikiStore } = require('../../build/server/domain/runtime/badcase-capture/wiki-store');
 function setup(t, mode = 'valid') {
@@ -26,7 +27,7 @@ function setup(t, mode = 'valid') {
   const options = { ...scope, host: '127.0.0.1', port: 4313, csrfToken: 'synthetic-csrf', runDehydration: input => {
     opens++;
     return require('../../scripts/badcase-capture/wiki-page-runtime.cjs').runPageDehydration(input, { configFile }, {
-      createDispatcher: uri => { assert.equal(uri, 'http://127.0.0.1:17890'); return { destroy: async () => { closed++; } }; },
+      createDispatcher: uri => { assert.equal(uri, hostProxy.url); return { destroy: async () => { closed++; } }; },
       fetch: async (url, q) => {
         calls++; assert.equal(url, 'https://api.deepseek.com/chat/completions'); assert.equal(q.headers.authorization, 'Bearer ' + key); assert.equal(q.redirect, 'error');
         const b = JSON.parse(q.body); assert.equal(b.tools, undefined); assert.equal(b.model, 'deepseek-v4-flash'); assert.equal(b.temperature, 0);

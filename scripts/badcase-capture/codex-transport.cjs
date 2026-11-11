@@ -3,7 +3,7 @@
 // compare-sealed uses inspectAccess only on this host, before Docker staging.
 const fs = require('node:fs'), path = require('node:path'), zlib = require('node:zlib');
 const PROFILE = Object.freeze({ model: 'openai-codex/gpt-6.1-sol', api: 'openai-codex-responses', thinking: 'xhigh',
-  fast: false, transport: 'sse', endpoint: 'https://chatgpt.com/backend-api/codex/responses', proxy: 'http://127.0.0.1:17890' });
+  fast: false, transport: 'sse', endpoint: 'https://chatgpt.com/backend-api/codex/responses', proxy: require('./host-proxy.cjs').url });
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024, MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const fail = code => Object.assign(Error('evaluation_codex_' + code), { code: 'evaluation_codex_' + code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);

@@ -133,7 +133,7 @@ Session 读取限于本实例 `named-sessions` 中选择的普通 `.jsonl`，最
 
 Badcase 页在「脱水」步骤为尚无推荐的合资格用例显示「请求推荐」。一次点击只发一次模型请求（传输亦有一次预算），不执行工具、不自动冻结、不改组。按存储根目录和 caseId 的进程内占用拒绝并发请求（包括不同 controller/store 对象）；已保存推荐后的重复请求为 409。新页面推荐的解析失败仅允许携带当前 `retryOf` 明确再请求一次，成功或其他回退原因不可重新请求，冻结后任何推荐请求均拒绝。第二份推荐**追加**到 `dehydrations` 并绑定 `retryOf`，第一份 JSON 原文、请求、hash 原样保留，页面可展开此前推荐；确认、回放计数和分组读取最后一份记录，不覆盖旧推荐或既有决定。失败或响应未知时页面停写，须刷新核对，不自动重发；进程内占用不承诺跨进程或崩溃后的计费请求去重。
 
-应用启动装配默认 `runPageDehydration`，复用预分类的 `CAFF_BADCASE_WIKI_RUNTIME_CONFIG`／`badcaseWikiRuntimeConfig` 和 `credentialDir`，以同一只读 `readCaffDeepseekKey` 从本实例选择的 models.json 获取官方 DeepSeek 配置。key 只在宿主内存，已知值在发出和保存前替换，固定通过 `http://127.0.0.1:17890`，不直连回退、不刷新/写回/复制凭据；推荐不启动 Docker 或 SDK 工具。配置缺失或无效返回固定错误码，不回显路径、供应商错误正文或 key。自动化验证只使用合成配置和 fake 传输，不调用真实 DeepSeek。
+应用启动装配默认 `runPageDehydration`，复用预分类的 `CAFF_BADCASE_WIKI_RUNTIME_CONFIG`／`badcaseWikiRuntimeConfig` 和 `credentialDir`，以同一只读 `readCaffDeepseekKey` 从本实例选择的 models.json 获取官方 DeepSeek 配置。key 只在宿主内存，已知值在发出和保存前替换，固定通过 `http://127.0.0.1:10090`，不直连回退、不刷新/写回/复制凭据；推荐不启动 Docker 或 SDK 工具。配置缺失或无效返回固定错误码，不回显路径、供应商错误正文或 key。自动化验证只使用合成配置和 fake 传输，不调用真实 DeepSeek。
 
 `createDehydrationClient({ key, fetchImpl, maxRequests? })` 不发现/刷新/写入凭据、不构造 SDK 会话。固定使用与预分类相同的 `https://api.deepseek.com/chat/completions`、`deepseek-v4-flash`、temperature=0、max_tokens=32768、非流式 JSON 对象输出、110 秒超时，单条最多两次；请求不带工具。调用方显式提供该服务的 fetch/dispatcher，无直连兜底或重定向。返回只保存 content、finishReason、状态、耗时和 usage，不保存供应商信封/思考。响应上限 512 KiB，拒绝 key 回显。历史 B6 批次按单独批准只读取得 3100 `models.json` 的 deepseek provider，隔离副本已在 Goal 收尾删除；不是页面入口的生产读取授权。页面每次使用上述本实例运行时选择，不将 key 写入日志、证据或提交。
 
@@ -152,7 +152,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 原版不改任何上下文。受信操作方可提供已批准的全局候选，只允许替换一个 `global-harness-behavior-v1` 声明槽位（系统提示词或历史用户输入内），精确绑定原文/baseHash；多处/无法定位拒绝。其他系统/消息/工具定义不变。该纯数据能力不自动确认候选或启动对比实验。
 - 工具仅为名称、说明、参数 schema；拒绝额外字段/execute。`loadWikiRunTools` 固定校验 pi-coding-agent 及其嵌套 pi-ai 为 0.85.1，基础四工具使用 definition factories；拦截固定 SHA 的 caff-capabilities 注册只取上述三个字段，不挂执行器，不调用 facade。SHA、文件 hash、版本及定义 hash 随请求保存。
 - `createWikiRunClient` 直接调用嵌套 pi-ai 的 Codex 单次 `stream`，不创建 Agent/Session，不加载技能/当前房间，不接任何工具执行器。固定 `openai-codex/gpt-6.1-sol`、thinking xhigh、SSE、store=false、无 service tier、maxRetries=0；另有 fetch 一次预算。旧 SDK 内置目录没有该新模型 ID，使用最小原生 wire descriptor（直接发送用户批准的 ID，不回退其他模型）；不据该描述符推算价格，保存 token 用量但移除虚构 cost。实际序列化的请求体（无认证头）与完整 assistant 输出随结果保存。
-- 复用现有 host-only `codex-transport.cjs`：只读取明确批准的 `.pi-sandbox/auth.json` access/expires，不读取 refresh 字段用于认证、不刷新、不复制/回写凭据；只向固定 Codex endpoint 经 `http://127.0.0.1:17890` 发请求，无直连/重定向兜底。SDK 只见公开 inert identity，真实 access 在 host transport 内存替换。过期、认证、网络或供应商失败停止，不重试；错误证据只留固定码，不保存上游诊断正文。
+- 复用现有 host-only `codex-transport.cjs`：只读取明确批准的 `.pi-sandbox/auth.json` access/expires，不读取 refresh 字段用于认证、不刷新、不复制/回写凭据；只向固定 Codex endpoint 经 `http://127.0.0.1:10090` 发请求，无直连/重定向兜底。SDK 只见公开 inert identity，真实 access 在 host transport 内存替换。过期、认证、网络或供应商失败停止，不重试；错误证据只留固定码，不保存上游诊断正文。
 - 在网络调用**前**于 `<globalRoot>/run-replays/<id>.json` 原子 no-replace 占用。旧单次入口以请求 hash 为 id；正式重复尝试传入 `attempt:{planHash,executionId,iteration}`，id 绑定该计划/执行/题目/版本/迭代槽位，请求 hash 另存。相同槽位即使请求变化也不能再次发送。结果另写 `<id>.result.json`，0600、fsync、hash 校验、不可覆盖；128 MiB 上限，不截断。崩溃/写入失败保留 `reserved`（结果未知）占位，不能用重试自动再发。Wiki 旧快照、轨迹包、决定、分组和旧结果不改。此目录是同 OS 用户可信存储，不是防恶意路径替换沙箱。
 - **未配工具检查时保持旧路径**：`stop/toolUse` 的完整文本回复，或独立 `bash` 的 send-public 调用（受限字面 heredoc/引号语法，提取正文但绝不执行）标 `reached`，供回复断言判分，不代表通过；其他工具调用（即便附有解释文字或同时发消息）、空输出、未识别的发消息语法仍无效。配工具检查时按[双检查协议](wikiskill-scoring.md#run-级双检查与纯文本解析)看各自可见的内容，工具单检可直接得到 pass/fail，工具失败不调用裁判；工具成功不等于回复成功。解析不了记 `arguments_unparseable`，没有判到任一检查记 `no_check_reached`，均不算通过/失败。请求或裁判技术故障另记 `error`，未知保留 `reserved`；不进有效分母，不做前缀一致性校验或继续工具循环。
 - `projectWikiRunAccounting` 使用 `single-call-valid-output-v2` 规则，只读地将历史 `unreached` 投影为 `invalid`，移除摘要的旧 `countAsFailure`，不改原始请求/输出包、hash 或旧快照。`reached/pass/fail` 且没有被用户撤回、不是 `reportOnly` 的尝试 `eligibleForScoring=true`；原版工具检查 pass 和 fail 都属于有效输出，invalid 不属于。同 caseId/traceHash/decisionHash 的原版有效输出决定 `baselineStatus`（`valid_output|no_valid_output|pending|not_run`）；只有原版有有效输出且未撤回时，`caseEligibleForGateAndScreen=true`。候选输出、别的题/轨迹/决定、历史被撤回的输出不能替代原版证据。这个资格只是必要条件，不表示已确认复现、已分组或评分通过；M4 确认分组会重新核对这项资格；正式 run 选题/执行/评分已接入独立实验计划，仍须满足其模式标签、冻结分组、可判检查（AI 问题限 reply）、门槛 run≤trace 等门禁，不能直接沿用历史 `wikiRoundStage` 代替新确认记录。
@@ -226,7 +226,7 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - 不做训练组初筛（含 run）、不重新校准或新增裁判/JEV、不做轨迹嵌文件的统一证据面改造；不把旧字面判分当成新版证据。测试拒绝 run，门槛分 trace/run 报告但不改公式。
 - 不凭预分类、类别提议或普通草稿审核猜测关联；只有来源类别限定草稿经用户通过，才原子转正并关联。手动关联是次要入口，不能撤销或换目标。已确认的「不归入任何模式」（包括旧 null 标签）不能改成待归纳类别，不提供解锁/重选入口；门槛组防误伤对照题须先完成独立原版预检及不可改确认，后端、新评分计划和页面确认已接通。按本 Goal D5，没有已确认的其他模式门槛对照仍建不了新正式计划；部署不自动产生对照，不能把其他模式复现题当防误伤题。下一 Goal 的门槛/验证组改规则不在本次实施。
 - **原版预检**：断言冻结后由受信命令按确认额度执行，run默认5次／trace默认3次，可配置次数和阈值。后端「已复现」及新评分计划准入只读独立预检，失败比例严格超过阈值才复现；不取正式旧成绩或 raw run 回复替代。冻结断言、页面刷新及离线回放检查缓存均不会自动启动模型；页面已经显示独立预检和可作对照状态，但没有启动预检或回放按钮。
-- 原生 trace mailbox 每次执行默认32次模型调用；受信配置可显式给1–64的整数上限，worker/observer/宿主relay一致执行，超64拒绝；详见[回放契约](badcase-capture-replay.md)。提高上限不是额度批准。依赖缓存未命中构建需要宿主17890代理可用，不能算离线完成；无代理时等待用户恢复，不加直连回退、不自行起代理或改捕获依赖文件。
+- 原生 trace mailbox 每次执行默认32次模型调用；受信配置可显式给1–64的整数上限，worker/observer/宿主relay一致执行，超64拒绝；详见[回放契约](badcase-capture-replay.md)。提高上限不是额度批准。依赖缓存未命中构建需要宿主10090代理可用，不能算离线完成；无代理时等待用户恢复，不加直连回退、不自行起代理或改捕获依赖文件。
 - 只验证隔离副本。生产轨迹包导入、删除／分组生效、推送、合并、部署、真实上线复测都须另获批准，见[发布审批](wikiskill-release.md)。用户最终接受与规划者代码评审是不同关卡，不能互相替代。
 
 ## 失败与验证
