@@ -40,6 +40,22 @@ test('rejected complete gate still records every target, but never validates or 
  const h=fixture(t),f=execution(h,{candidatePasses:0}),r=await f.run();assert.equal(r.gateDecision.outcome,'rejected');assert.equal(r.completed,true);
  assert.equal(f.calls.length,2);assert.equal(r.adoptionEligible,false);assert.deepEqual(r.validation,{status:'not-planned'});
 });
+test('v4 human Fisher summary labels the threshold without claiming every p value is below it',async t=>{
+ const h=fixture(t),r=await execution(h,{candidatePasses:0}).run();
+ for(const pValue of [0.63,0.01,null]){
+  const report=batch().formatBatch({...r,gateDecision:{...r.gateDecision,repair:{...r.gateDecision.repair,pValue}}});
+  assert.ok(report.includes(`p=${pValue??'N/A'}（阈值 0.05）`));assert.doesNotMatch(report,/< 0\.05/);
+ }
+});
+test('v4 ignored-case labels use wikiDisplayCases over the full source snapshot, never the selected-array index',async t=>{
+ const h=fixture(t),id=h.marked[7].id,old=h.records.list().find(r=>r.reservation.plan.caseId===id),claim=h.records.reserve(old.reservation.plan);
+ h.records.finish(claim.id,{status:'completed',reason:null,runs:old.result.runs.map(r=>({...r,status:'pass'}))});
+ h.config.cases=h.config.cases.filter(c=>c.sourceCaseId!==id);h.config.experiment.definition.cases=h.config.experiment.definition.cases.filter(c=>c.caseId!==id);
+ const r=await execution(h).run(),report=batch().formatBatch(r,h.store.read().cases);
+ assert.match(report,/未参与判定：#24\n/);assert.ok(!report.includes(id));assert.doesNotMatch(report,/未参与判定：#2\n/);
+ // A standalone caller without the full snapshot must not invent a number.
+ const unavailable=batch().formatBatch(r);assert.match(unavailable,/未参与判定：编号不可用/);assert.ok(!unavailable.includes(id));
+});
 test('scene and no-scene cases route to their unchanged respective kernels and report valid/failure counts separately',async t=>{
  const h=fixture(t);h.makeRun24();const f=execution(h);let traces=0,runs=0;
  f.options.runProductionComparison=async(c,o)=>{traces++;return f.compare(c,o);};

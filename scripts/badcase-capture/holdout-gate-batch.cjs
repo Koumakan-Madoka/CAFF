@@ -76,13 +76,16 @@ async function runHoldoutGateBatch(config,plan,options={}){
   modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
  emit({event:'batch_summary',...result});return result;
 }
-function formatHoldoutGateBatch(result){
+// Numbering is a display-only projection of the FULL source snapshot, not the
+// selected/ignored subset. Keep it outside immutable plans/results and hashes.
+function formatHoldoutGateBatch(result,sourceCases=[]){
+ const numbers=new Map(require(base+'wiki-suite').wikiDisplayCases(sourceCases).map(c=>[c.id,c.displayNumber]));
  const d=result.gateDecision,lines=['WikiSkill 门槛（本模式留出题）','计划 '+result.planHash,
   `门槛判定：${{accepted:'通过',rejected:'未通过',indeterminate:'无法判定'}[d.outcome]}`,
-  `合计：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue??'N/A'} < 0.05`];
+  `合计：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue??'N/A'}（阈值 0.05）`];
  for(const warning of d.warnings)lines.push(warning);
  for(const level of ['trace','run']){const t=d.byLevel[level];lines.push(`${level} 级：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；失败 ${t.original.failed}/${t.candidate.failed}，无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);}
- if(d.ignoredCaseIds.length)lines.push('未参与判定：'+d.ignoredCaseIds.join(', '));
+ if(d.ignoredCaseIds.length)lines.push('未参与判定：'+d.ignoredCaseIds.map(id=>numbers.has(id)?'#'+numbers.get(id):'编号不可用').join(', '));
  lines.push('验证尚未规划；本门槛结果不可提交采纳。','已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（存在未知/不完整记录）':''));
  return lines.join('\n')+'\n';
 }

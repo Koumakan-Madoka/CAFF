@@ -42,6 +42,16 @@ test('v4 publication failure preserves the exclusive operator journal and cannot
  await assert.rejects(require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(args,f.options),{code:'EEXIST'});assert.deepEqual(fs.readFileSync(output),bytes);
  const summary=events.find(e=>e.event==='batch_summary');assert.equal(comparisons(h).save(summary).gateDecision.outcome,'accepted');
 });
+test('v4 CLI formats ignored holdouts with their public numbers without changing retained result bytes',async t=>{
+ const h=fixture(t),id=h.marked[7].id,old=h.records.list().find(r=>r.reservation.plan.caseId===id),claim=h.records.reserve(old.reservation.plan);
+ h.records.finish(claim.id,{status:'completed',reason:null,runs:old.result.runs.map(r=>({...r,status:'pass'}))});
+ h.config.cases=h.config.cases.filter(c=>c.sourceCaseId!==id);h.config.experiment.definition.cases=h.config.experiment.definition.cases.filter(c=>c.caseId!==id);
+ const f=execution(h),config=path.join(h.root,'config.json'),output=path.join(h.root,'result.jsonl');fs.writeFileSync(config,JSON.stringify(h.config));
+ const write=process.stdout.write;let text='';process.stdout.write=c=>{text+=c;return true;};
+ try{await require('../../scripts/badcase-capture/compare-wiki-batch.cjs').main(['--config',config,'--run','--confirmed','--expected-plan',f.pinned.summary.planHash,'--output',output],f.options);}finally{process.stdout.write=write;}
+ assert.match(text,/未参与判定：#24\n/);assert.ok(!text.includes(id));assert.match(text,/（阈值 0\.05）/);
+ const saved=comparisons(h).read()[0];assert.deepEqual(saved.gateDecision.ignoredCaseIds,[id]);assert.ok(!JSON.stringify(saved).includes('displayNumber'));
+});
 test('v4 CLI saves full gate and durable gate-only progress with fake execution, without enabling validation or adoption',async t=>{
  const h=fixture(t),f=execution(h),config=path.join(h.root,'config.json'),output=path.join(h.root,'result.jsonl');fs.writeFileSync(config,JSON.stringify(h.config));
  const write=process.stdout.write;let text='';process.stdout.write=c=>{text+=c;return true;};
