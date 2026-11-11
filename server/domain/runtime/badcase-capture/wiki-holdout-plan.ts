@@ -4,10 +4,11 @@
 // and must reconstruct current evidence before use. This API alone grants no
 // execution, validation-coverage or baseline-adoption permission.
 import { planWikiHoldoutGate, validateWikiHoldoutGateSelection, decideWikiHoldoutGate, type WikiHoldoutGateSelection } from './wiki-holdout-gate';
-import { wikiExperimentRunSceneHash, type WikiExperimentCase, type WikiExperimentCaseResult, type WikiExperimentDefinition, type WikiExperimentExecution } from './wiki-experiment-plan';
-import { bindWikiJudge, type WikiJudgeBinding, type WikiJudgeConfiguration } from './wiki-scoring-v2';
-import { assertWikiEligibleConfiguration, readWikiEligibleJudges } from './wiki-judge-catalog';
-import { validateWikiRubric, wikiExactKeys, wikiRubricSourceHash, wikiRubricText, wikiValueHash, wikiRubricFail as fail } from './wiki-rubric';
+import { type WikiExperimentCase, type WikiExperimentCaseResult, type WikiExperimentDefinition, type WikiExperimentExecution } from './wiki-experiment-plan';
+import { type WikiJudgeBinding, type WikiJudgeConfiguration } from './wiki-scoring-v2';
+import { readWikiEligibleJudges } from './wiki-judge-catalog';
+import { bindWikiHoldoutCase, validateWikiHoldoutCaseBinding } from './wiki-holdout-case';
+import { wikiExactKeys, wikiRubricText, wikiValueHash, wikiRubricFail as fail } from './wiki-rubric';
 import { containsSecretSentinel } from './secrets';
 export const WIKI_HOLDOUT_GATE_POLICY = Object.freeze({ kind: 'wikiskill-holdout-gate-v1', alpha: .05, maxExtraAttemptsPerCase: 5 });
 export interface WikiHoldoutExperimentDefinition {
@@ -45,14 +46,6 @@ function checkCommon(value: Pick<WikiHoldoutExperimentDefinition, 'variants' | '
     && !/^(?:key|apiKey|authorization|password|credential|secret)$/i.test(k)
     && (v === null || ['string', 'boolean'].includes(typeof v) || typeof v === 'number' && Number.isFinite(v)));
 }
-function checkJudge(judge: WikiJudgeBinding | null, rubricHash: string, codeOnlyAllowed: boolean) {
-  if (judge === null) { ensure(codeOnlyAllowed); return; }
-  wikiExactKeys(judge, ['kind', 'backend', 'model', 'modelHash', 'promptHash', 'rubricHash', 'passes']);
-  ensure(judge.kind === 'wiki-judge-binding-v1' && ['deepseek', 'jev'].includes(judge.backend) && judge.passes === 3
-    && judge.rubricHash === rubricHash && digest(judge.modelHash) && digest(judge.promptHash));
-  wikiRubricText(judge.model, 256);
-  ensure(judge.backend !== 'deepseek' || judge.model === 'deepseek/deepseek-v4-flash');
-}
 export function validateWikiHoldoutExperimentPlan(plan: WikiHoldoutExperimentPlan): WikiHoldoutExperimentPlan {
   wikiExactKeys(plan, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'gate', 'cases', 'planHash']);
   ensure(plan.kind === 'wiki-experiment-plan-v4'); checkCommon(plan);
@@ -65,12 +58,7 @@ export function validateWikiHoldoutExperimentPlan(plan: WikiHoldoutExperimentPla
     const row = gate.cases.find(r => r.caseId === gate.caseIds[n]);
     ensure(row?.eligible && c.caseId === row.caseId && c.stage === 'gate' && c.category === 'reproduction' && c.targetReproduction === true
       && c.originalSplit === row.originalSplit && c.rubricHash === row.precheck!.rubricHash);
-    for (const key of ['sceneHash', 'inputHash', 'hardAssertionsHash', 'rubricHash'] as const) ensure(digest(c[key]));
-    ensure(c.execution && c.execution.level === row.level);
-    if (c.execution.level === 'trace') wikiExactKeys(c.execution, ['level']);
-    else ensure(c.sceneHash === wikiExperimentRunSceneHash(c.execution));
-    if (Object.hasOwn(c, 'traceToolCheck')) ensure(c.execution.level === 'trace' && c.traceToolCheck === 'structured-v1');
-    checkJudge(c.judge, c.rubricHash, c.execution.level === 'run' || c.traceToolCheck === 'structured-v1');
+    validateWikiHoldoutCaseBinding(c, { level: row.level, precheck: row.precheck! });
   }
   const { planHash, ...payload } = plan; ensure(digest(planHash) && wikiValueHash(payload) === planHash);
   return structuredClone(plan);
@@ -93,22 +81,9 @@ export function createWikiHoldoutExperimentPlan(definition: WikiHoldoutExperimen
   const cases = gate.caseIds.map(caseId => {
     const row = gate.cases.find(c => c.caseId === caseId)!, choice = definition.cases.find(c => c.caseId === caseId)!;
     const source = catalog.find(c => c.id === caseId); ensure(source);
-    wikiExactKeys(source, ['id', 'sceneHash', 'task', 'actual', 'expected', 'hardAssertions', 'rubric', ...(source.execution === undefined ? [] : ['execution'])]);
-    ensure(digest(source.sceneHash) && (source.execution?.level ?? 'trace') === row.level);
-    if (source.execution !== undefined) ensure(source.sceneHash === wikiExperimentRunSceneHash(source.execution));
-    wikiRubricText(source.task, 32768); wikiRubricText(source.expected, 8192); safeJson(source.hardAssertions, 32768);
-    const rubric = validateWikiRubric(source.rubric, true);
-    ensure(rubric.kind === 'wiki-rubric-v2' && rubric.caseId === source.id && rubric.sourceHash === wikiRubricSourceHash(source.actual, source.expected)
-      && rubric.hash === row.precheck!.rubricHash);
-    if (row.level === 'run' && rubric.questions.some(q => q.evidence !== 'reply')) throw fail('wiki_rubric_run_evidence_invalid');
-    const codeOnly = !!rubric.toolCheck && !rubric.questions.length;
-    if (codeOnly) ensure(choice.judge == null);
-    const judge = codeOnly ? null : bindWikiJudge(choice.judge!, rubric);
-    if (!codeOnly) assertWikiEligibleConfiguration(choice.judge!, eligibleJudges ??= readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG));
     return { caseId, stage: 'gate' as const, originalSplit: row.originalSplit, category: 'reproduction' as const, targetReproduction: true as const,
-      sceneHash: source.sceneHash, inputHash: wikiValueHash({ task: source.task, expected: source.expected }), hardAssertionsHash: wikiValueHash(source.hardAssertions),
-      rubricHash: rubric.hash, judge, execution: source.execution ? structuredClone(source.execution) : { level: 'trace' as const },
-      ...(!source.execution && rubric.toolCheck ? { traceToolCheck: 'structured-v1' as const } : {}) };
+      ...bindWikiHoldoutCase(source, { level: row.level, precheck: row.precheck! }, choice.judge,
+        () => eligibleJudges ??= readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG)) };
   });
   const payload = { kind: 'wiki-experiment-plan-v4' as const, variants: structuredClone(definition.variants), runner: structuredClone(definition.runner),
     repeats: 10 as const, executionPolicy: 'alternating-valid-v1' as const, decision: { ...WIKI_HOLDOUT_GATE_POLICY }, gate, cases };
