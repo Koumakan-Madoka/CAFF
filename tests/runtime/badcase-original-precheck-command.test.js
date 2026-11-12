@@ -7,8 +7,8 @@ const cli = () => require('../../scripts/badcase-capture/run-wiki-original-prech
 const shapes = require('../fixtures/wikiskill-run-tool-call-command-shapes.json').items;
 function output(n = 22, step = 30) { return { role: 'assistant', stopReason: 'toolUse', usage: { input: 10, output: 2, cacheRead: 1, cacheWrite: 0, totalTokens: 13 },
   content: shapes.find(x => x.case === n && x.step === step).toolCalls.map((c, i) => ({ type: 'toolCall', id: 'synthetic-' + i, ...c })) }; }
-function setup(t, { scene = false, reply = false, repeats = 3, maxRequests = 50, outcomes } = {}) {
-  const h = require('../helpers/wiki-scene-run.cjs')(t, { scene, reply });
+function setup(t, { scene = false, reply = false, tool = true, repeats = 3, maxRequests = 50, outcomes } = {}) {
+  const h = require('../helpers/wiki-scene-run.cjs')(t, { scene, reply, tool });
   const replay = { id: 'synthetic-replay', sourceCaseId: h.c.id, checkpointHash: 'c'.repeat(64), request: { association: { checkpointId: 'synthetic-checkpoint' } } };
   const store = scene ? { ...h.store, read() { return { ...h.store.read(), replayCases: [replay] }; } } : h.store;
   const cache = require(base + 'wiki-pipeline-prechecks').createWikiPipelinePrecheckStore(h.scope);
@@ -99,6 +99,46 @@ test('reply-judge calls share the worker budget, use production majority scoring
     assert.ok(h.judgeBodies.every(q => JSON.parse(q.messages[1].content).publicReply === 'Clear result.'));
     assert.equal(fs.readFileSync(h.outputFile, 'utf8').includes('synthetic-judge-key-not-real'), false);
   }
+});
+for (const scene of [false, true]) test(`native SDK ${scene ? 'report' : 'run'} packets hash the exact retained JSON, including omitted optional wire fields`, async t => {
+  const h = setup(t, { scene, reply: true, tool: false, repeats: 2 }), p = await h.plan();
+  const before = JSON.stringify(h.store.read()); let sends = 0, closes = 0;
+  const r = await h.run(p, { async createRunClient(options) {
+    // Real pinned SDK serializer/parser, inert transport only. No auth file is
+    // opened and no provider request is sent. Unlike buildWikiRunWireRequest,
+    // onPayload retains own undefined properties such as prompt_cache_key.
+    const client = await require('../../scripts/badcase-capture/wiki-run-client.cjs').createWikiRunClient(options, {
+      createTransport: () => ({ async close() { closes++; }, async fetch() {
+        sends++;
+        const item = { type: 'message', id: 'synthetic', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Clear result.', annotations: [] }] };
+        const events = [{ type: 'response.output_item.done', output_index: 0, item }, { type: 'response.completed', response: { id: 'synthetic', status: 'completed',
+          usage: { input_tokens: 11, output_tokens: 2, total_tokens: 13, input_tokens_details: { cached_tokens: 1 } } } }];
+        return new Response(events.map(e => 'data: ' + JSON.stringify(e) + '\n\n').join(''));
+      } }),
+    });
+    return { close: () => client.close(), async complete(q) {
+      const result = await client.complete(q);
+      assert.equal(Object.hasOwn(result.wireRequest, 'prompt_cache_key'), true);
+      assert.equal(result.wireRequest.prompt_cache_key, undefined);
+      assert.throws(() => require(base + 'wiki-rubric').wikiValueHash(result.wireRequest), /wiki_rubric_invalid/);
+      return result;
+    } };
+  } });
+  assert.equal(r.status, 'completed'); assert.equal(r.summary.pass, 2); assert.equal(r.summary.errors, 0);
+  assert.equal(sends, 2); assert.equal(closes, 2); assert.equal(h.judgeBodies.length, 6);
+  assert.equal(r.budget.workerRequests, 2); assert.equal(r.budget.judgeRequests, 6); assert.equal(r.budget.knownUsage.totalTokens, 56);
+  const saved = require(base + 'wiki-original-precheck-store').createWikiOriginalPrecheckStore(h.scope).read(r.id);
+  const events = fs.readFileSync(h.outputFile, 'utf8').trim().split('\n').map(JSON.parse), artifacts = events.filter(e => e.event === 'attempt_result');
+  assert.equal(artifacts.length, 2); assert.equal(events.at(-1).event, 'precheck_finished');
+  for (const [i, a] of artifacts.entries()) {
+    assert.equal(Object.hasOwn(a.artifact.packet.wireRequest, 'prompt_cache_key'), false);
+    assert.equal(a.artifactHash, require(base + 'wiki-rubric').wikiValueHash(a.artifact));
+    assert.equal(saved.result.runs[i].artifactHash, a.artifactHash);
+    assert.equal(a.artifact.scoring.assessment.status, 'pass');
+    assert.equal(a.artifact.scoring.assessment.votes.length, 3);
+  }
+  assert.equal(JSON.stringify(h.store.read()), before);
+  assert.equal(fs.existsSync(path.join(h.scope.globalRoot, 'comparisons')), false);
 });
 test('request cap stops before a second worker; an exact full-sample cap can still finish', async t => {
   const h = setup(t, { maxRequests: 1 }), p = await h.plan(), r = await h.run(p);
