@@ -8,6 +8,12 @@ const base = '../../build/server/domain/runtime/badcase-capture/';
 const { createWikiStore } = require(base + 'wiki-store');
 const { collectWikiCandidateFiles } = require(base + 'wiki-candidate-files');
 const { getGlobalPromptTarget } = require('../../build/lib/agent-prompt-targets');
+// These legacy-layout tests explicitly select their own synthetic destination.
+// An inherited instance default is not their input; the external-dir test below
+// installs its own scoped value when testing configured destination behavior.
+const inheritedWikiDataDir = process.env.CAFF_WIKISKILL_DATA_DIR;
+delete process.env.CAFF_WIKISKILL_DATA_DIR;
+test.after(() => { if (inheritedWikiDataDir !== undefined) process.env.CAFF_WIKISKILL_DATA_DIR = inheritedWikiDataDir; });
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 function tree(root) {
   if (!fs.existsSync(root)) return [];
