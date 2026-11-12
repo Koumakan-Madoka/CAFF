@@ -7,7 +7,7 @@ const fs = require('node:fs'), os = require('node:os'), vm = require('node:vm');
 const key = 'fake-unit-test-model-key-123456789', model = 'opencode-go/deepseek-v4.1-flash';
 // Execute the actual worker main with a mapped disposable filesystem and fake
 // SDK/callback. No container assertion bypass or network is added to production.
-async function workerReceipt(t, { nativeMaxRequests, files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, goalEvidence, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
+async function workerReceipt(t, { events = [], nativeMaxRequests, files = [], fileBytes = {}, fileModes = {}, directoryWorkspace = false, repositorySnapshot, published = '', withCallback = true, goalEvidence, fileEvidencePaths, afterTurn = () => {}, profile = model, prompt = 'Inspect the files.', recordedModelConfig, sessionText = null, bindings, projectResources, resourceLoaderPatch = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-worker-regression-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = { kind: 'prepared-caff-turn-v1', prompt, files: files.map(p => ({ path: p,
@@ -42,6 +42,7 @@ async function workerReceipt(t, { nativeMaxRequests, files = [], fileBytes = {},
       invocationPrompt = submitted;
       const message = { role: 'assistant', content: [{ type: 'text', text: 'INTERNAL ONLY: stable file; deleted.txt 不存在' }], stopReason: 'stop' };
       afterTurn(path.join(root, 'restored'));
+      for (const event of events) subscriber(event);
       session.messages.push(message); observer.calls.push({ model: profile, durationMs: 1, success: true });
       subscriber({ type: 'message_end', message });
     } };
@@ -84,6 +85,25 @@ async function workerReceipt(t, { nativeMaxRequests, files = [], fileBytes = {},
   return { receipt, input, startConfig, callbackLifetimeMs, invocationPrompt, modeRestorations, observerOptions, mailboxOptions,
     workingSessionText: fs.existsSync(path.join(root, 'session.jsonl')) ? fs.readFileSync(path.join(root, 'session.jsonl'), 'utf8') : null, settings: fs.existsSync(path.join(root, 'agent/settings.json')) ? JSON.parse(fs.readFileSync(path.join(root, 'agent/settings.json'))) : null };
 }
+test('actual worker preserves original native goal_action args including locally rejected calls without clipping', async t => {
+  const original = { action: 'pause', reason: '  ' + '😀'.repeat(5000) + '  ' };
+  const events = [
+    { type: 'tool_execution_start', toolCallId: 'long', toolName: 'goal_action', args: original },
+    { type: 'tool_execution_end', toolCallId: 'long', toolName: 'goal_action', isError: true },
+    { type: 'tool_execution_start', toolCallId: 'retry', toolName: 'goal_action', args: { action: 'pause', reason: 'short retry' } },
+    { type: 'tool_execution_end', toolCallId: 'retry', toolName: 'goal_action', isError: false },
+  ];
+  const { receipt } = await workerReceipt(t, { events });
+  assert.deepEqual(receipt.toolCalls, [
+    { name: 'goal_action', isError: true, args: original },
+    { name: 'goal_action', isError: false, args: { action: 'pause', reason: 'short retry' } },
+  ]);
+  const check = { method: 'code', target: { kind: 'native', name: 'goal_action' }, mode: 'on-call', rules: [{ parameter: 'reason', kind: 'max-chars', max: 1000 }] };
+  const { checkWikiTraceTools } = require('../../build/server/domain/runtime/badcase-capture/wiki-trace-tool-checks');
+  assert.deepEqual(checkWikiTraceTools(receipt, check), { status: 'fail', reason: 'tool_rule_failed' });
+  assert.deepEqual(checkWikiTraceTools({ toolCalls: [receipt.toolCalls[1]] }, check), { status: 'pass', reason: null });
+});
+
 test('actual worker passes only captured SDK origins and rejects missing/extra/renamed discoveries for both transports', async t => {
   const { prepareCapturedProjectResources, projectResourcesSummary } = require('../../build/server/domain/runtime/badcase-capture/project-resources');
   const sdkSkills = [], promptSkills = [], projectSkills = [];

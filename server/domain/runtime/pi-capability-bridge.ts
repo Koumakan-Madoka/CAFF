@@ -384,6 +384,28 @@ export function createConversationCapabilityDefinitions(handlers: unknown = {}):
   ];
 }
 
+export function createGoalActionCapabilityDefinitions(execute: PiCapabilityHandler): InternalPiCapabilityDefinition[] {
+  return [{
+    facade: 'goal_action',
+    kind: 'internal',
+    validateArguments(input: unknown) {
+      rejectForbiddenProxyArguments(input);
+      if (Object.keys(input).some(key => key !== 'action' && key !== 'reason')
+        || typeof input.action !== 'string'
+        || !['pause', 'resume', 'complete', 'clear', 'accept', 'reject'].includes(input.action)) {
+        throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'goal_action accepts action=pause|resume|complete|clear|accept|reject and reason only');
+      }
+      return { action: input.action, reason: normalizeRequiredText(input.reason, 'reason', 1000) };
+    },
+    execute,
+    projectResult(raw: unknown) {
+      if (!isPlainObject(raw) || raw.ok !== true) throw new Error('Invalid Goal action result');
+      // Do not expose the conversation's unrelated metadata through a facade.
+      return { ok: true, goal: raw.goal, proposal: raw.proposal, ...(raw.outcome ? { outcome: raw.outcome } : {}) };
+    },
+  }];
+}
+
 export function createRoomDirectoryCapabilityDefinitions(execute: PiCapabilityHandler): InternalPiCapabilityDefinition[] {
   return [{
     facade: 'list_rooms',
@@ -671,7 +693,7 @@ function containsUnsafeProjection(
   return false;
 }
 
-function safeProjectResult(definition: PiCapabilityDefinition, rawResult: unknown): UnknownRecord {
+export function safeProjectResult(definition: PiCapabilityDefinition, rawResult: unknown): UnknownRecord {
   let projected: unknown;
   try {
     projected = definition.projectResult(rawResult);

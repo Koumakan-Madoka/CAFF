@@ -29,6 +29,8 @@ export function checkWikiTraceTools(receipt: any, configured?: WikiToolCheck | n
   const check = validateWikiToolCheck(configured);
   let calls: WikiToolObservation[];
   if (check.target.kind === 'caff-chat') {
+    // goal_action must be native: local validation failures never reach HTTP.
+    // A callback-only check would silently miss those rejected attempts.
     if (!Object.hasOwn(endpoints, check.target.name) || receipt?.goalEvidence === undefined) return unavailable();
     // A present but corrupt ledger is an integrity error, never a guessed result
     // or a fallback to command text. The existing validator binds every record

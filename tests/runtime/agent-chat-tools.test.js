@@ -409,7 +409,26 @@ test('search-messages forwards speaker filters without requiring a query', async
   });
 });
 
-test('suggest-goal forwards a pending goal proposal payload', async (t) => {
+for (const action of ['pause', 'resume', 'complete', 'clear', 'accept', 'reject']) {
+  test(`suggest-goal retires ${action} before HTTP or stdin parsing`, async (t) => {
+    let requests = 0;
+    t.mock.method(global, 'fetch', async () => { requests++; return { ok: true, text: async () => '{}' }; });
+    const config = { apiUrl: 'http://127.0.0.1:39999', invocationId: 'test', callbackToken: 'synthetic' };
+    for (const flags of [{ action }, { status: action.toUpperCase() }, { action: ` ${action} `, 'content-stdin': true }]) {
+      const stream = new PassThrough();
+      stream.end('not Goal JSON');
+      await assert.rejects(suggestGoal(config, { ...flags, reason: 'short' }, { stream }), /removed.*goal_action/s);
+      assert.equal(stream.readableLength, 'not Goal JSON'.length, 'retired actions do not read stdin');
+    }
+    assert.equal(requests, 0);
+  });
+}
+
+test('suggest-goal missing action advertises set/revise and structured goal_action', async () => {
+  await assert.rejects(suggestGoal({}, {}), /--action set\|revise.*goal_action/s);
+});
+
+test('suggest-goal preserves revise objective and reason forwarding', async (t) => {
   let requestUrl = '';
   let requestOptions = null;
 
@@ -420,7 +439,7 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
     return {
       ok: true,
       async text() {
-        return JSON.stringify({ ok: true, proposal: { action: 'complete' } });
+        return JSON.stringify({ ok: true, proposal: { action: 'revise' } });
       },
     };
   });
@@ -432,8 +451,9 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
       callbackToken: 'token-goal-proposal',
     },
     {
-      action: 'complete',
-      reason: 'All checks passed',
+      action: 'revise',
+      objective: 'A revised objective',
+      reason: 'Reconfirm scope',
     }
   );
 
@@ -442,12 +462,13 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
   assert.deepEqual(JSON.parse(String(requestOptions.body)), {
     invocationId: 'inv-goal-proposal',
     callbackToken: 'token-goal-proposal',
-    action: 'complete',
-    reason: 'All checks passed',
+    action: 'revise',
+    objective: 'A revised objective',
+    reason: 'Reconfirm scope',
   });
 });
 
-test('suggest-goal forwards a structured Goal proposal from stdin', async (t) => {
+for (const action of ['set', 'revise']) test(`suggest-goal ${action} forwards a structured Goal proposal from stdin`, async (t) => {
   let requestUrl = '';
   let requestOptions = null;
   const goal = {
@@ -463,12 +484,12 @@ test('suggest-goal forwards a structured Goal proposal from stdin', async (t) =>
   t.mock.method(global, 'fetch', async (url, options) => {
     requestUrl = String(url);
     requestOptions = options;
-    return { ok: true, async text() { return JSON.stringify({ ok: true, proposal: { action: 'set' } }); } };
+    return { ok: true, async text() { return JSON.stringify({ ok: true, proposal: { action } }); } };
   });
 
   await suggestGoal(
     { apiUrl: 'http://127.0.0.1:3100', invocationId: 'inv-goal-set', callbackToken: 'token-goal-set' },
-    { action: 'set', 'content-stdin': true },
+    { action, 'content-stdin': true },
     { stream }
   );
 
@@ -476,7 +497,7 @@ test('suggest-goal forwards a structured Goal proposal from stdin', async (t) =>
   assert.deepEqual(JSON.parse(String(requestOptions.body)), {
     invocationId: 'inv-goal-set',
     callbackToken: 'token-goal-set',
-    action: 'set',
+    action,
     goal,
   });
 });

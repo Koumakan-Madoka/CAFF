@@ -100,7 +100,31 @@ test('default controls require every planned attempt to pass, not merely all val
   for (const tail of ['fail', 'invalid', 'error']) assert.equal(summary(plan, ['pass', 'pass', tail]).controlEligible, false);
   assert.equal(summary(plan, ['pass'], 'stopped').controlEligible, false);
   assert.equal(summary(plan, ['fail'], 'failed').reproduced, false);
-  for (const split of [null, 'train', 'test']) { h.source.split = split; assert.equal(summary(h.plan(), ['pass', 'pass', 'pass']).controlEligible, false); }
+  h.source.split = 'test'; assert.equal(summary(h.plan(), ['pass', 'pass', 'pass']).controlEligible, true);
+  for (const split of [null, 'train']) { h.source.split = split; assert.equal(summary(h.plan(), ['pass', 'pass', 'pass']).controlEligible, false); }
+});
+test('historical test-split summaries stay readable byte-for-byte while current control eligibility expands', t => {
+  const h = fixture(t); h.source.split = 'test';
+  const store = storage().createWikiOriginalPrecheckStore(h.scope), plan = h.plan(), reservation = store.reserve(plan);
+  store.finish(reservation.id, { status: 'completed', reason: null, runs: rows(['pass', 'pass', 'pass']) });
+  const file = path.join(h.scope.globalRoot, 'original-prechecks', reservation.id + '.result.json');
+  const envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+  envelope.result.summary.controlEligible = false; // Exact pre-change summary; old test cases could not be controls.
+  envelope.hash = require(base + 'wiki-rubric').wikiValueHash(envelope.result);
+  fs.writeFileSync(file, JSON.stringify(envelope) + '\n'); const bytes = fs.readFileSync(file);
+  assert.equal(store.read(reservation.id).result.summary.controlEligible, false);
+  const projected = require(base + 'wiki-original-precheck-projection').projectWikiOriginalPrechecks(h.state, store.list(), h.input.replayChecks)[0];
+  assert.equal(projected.controlEligible, true); assert.equal(projected.current.summary.controlEligible, false, 'history is not rewritten');
+  assert.deepEqual(fs.readFileSync(file), bytes);
+  envelope.result.summary.pass--; envelope.hash = require(base + 'wiki-rubric').wikiValueHash(envelope.result);
+  fs.writeFileSync(file, JSON.stringify(envelope));
+  assert.throws(() => store.read(reservation.id), /wiki_original_precheck_record_invalid/);
+});
+test('legacy source exclusions remain unchanged for #4/#10/#14 even with a test split', t => {
+  for (const id of ['text-ea8201f3c1ddf0fa73043f88d2ac6e10eb2d3529ed3140e0a2261a63503cc40b', 'text-26793884ceebb064ff09ebd41f4ce3b88771af2f9a8c0838ea41f52f71f4cb41', 'text-1c6e58c2f58ac57383a1910cd01dd96b4b6c2989078d6963b83284a4a8abaa47']) {
+    const h = fixture(t); h.source.id = id; h.source.split = 'test'; h.input.caseId = id;
+    assert.throws(() => h.plan(), /wiki_original_precheck_invalid/);
+  }
 });
 test('stopped, partial, unknown-usage or report-only runs cannot qualify as reproduction or controls', t => {
   const h = fixture(t), plan = h.plan();

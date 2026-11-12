@@ -5,6 +5,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createChatAppStore } from '../../../../lib/chat-app-store';
 import { createAgentToolBridge } from '../agent-tool-bridge';
+import { createGoalActionCapabilityDefinitions, safeProjectResult } from '../pi-capability-bridge';
+import { createHttpError } from '../../../http/http-errors';
 import { applySessionGoalAction } from '../../conversation/session-goal';
 import { buildErrorJsonPayload } from '../../../http/response';
 import { containsSecretSentinel } from './secrets';
@@ -52,6 +54,18 @@ export function createEvaluationGoalStore(options: any) {
       conversationId: seed.conversationId, turnId: seed.turnId, agentId: seed.agent.id, agentName: seed.agent.name,
       userMessageId: seed.userMessage.id, assistantMessageId: seed.assistantMessageId,
       conversationAgents: store.getConversation(seed.conversationId)!.agents, stage, allowHandoffs: false }));
+    // The production Goal handler is synchronous. Reuse the facade's exact
+    // validator and safe projection without spanning a SQLite transaction with
+    // the generic async capability dispatcher (or enabling any other facade).
+    const executeGoalAction = (args: any) => bridge!.handleSuggestGoal({ ...credentials, ...args });
+    const [goalAction] = createGoalActionCapabilityDefinitions(input => executeGoalAction(input.arguments));
+    function handleGoalAction(body: any) {
+      const unknownField = Object.keys(body).find(key => !['invocationId', 'callbackToken', 'arguments'].includes(key));
+      if (unknownField) throw createHttpError(400, `Unknown Pi capability request field: ${unknownField}`, { code: 'pi_capability_invalid_request' });
+      const args = goalAction.validateArguments(body.arguments);
+      const result = safeProjectResult(goalAction, executeGoalAction(args));
+      return { ok: true, facade: 'goal_action', result };
+    }
     function safeParameters(body: any) {
       const { invocationId: ignoredInvocation, callbackToken: ignoredAuth, ...parameters } = body;
       const serialized = JSON.stringify(parameters);
@@ -76,7 +90,10 @@ export function createEvaluationGoalStore(options: any) {
         const { redacted } = safeParameters(body);
         let statusCode = 200, response: any;
         if (redacted) { statusCode = 400; response = { error: 'evaluation_callback_body_invalid' }; }
-        else try { response = endpoint === 'goal/suggest' ? bridge!.handleSuggestGoal(body) : bridge!.handleUpdateGoal(body); }
+        else try {
+          response = endpoint === 'capabilities/goal_action' ? handleGoalAction(body)
+            : endpoint === 'goal/suggest' ? bridge!.handleSuggestGoal(body) : bridge!.handleUpdateGoal(body);
+        }
         catch (e: any) {
           if (!Number.isInteger(e?.statusCode) || e.statusCode < 400 || e.statusCode > 599) {
             statusCode = 500; response = { error: 'evaluation_callback_failed' };

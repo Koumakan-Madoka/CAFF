@@ -553,10 +553,10 @@ test('candidate confirmation requires exact hash, revision and explicit user act
 });
 
 test('global candidate HTTP flow exposes real targets and only accepts approved sources, exact revision/hash and confirmation', async t => {
-  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms', 'tool-description-send-public']) {
+  for (const targetId of ['global-harness-behavior-v1', 'tool-description-list_rooms', 'tool-description-send-public', 'tool-description-goal_action']) {
     const h = setup(t), v = h.seed(), route = { pathname: '/api/wikiskill/candidate' };
     const catalog = (await h.invoke()).body.targets;
-    assert.equal(catalog.length, 10); assert.ok(catalog.find(t => t.id === targetId));
+    assert.equal(catalog.length, 11); assert.ok(catalog.find(t => t.id === targetId));
     assert.equal(catalog.some(t => t.execute || t.parameters), false);
     const body = { confirmed: true, expectedRevision: 2, versionId: v.id, entryIds: [v.entries[0].id], targetId };
     await rejects(h.invoke(body, route), 'wiki_candidate_approved_required', 409);

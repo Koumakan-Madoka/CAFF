@@ -149,10 +149,10 @@ function patternCasesFixture(t) {
   return { ...h, numbers, select };
 }
 
-test('pattern filter includes confirmed train/gate/test and legacy page labels; collection filters only narrow that membership', async t => {
+test('pattern filter includes frozen train/holdout and legacy page labels; collection filters only narrow that membership', async t => {
   const h = patternCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
   h.select('#cases-group', 'entry-1'); assert.deepEqual(h.numbers(), [22, 23, 24, 1, 4, 10, 26]);
-  for (const [split, expected] of [['train', [22]], ['gate', [23, 1, 26]], ['test', [24, 4, 10]], ['all', [22, 23, 24, 1, 4, 10, 26]]]) {
+  for (const [split, expected] of [['train', [22]], ['holdout', [23, 24, 1, 4, 10, 26]], ['all', [22, 23, 24, 1, 4, 10, 26]]]) {
     h.select('#cases-split', split); assert.deepEqual(h.numbers(), expected);
   }
   await h.click('[data-cases-mode="list"]'); assert.deepEqual(h.numbers(), [22, 23, 24, 1, 4, 10, 26]);
@@ -165,15 +165,15 @@ test('pattern groups include holdouts once, leave only unowned holdouts in the r
   const h = patternCasesFixture(t), before = clone(h.saved()); await h.panel.load(); await h.click('[data-tab="cases"]');
   const groups = [...h.root.querySelectorAll('#cases-body > .group')];
   const pattern = groups.find(g => g.querySelector('h3').textContent.startsWith('模式'));
-  const residual = groups.find(g => g.querySelector('h3').textContent === '门槛/测试 · 不参与归纳');
+  const residual = groups.find(g => g.querySelector('h3').textContent === '留出 · 不参与归纳');
   const nums = group => [...group.querySelectorAll('.case-head > .num')].map(el => Number(el.textContent.slice(1)));
   assert.deepEqual(nums(pattern), [22, 23, 24, 1, 4, 10, 26]); assert.deepEqual(nums(residual), [14, 25]);
   const shown = h.numbers(); assert.equal(shown.length, h.saved().cases.length); assert.equal(new Set(shown).size, shown.length);
-  assert.match(pattern.querySelector('.group-note').textContent, /训练.*门槛.*测试.*只有训练.*归纳/);
-  for (const [n, split] of [[23, '门槛'], [24, '测试'], [1, '门槛'], [4, '测试'], [10, '测试']]) assert.match(h.root.querySelector('#c-' + n + ' .chips').textContent, new RegExp(split + '.*不参与归纳'));
+  assert.match(pattern.querySelector('.group-note').textContent, /训练.*留出.*只有训练.*归纳/);
+  for (const [n, split] of [[23, '留出'], [24, '留出'], [1, '留出'], [4, '留出'], [10, '留出']]) assert.match(h.root.querySelector('#c-' + n + ' .chips').textContent, new RegExp(split + '.*不参与归纳'));
   h.select('#cases-group', 'holdout'); assert.deepEqual(h.numbers(), [23, 24, 1, 4, 10, 14, 25, 26]);
   assert.equal(new Set(h.numbers()).size, h.numbers().length);
-  h.select('#cases-split', 'test'); assert.deepEqual(h.numbers(), [24, 4, 10, 14]);
+  h.select('#cases-split', 'holdout'); assert.deepEqual(h.numbers(), [23, 24, 1, 4, 10, 14, 25, 26]);
   assert.deepEqual(h.saved(), before); assert.equal(h.posts().length, 0);
 });
 
@@ -402,6 +402,21 @@ for (const [label, selector, value] of [['bad target', '[data-tool-name]', 'x;rm
   const h = toolEditor(t); await h.panel.load(); await h.click('[data-tab="cases"]'); h.field(selector, value);
   assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /请.*修正/);
   await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
+});
+
+test('goal_action editor rejects CAFF target and saves native target without changing saved history', async t => {
+  const config = toolConfig(); config.target.name = 'goal_action';
+  const h = toolEditor(t, { toolCheck: config }), original = clone(h.saved().rubrics[0]);
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /goal_action.*原生工具/);
+  assert.equal(h.rubricPanel().querySelector('[data-freeze-rubric]').disabled, true);
+  await h.click('#c-1 [data-save-rubric]'); assert.equal(h.posts().length, 0);
+  assert.deepEqual(clone(h.saved().rubrics[0]), original);
+  h.field('[data-tool-kind]', 'native', 'change');
+  assert.match(h.rubricPanel().querySelector('[data-tool-preview]').textContent, /goal_action.*reason.*1000/);
+  await h.click('#c-1 [data-save-rubric]');
+  assert.deepEqual(clone(h.posts()[0].body.toolCheck.target), { kind: 'native', name: 'goal_action' });
+  assert.deepEqual(clone(h.saved().rubrics[0]), original);
 });
 
 test('tool rule editor supports allowed/forbidden values, forbid preview, rule add/remove and escapes text', async t => {
@@ -857,7 +872,7 @@ test('knowledge search covers pattern fields and case prose, highlights matches 
 test('cases default to pattern groups and expose pending/suggested/unfit/holdout states and membership provenance', async t => {
   const h = setup(t); await h.panel.load(); await h.click('[data-tab="cases"]');
   const text = h.root.querySelector('#view-cases').textContent;
-  for (const literal of ['按模式分组', '待归纳', '待归纳 · 有建议', '未能归类', '测试 · 不参与归纳', '重写CAFF的README', '同属额外流程', '模型建议']) assert.ok(text.includes(literal), literal);
+  for (const literal of ['按模式分组', '待归纳', '待归纳 · 有建议', '未能归类', '留出 · 不参与归纳', '重写CAFF的README', '同属额外流程', '模型建议']) assert.ok(text.includes(literal), literal);
   assert.ok(h.root.querySelector('#c-3 [data-induct]') || h.root.querySelector('[data-induct]'));
   assert.ok(h.root.querySelector('[data-confirm-suggestion="s-assign"]'));
   assert.equal(h.root.querySelector('#c-2 [data-confirm-suggestion]'), null);
@@ -979,7 +994,7 @@ test('empty impact explains the next action and keeps all seven planned slots di
   assert.match(h.root.querySelector('#impact-log').textContent, /等待/);
 });
 
-test('D14/D15 display Goal numbers and train/gate/test without changing stored source data or exposing internal IDs in reasons',async t=>{
+test('D14/D15 display Goal numbers and train/holdout without changing stored source data or exposing internal IDs in reasons',async t=>{
   const h=setup(t,(_url,_options,saved)=>{
     saved.cases[0].displayNumber=1;saved.cases[0].evaluationStage='gate';saved.cases[1].displayNumber=4;saved.cases[3].displayNumber=17;saved.cases[4].displayNumber=18;
     saved.cases[2].split='gate';saved.caseStates.find(s=>s.caseId==='c3').status='holdout';
@@ -989,10 +1004,12 @@ test('D14/D15 display Goal numbers and train/gate/test without changing stored s
   assert.doesNotMatch(h.root.querySelector('#wiki-page .suggest-row').textContent,/entry-1|entry-999/);
   assert.equal(h.root.querySelector('#wiki-page img'),null);await h.click('[data-tab="cases"]');
   assert.match(h.root.querySelector('#c-4').textContent,/验收步骤术语太多/);assert.match(h.root.querySelector('#c-1 .chips').textContent,/训练.*本轮门槛/);
-  assert.match(h.root.querySelector('#c-3').textContent,/门槛.*不参与归纳/);assert.equal(h.root.querySelector('#c-3 [data-manual-assign]'),null);
-  assert.deepEqual([...h.root.querySelectorAll('#cases-split option')].map(o=>o.textContent),['全部','训练','门槛','测试','待预分类']);
-  const split=h.root.querySelector('#cases-split');split.value='gate';split.dispatchEvent(new h.window.Event('change',{bubbles:true}));
-  assert.ok(h.root.querySelector('#c-3'));assert.ok(h.root.querySelector('#c-1'));assert.equal(h.root.querySelector('#c-4'),null);
+  assert.match(h.root.querySelector('#c-3').textContent,/留出.*不参与归纳/);assert.equal(h.root.querySelector('#c-3 [data-manual-assign]'),null);
+  assert.deepEqual([...h.root.querySelectorAll('#cases-split option')].map(o=>o.textContent),['全部','训练','留出','待预分类']);
+  const summary = h.root.querySelector('#cases-summary').textContent.split('本轮回放')[0];
+  assert.match(summary, /训练.*留出/); assert.doesNotMatch(summary, /门槛|测试/);
+  const split=h.root.querySelector('#cases-split');split.value='holdout';split.dispatchEvent(new h.window.Event('change',{bubbles:true}));
+  assert.ok(h.root.querySelector('#c-3'));assert.equal(h.root.querySelector('#c-1'),null);assert.ok(h.root.querySelector('#c-4'));
   assert.doesNotMatch(h.root.querySelector('#view-cases').textContent,/entry-1|entry-999/);assert.equal(h.posts().length,0);
   assert.equal(h.saved().cases[0].split,'train');
 });

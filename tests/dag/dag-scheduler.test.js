@@ -651,7 +651,8 @@ test('D27: spawn sets a lightweight session goal (no inherited default checklist
   assert.ok(goal, 'goal set on the spawned child');
   assert.equal(goal.status, 'active');
   assert.ok(goal.objective.includes('goal of n1'), 'objective carries the node goal');
-  assert.ok(goal.objective.includes('suggest-goal'), 'objective teaches the completion protocol');
+  assert.match(goal.objective, /goal_action.*complete.*reason.*1000.*UTF-16/);
+  assert.doesNotMatch(goal.objective, /suggest-goal/);
   assert.equal(goal.checklist, undefined, 'explicit empty checklist — heavy default NOT inherited');
 });
 
@@ -701,6 +702,10 @@ test('D28: verifier flow — proposal routes to verifier, accept settles done', 
   assert.equal(deliveries[0].conversationId, 'child-n1');
   assert.ok(deliveries[0].content.includes('验收请求'));
   assert.ok(deliveries[0].content.includes('n1 完工摘要'), 'verifier sees the result summary');
+  assert.match(deliveries[0].content, /goal_action.*accept.*reason/);
+  assert.match(deliveries[0].content, /goal_action.*reject.*reason/);
+  assert.match(deliveries[0].content, /1000.*UTF-16/);
+  assert.doesNotMatch(deliveries[0].content, /suggest-goal/);
   assert.ok(deliveries[0].idempotencyKey.startsWith('dag-verify:'));
 
   // Verifier 通过 → goal complete → done + result
@@ -738,6 +743,8 @@ test('D28: verifier rejection feeds back to the worker; re-announce then accept 
   assert.equal(deliveries[1].targetAgentId, WORKER_ID, 'feedback goes back to the worker');
   assert.ok(deliveries[1].content.includes('验收打回'));
   assert.ok(deliveries[1].content.includes('缺少关键测试'));
+  assert.match(deliveries[1].content, /goal_action.*complete.*reason/);
+  assert.doesNotMatch(deliveries[1].content, /suggest-goal/);
   assert.ok(deliveries[1].idempotencyKey.startsWith('dag-verify:'));
   assert.ok(deliveries[1].idempotencyKey.includes(':feedback:'), 'feedback shares the dag-verify namespace');
   const goalAfterReject = getSessionGoal(store.getConversation('child-n1'));
@@ -754,6 +761,48 @@ test('D28: verifier rejection feeds back to the worker; re-announce then accept 
   await flush(scheduler);
   assert.equal(getNode(store, 'n1').status, 'done');
   assert.equal(getNode(store, 'n1').result, '第二版完工（补了测试）');
+});
+
+test('D28: structured goal_action drives worker completion, verifier rejection and retry acceptance end to end', async t => {
+  const store = createStore(t);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  store.bindConversationProjectScope('child-n1', 'proj-test');
+  const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
+  const bridge = createAgentToolBridge({ store, broadcastEvent: (name, payload) => scheduler.handleEvent(name, payload) });
+  const invoke = async (agentId, action, reason) => {
+    const auth = bridge.registerInvocation(bridge.createInvocationContext({
+      conversationId: 'child-n1', agentId, agentName: agentId,
+      conversationAgents: store.getConversation(ROOT_ID).agents, stage: { status: 'running' },
+    }));
+    return bridge.handlePiCapability('goal_action', {
+      invocationId: auth.invocationId, callbackToken: auth.callbackToken, arguments: { action, reason },
+    });
+  };
+  recordGoalAcceptance(store, 'child-n1', 'Synthetic initial evidence');
+  const first = await invoke(WORKER_ID, 'complete', 'First result');
+  assert.equal(first.proposal.action, 'complete');
+  await flush(scheduler);
+  assert.match(deliveries[0].content, /goal_action.*accept.*reason/);
+  await assert.rejects(invoke(WORKER_ID, 'accept', 'Self review'), e => e.statusCode === 403);
+  const rejected = await invoke(VERIFIER_ID, 'reject', 'Add regression coverage');
+  assert.equal(rejected.outcome, 'rejected');
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+  assert.match(deliveries[1].content, /Add regression coverage/);
+  assert.match(deliveries[1].content, /goal_action.*complete/);
+  recordGoalAcceptance(store, 'child-n1', 'Synthetic revised evidence');
+  await invoke(WORKER_ID, 'complete', 'Second result');
+  await flush(scheduler);
+  const accepted = await invoke(VERIFIER_ID, 'accept', 'Regression verified');
+  assert.equal(accepted.outcome, 'accepted');
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, 'Second result');
+  assert.equal(getSessionGoalRuling(store.getConversation('child-n1')).ruledBy.agentId, VERIFIER_ID);
 });
 
 test('D28: explicit worker/verifier accept unique display names and bind canonical agent ids', async () => {
@@ -1051,6 +1100,8 @@ test('reconcile resumes an interrupted child once, then blocks when the budget i
   assert.equal(resumes.length, 1, 'first reconcile injects one resume');
   assert.equal(resumes[0].conversationId, 'child-n1');
   assert.ok(resumes[0].content.includes('继续'));
+  assert.match(resumes[0].content, /goal_action.*complete.*reason/);
+  assert.doesNotMatch(resumes[0].content, /suggest-goal/);
   assert.equal(getNode(store, 'n1').status, 'doing', 'node stays doing while the resume runs');
 
   // Resume produced no terminal reply (interrupted again) → second reconcile

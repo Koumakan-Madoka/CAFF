@@ -18,7 +18,7 @@ const text = (v: any, max: number) => typeof v === 'string' && v.trim().length >
 const fail = (code: string, statusCode = 400) => Object.assign(Error(code), { code, statusCode });
 const invalid = () => fail('evaluation_callback_invalid');
 const prefix = '/api/agent-tools/';
-const routes: Record<string, string> = { context: 'GET', participants: 'GET', 'post-message': 'POST', 'goal/suggest': 'POST', 'goal/update': 'POST' };
+const routes: Record<string, string> = { context: 'GET', participants: 'GET', 'post-message': 'POST', 'goal/suggest': 'POST', 'goal/update': 'POST', 'capabilities/goal_action': 'POST' };
 function validate(input: any) {
   const fromTrace = object(input) && Object.hasOwn(input, 'trace');
   const withGoal = object(input) && Object.hasOwn(input, 'goalTools');
@@ -65,10 +65,10 @@ async function body(req: http.IncomingMessage) {
 /** Caller must own a dedicated parent directory. Each call owns one NEW child,
  * SQLite DB and loopback ephemeral listener; no reopen/recovery or ambient config.
  * This kernel supports context/participants/PUBLIC post and (for trace replay)
- * Goal handlers on a separate per-execution store, and
+ * Goal handlers (including only the goal_action facade) on a separate per-execution store, and
  * either a legacy single text seed OR explicit versioned public-text input
  * state. Trace mode never falls back to a seed on failure. Private/delegation/
- * attachments/capabilities remain unsupported, NOT stripped or emulated.
+ * attachments/other capabilities remain unsupported, NOT stripped or emulated.
  * This is a real mutable isolated DB, not a recording of past tool outputs.
  * Do not use as faithful replay proof; source capture/Docker wiring are separate.
  */
@@ -156,7 +156,7 @@ export async function startEvaluationCallback(input: any) {
       if (active.size >= 8) throw fail('evaluation_callback_busy', 429);
       const url = new URL(req.url, 'http://' + authority), route = url.pathname.slice(prefix.length);
       if (!url.pathname.startsWith(prefix) || !Object.hasOwn(routes, route) || routes[route] !== req.method
-        || route.startsWith('goal/') && !goals) throw fail('evaluation_callback_route_unavailable', 404);
+        || (route.startsWith('goal/') || route === 'capabilities/goal_action') && !goals) throw fail('evaluation_callback_route_unavailable', 404);
       if (req.method === 'GET') {
         const allowed = ['invocationId', 'callbackToken', ...(route === 'context' ? ['publicLimit', 'privateLimit'] : [])];
         if ([...url.searchParams.keys()].some(k => !allowed.includes(k) || url.searchParams.getAll(k).length !== 1)) throw fail('evaluation_callback_query_invalid');
@@ -168,7 +168,7 @@ export async function startEvaluationCallback(input: any) {
         if (url.search) throw fail('evaluation_callback_query_invalid');
         const b = await body(req); live(); // never use SQLite after expiry/stop across await
         authenticate(b);
-        if (route.startsWith('goal/')) {
+        if (route.startsWith('goal/') || route === 'capabilities/goal_action') {
           const result = goals!.handle(route, b);
           reply(res, result.statusCode, result.response); return;
         }

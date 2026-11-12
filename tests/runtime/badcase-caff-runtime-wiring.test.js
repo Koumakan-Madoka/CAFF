@@ -140,6 +140,9 @@ test('direct staging separates a large workspace from the actual fixed SDK/runti
   assert.ok(m.runtimeBytes > 0); assert.equal(staged.filter(f => f.path === 'probe.cjs').length, 1);
   assert.ok(staged.find(f => f.path === 'replay-input.json').bytes.length < 4096);
   assert.deepEqual(staged.find(f => f.path === 'replay-workspace/large.txt').bytes, bytes);
+  const cli = staged.find(f => f.path === 'build/lib/agent-chat-tools.js');
+  assert.notDeepEqual(cli.bytes, fs.readFileSync(path.join(repo, cli.path)), 'only replay staging supplies a legacy wrapper at the historical path');
+  assert.deepEqual(staged.find(f => f.path === 'build/lib/agent-chat-tools-current.js').bytes, fs.readFileSync(path.join(repo, cli.path)));
   assert.equal(m.runtimeHash, manifestFor(staged.filter(f => !f.path.startsWith('replay-workspace/'))).runtimeHash);
 });
 test('explicit native limits enter hashed stage control only; default stage and sealed inputs stay unchanged', t => {

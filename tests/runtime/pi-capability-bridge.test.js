@@ -129,6 +129,7 @@ test('Pi extension exposes scoped delivery facades with server-aligned schemas',
   });
 
   assert.deepEqual(tools.map((tool) => tool.name), [
+    'goal_action',
     'jev_ask',
     'list_rooms',
     'conversation_notify',

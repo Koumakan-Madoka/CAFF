@@ -141,20 +141,68 @@ async function callback(t) {
   t.after(async () => { await service.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   return service;
 }
-async function shell(s, command) {
+async function shell(s, command, cliFile = path.resolve(__dirname, '../../build/lib/agent-chat-tools.js'), cwd) {
   const env = {};
   for (const key of ['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP']) if (process.env[key]) env[key] = process.env[key];
   Object.assign(env, { CAFF_CHAT_API_URL: s.apiUrl, CAFF_CHAT_INVOCATION_ID: s.credentials.invocationId,
-    CAFF_CHAT_CALLBACK_TOKEN: s.credentials.callbackToken, CAFF_CHAT_TOOLS_PATH: path.resolve(__dirname, '../../build/lib/agent-chat-tools.js').replaceAll('\\', '/') });
-  await new Promise((resolve, reject) => {
-    const p = spawn('bash', ['-s'], { env, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    CAFF_CHAT_CALLBACK_TOKEN: s.credentials.callbackToken, CAFF_CHAT_TOOLS_PATH: cliFile.replaceAll('\\', '/') });
+  return new Promise((resolve, reject) => {
+    const p = spawn('bash', ['-s'], { env, cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; p.stdout.on('data', b => stdout += b); p.stderr.on('data', b => stderr += b);
     const timer = setTimeout(() => { p.kill(); reject(Error('synthetic CLI timeout')); }, 15000);
-    p.once('error', e => { clearTimeout(timer); reject(e); }); p.once('close', () => { clearTimeout(timer); resolve(); }); p.stdin.end(command);
+    p.once('error', e => { clearTimeout(timer); reject(e); }); p.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); }); p.stdin.end(command);
   });
 }
 
-test('real CLI on isolated callback: synthetic #21–#24-shaped pipeline/heredoc/inline-node calls are judged from records', async t => {
-  const s = await callback(t);
+function replayCli(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-replay-cli-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const current = { path: 'build/lib/agent-chat-tools.js', bytes: fs.readFileSync(path.resolve(__dirname, '../../build/lib/agent-chat-tools.js')) };
+  const files = require('../../scripts/badcase-capture/replay-goal-cli.cjs').stageReplayGoalCli([current]);
+  assert.deepEqual(current.bytes, fs.readFileSync(path.resolve(__dirname, '../../build/lib/agent-chat-tools.js')));
+  for (const file of files) { const dest = path.join(root, file.path); fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, file.bytes); }
+  return { root, cli: path.join(root, current.path) };
+}
+
+test('goal_action is native-only: callback success cannot hide a locally rejected first attempt', () => {
+  const caff = check({ target: { kind: 'caff-chat', name: 'goal_action' } });
+  const native = check({ target: { kind: 'native', name: 'goal_action' } });
+  const short = { action: 'pause', reason: 'x'.repeat(1000) };
+  const long = { action: 'pause', reason: 'x'.repeat(1001) };
+  // Only the corrected call reaches HTTP. The session still records both raw
+  // attempts, including the first one rejected by local argument preparation.
+  const r = receipt({ endpoint: 'capabilities/goal_action', parameters: { arguments: short } });
+  r.toolCalls = [{ name: 'goal_action', args: long, isError: true }, { name: 'goal_action', args: short, isError: false }];
+  for (const mode of ['on-call', 'forbid']) {
+    expect(result(r, { ...caff, mode }), 'invalid', 'tool_evidence_unavailable');
+    expect(result(r, { ...native, mode }), 'fail', 'tool_rule_failed');
+    expect(result(receipt(), { ...caff, mode }), 'invalid', 'tool_evidence_unavailable');
+  }
+  expect(result({ toolCalls: [r.toolCalls[0]] }, native), 'fail', 'tool_rule_failed');
+  expect(result({ toolCalls: [r.toolCalls[1]] }, native), 'pass');
+  expect(result({ toolCalls: [] }, native), 'unreached', 'target_not_called');
+});
+
+test('production CLI still refuses while replay-only path works for literal and injected paths', async t => {
+  const s = await callback(t), staged = replayCli(t);
+  const production = await shell(s, 'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --action pause --reason valid');
+  assert.equal(production.code, 1); assert.match(production.stderr, /structured goal_action tool/);
+  assert.equal(s.readGoalEvidence().calls.length, 0);
+  for (const command of ['node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --status PAUSE --reason valid',
+    'node ./build/lib/agent-chat-tools.js suggest-goal --action pause --reason valid']) {
+    await shell(s, command, staged.cli, staged.root);
+    assert.equal(s.readGoalEvidence().calls.at(-1).statusCode, 200);
+  }
+  await shell(s, 'node "$CAFF_CHAT_TOOLS_PATH" list-participants', staged.cli);
+  assert.equal(s.readGoalEvidence().calls.at(-1).endpoint, 'participants');
+  await shell(s, 'node "$CAFF_CHAT_TOOLS_PATH" suggest-goal --action revise --content \'{}\'', staged.cli);
+  assert.equal(s.readGoalEvidence().calls.at(-1).parameters.action, 'revise');
+  await shell(s, 'node "$CAFF_CHAT_TOOLS_PATH" update-goal --content \'{}\'', staged.cli);
+  assert.equal(s.readGoalEvidence().calls.at(-1).endpoint, 'goal/update');
+});
+
+test('real replay CLI on isolated callback: synthetic #21–#24-shaped pipeline/heredoc/inline-node calls are judged from records', async t => {
+  const s = await callback(t), staged = replayCli(t);
   // These are NEW bounded synthetic commands. The archived DATA ONLY fixture is
   // never executed. Shapes and measured lengths mirror #22/29, #23/44, #24/42,
   // #23/45; only our disposable callback is reachable and no agent is run.
@@ -167,7 +215,9 @@ test('real CLI on isolated callback: synthetic #21–#24-shaped pipeline/heredoc
   ];
   for (const [command, length, statusCode] of synthetic) {
     const before = s.readGoalEvidence().calls.length;
-    await shell(s, command);
+    const output = await shell(s, command, staged.cli);
+    if (statusCode === 400) { assert.match(output.stderr, /1000/); assert.doesNotMatch(output.stderr, /removed|goal_action/); }
+    else assert.equal(output.stderr, '');
     const full = s.readGoalEvidence(), last = full.calls.at(-1);
     assert.equal(full.calls.length, before + 1); assert.equal(last.parameters.reason.length, length); assert.equal(last.statusCode, statusCode);
     // Each execution-wide ledger checks EVERY call. Select a new one-call ledger

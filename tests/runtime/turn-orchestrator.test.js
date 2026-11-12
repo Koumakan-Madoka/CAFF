@@ -1385,6 +1385,9 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
   assert.match(prompt, /Call update-goal only when a work-item or criterion status changes, or when a milestone needs proof\./u);
   assert.doesNotMatch(prompt, /Evidence is the current proof set|evidence current with update-goal/u);
   assert.match(prompt, /Request independent code review once per milestone, when a work item is ready to be marked done, not for intermediate commits\./u);
+  assert.match(prompt, /suggest-goal --action set\|revise/u);
+  assert.match(prompt, /goal_action.*pause.*resume.*complete.*clear.*accept.*reject.*reason.*1000.*UTF-16/u);
+  assert.doesNotMatch(prompt, /suggest-goal --action [^\n.;]*(pause|resume|complete|clear|accept|reject)/u);
   assert.match(prompt, /current completion target/u);
   assert.match(prompt, /If the goal appears finished or blocked, create a goal proposal/u);
 });
@@ -4235,6 +4238,8 @@ test('turn orchestrator auto-continues active session goals until safety budget'
   assert.ok(autoMessages.every((message) => message.metadata.goalRevision === 1));
   assert.equal(seenPrompts.length, 2);
   assert.ok(seenPrompts.every((content) => content.includes('Finish the autonomous goal loop')));
+  assert.ok(seenPrompts.every(content => /goal_action.*complete.*pause.*reason.*1000.*UTF-16/.test(content)));
+  assert.ok(seenPrompts.every(content => !content.includes('suggest-goal')));
   assert.equal(conversation.metadata.sessionGoal.status, 'active');
   assert.equal(conversation.metadata.sessionGoalRunner.status, 'budget_limited');
   assert.equal(conversation.metadata.sessionGoalRunner.iteration, 2);

@@ -98,7 +98,7 @@ for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} co
   const h = setup(t, data), role = h.root.querySelector('[data-pattern-role]');
   assert.match(role.textContent, stale ? /对照确认已失效/ : /其他模式.*防误伤对照/);
   assert.doesNotMatch(role.textContent, /时算目标复现题/);
-  assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /门槛目标复现题：无/);
+  assert.match(h.root.querySelector('[data-pattern-targets]').textContent, /留出目标复现题：无/);
   assert.equal(h.calls.length, 0);
 });
 for (const stale of [false, true]) test(`saved ${stale ? 'stale' : 'current'} control makes case assertions read-only without paid draft controls`, async t => {
@@ -190,12 +190,25 @@ test('history retains each version and report scope without pooling or calling s
   assert.match(history.textContent, /v2.*仅切点报告.*不作准入/s);
   assert.match(history.textContent, /各批次独立.*不拼接/s); assert.equal(h.calls.length, 0);
 });
+test('original test-split control uses holdout consent and retains server-owned hash and split', async t => {
+  const real = fixture(t, { split: 'test' }), data = real.snapshot(), sent = [], before = JSON.stringify(data);
+  const h = setup(t, data, { onConfirmControl: b => sent.push(clone(b)) });
+  assert.ok(h.root.querySelector('[data-control-confirm]')); h.root.querySelector('[data-control-confirm]').click();
+  assert.match(h.root.querySelector('[data-control-consent]').textContent, /留出组对照/);
+  h.root.querySelector('[data-control-lock]').click();
+  assert.deepEqual(sent, [{ caseId: real.c.id, proposalHash: data.pipelineStates[0].control.proposalHash }]);
+  assert.equal(JSON.stringify(data), before); assert.equal(data.cases[0].split, 'test'); assert.equal(h.calls.length, 0);
+  const full = setup(t, data, { full: true }); await full.panel.load(); await full.click('[data-tab="cases"]');
+  const card = full.root.querySelector('#c-22'); assert.ok(card);
+  assert.ok([...card.querySelectorAll('.chips .chip')].some(e => e.textContent === '留出'));
+  assert.match(card.textContent, /不参与归纳/); assert.doesNotMatch(card.querySelector('.chips').textContent, /测试|门槛/);
+});
 test('control is exact in-panel consent, not browser confirmation or execution; refresh and binding changes invalidate it', t => {
   const real = fixture(t), data = real.snapshot(), sent = [], h = setup(t, data, { onConfirmControl: b => sent.push(clone(b)) });
   const host = () => h.root.querySelector('[data-gate-control]'); assert.match(host().textContent, /可作对照/);
   host().querySelector('[data-control-confirm]').click(); assert.equal(sent.length, 0);
   const strip = host().querySelector('[data-control-consent]'); assert.ok(strip);
-  assert.match(strip.textContent, /门槛组.*其他模式.*防误伤.*冻结.*不能修改.*不启动/s);
+  assert.match(strip.textContent, /留出组.*其他模式.*防误伤.*冻结.*不能修改.*不启动/s);
   assert.ok(strip.textContent.includes(data.pipelineStates[0].control.proposalHash));
   assert.match(strip.textContent, /通过 3.*suggest-goal.*reason.*1000/s);
   const stale = host().querySelector('[data-control-lock]'); h.panel.render(data);

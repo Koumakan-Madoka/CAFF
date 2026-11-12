@@ -4,8 +4,9 @@ const { wikiValueHash: hash } = require(base + 'wiki-rubric');
 const api = () => require(base + 'wiki-holdout-validation');
 const fixture = require('../helpers/wiki-mode-holdout.cjs');
 const { createWikiGateControlConfirmation } = require(base + 'wiki-gate-control');
-function setup() {
+function setup({ testControl = false } = {}) {
   const h = fixture();
+  if (testControl) h.marked[2].split = 'test';
   h.state.versions[0].entries.push(...[2, 3, 4].map(n => ({ id: 'entry-' + n, status: 'approved', caseIds: [] })));
   for (const [i, entryId] of [[2, 'entry-2'], [3, 'entry-2'], [4, 'entry-3']]) h.state.patternLabels.find(l => l.caseId === h.marked[i].id).entryId = entryId;
   function run(number) {
@@ -43,6 +44,13 @@ test('selects at most one confirmed control per other approved mode, run first t
   assert.equal(s.estimatedTokens, (300 + 100 + 50) * 15, 'includes two arms and five replacement allowances');
   assert.equal(s.budgetStatus, 'ready'); assert.equal(s.policy.repeats, 5); assert.equal(s.policy.degradationThreshold, 2); assert.equal(s.policy.maxEstimatedTokens, 20000000);
   assert.deepEqual(api().validateWikiHoldoutValidationSelection(s), s); assert.equal(JSON.stringify(h.input()), before);
+});
+test('v4 selects an original test-split control from another mode but never confirmed controls of its own mode', () => {
+  const h = setup({ testControl: true }); h.confirm(23); h.confirm(24);
+  const before = JSON.stringify(h.state), s = select(h);
+  assert.equal(h.marked[2].split, 'test'); assert.ok(s.caseIds.includes(h.marked[2].id));
+  assert.ok(!s.caseIds.includes(h.marked[6].id)); assert.ok(!s.caseIds.includes(h.marked[7].id));
+  assert.ok(s.cases.every(c => c.entryId !== h.input().targetEntryId)); assert.equal(JSON.stringify(h.state), before);
 });
 test('only a current exact confirmation is usable; stale, eligible-only, own mode and no-control modes never get substitute holdouts', () => {
   const h = setup(); h.state.controlConfirmations = h.state.controlConfirmations.filter(c => c.caseId !== h.marked[4].id);

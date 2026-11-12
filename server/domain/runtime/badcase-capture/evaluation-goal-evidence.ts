@@ -14,7 +14,7 @@ export function validateEvaluationGoalEvidence(v: any): any {
     || !Array.isArray(v.calls) || v.calls.length > 128) throw fail();
   for (const [i, c] of v.calls.entries()) {
     if (!object(c) || c.executionId !== v.executionId || c.sequence !== i + 1
-      || !['context', 'participants', 'post-message', 'goal/suggest', 'goal/update'].includes(c.endpoint)
+      || !['context', 'participants', 'post-message', 'goal/suggest', 'goal/update', 'capabilities/goal_action'].includes(c.endpoint)
       || (c.redacted === true ? c.parameters !== null : !object(c.parameters))
       || !Number.isInteger(c.statusCode) || c.statusCode < 200 || c.statusCode > 599 || !object(c.response)
       || c.errorCode !== (c.statusCode >= 400 ? c.response.code ?? null : null)

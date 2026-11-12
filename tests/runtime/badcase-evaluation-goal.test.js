@@ -30,11 +30,11 @@ async function request(s, route, params, credentials = s.credentials) {
     ...(params === undefined ? {} : { body: JSON.stringify({ ...credentials, ...params }) }) });
   const text = await r.text(); return { status: r.status, text, value: JSON.parse(text) };
 }
-function reference(t, s, association) {
+function reference(t, s, association, native = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-eval-goal-ref-'));
   const store = createChatAppStore({ agentDir: dir, sqlitePath: path.join(dir, 'ref.sqlite') });
   t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
-  store.createConversation({ id: association.conversationId, title: 'Synthetic marked-badcase', type: 'standard', participants: [family.id], metadata: {} });
+  store.createConversation({ id: association.conversationId, title: 'Synthetic marked-badcase', type: 'standard', projectScopeId: native ? association.projectId : null, participants: [family.id], metadata: {} });
   store.createMessage({ id: association.assistantMessageId, conversationId: association.conversationId, turnId: association.turnId,
     role: 'assistant', agentId: family.id, senderName: family.name, content: 'Thinking...', status: 'streaming' });
   if (s.readGoalEvidence().seed) store.db.prepare('UPDATE chat_conversations SET metadata_json=? WHERE id=?').run(JSON.stringify({ sessionGoal: s.readGoalEvidence().seed }), association.conversationId);
@@ -43,6 +43,8 @@ function reference(t, s, association) {
     agentName: family.name, conversationAgents: store.getConversation(association.conversationId).agents, stage: { status: 'running' }, allowHandoffs: false }));
   t.after(() => bridge.unregisterInvocation(ctx.invocationId));
   return (route, params) => {
+    if (route === 'capabilities/goal_action') return bridge.handlePiCapability('goal_action', { ...params, invocationId: ctx.invocationId, callbackToken: ctx.callbackToken })
+      .then(result => ({ status: 200, value: { ok: true, facade: 'goal_action', result } }), e => ({ status: e.statusCode, value: buildErrorJsonPayload(e) }));
     try { return { status: 200, value: bridge[route === 'goal/suggest' ? 'handleSuggestGoal' : 'handleUpdateGoal']({ ...params, invocationId: ctx.invocationId, callbackToken: ctx.callbackToken }) }; }
     catch (e) { return { status: e.statusCode, value: buildErrorJsonPayload(e) }; }
   };
@@ -148,9 +150,11 @@ test('two executions isolate Goal proposals/records/IDs, and unsupported routes 
 test('Goal ledger never stores callback auth, including malicious nested/embedded copies', async t => {
   const f = fixture(t), s = await f.start();
   for (const params of [{ action: 'pause', reason: s.credentials.callbackToken }, { action: 'set', goal: { reason: 'prefix ' + s.credentials.invocationId, callbackToken: s.credentials.callbackToken } }]) {
-    assert.equal((await request(s, 'goal/suggest', params)).status, 400);
+    for (const [route, body] of [['goal/suggest', params], ['capabilities/goal_action', { arguments: params }]]) {
+      assert.equal((await request(s, route, body)).status, 400);
+    }
   }
-  assert.equal(s.readGoalEvidence().calls.length, 2);
+  assert.equal(s.readGoalEvidence().calls.length, 4);
   await s.stop();
   for (const dir of [path.dirname(s.databasePath), path.dirname(s.goalDatabasePath)]) for (const name of fs.readdirSync(dir)) {
     const file = path.join(dir, name); if (!fs.statSync(file).isFile()) continue;
@@ -174,6 +178,54 @@ test('supported public callback calls also record their parsed parameters and ex
     v => v.seed.acceptanceCriteria[0].status = 'passed']) {
     const v = structuredClone(evidence); change(v); assert.throws(() => validateEvaluationGoalEvidence(v), { code: 'evaluation_goal_evidence_invalid' });
   }
+});
+
+test('native goal_action replay matches the production facade, records parsed args and isolates executions', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-10T00:00:00.000Z') });
+  const f = fixture(t), a = await f.start(), b = await f.start('native-second'), off = await f.start('native-disabled', false);
+  const ref = reference(t, a, f.input.association, true), route = 'capabilities/goal_action';
+  for (const args of [{ action: 'pause', reason: 'x'.repeat(1001) }, { action: 'pause', reason: '😀'.repeat(501) },
+    { action: 'pause', reason: ' ' }, { action: 'set', reason: 'no' }, { action: 'pause', reason: 'valid', extra: true },
+    { action: 'pause', reason: '  ' + 'x'.repeat(1000) + '  ' }, { action: 'complete', reason: 'not ready' },
+    { action: 'accept', reason: 'self review remains forbidden' }, { action: 'reject', reason: 'self review remains forbidden' },
+    { action: 'resume', reason: 'conflict remains' }, { action: 'clear', reason: 'conflict remains' }]) {
+    const actual = await request(a, route, { arguments: args }), expected = await ref(route, { arguments: args });
+    assert.equal(actual.status, expected.status); assert.deepEqual(generated(actual.value), generated(expected.value));
+    const call = a.readGoalEvidence().calls.at(-1);
+    assert.equal(call.endpoint, route); assert.deepEqual(call.parameters, { arguments: args });
+    assert.equal(call.statusCode, actual.status); assert.deepEqual(call.response, actual.value);
+  }
+  assert.equal(a.readGoalEvidence().calls[0].statusCode, 400);
+  const success = a.readGoalEvidence().calls[5].response;
+  assert.equal(success.ok, true); assert.equal(success.facade, 'goal_action'); assert.equal(success.result.proposal.action, 'pause');
+  assert.equal(success.result.proposal.reason.length, 1000); assert.equal(Object.hasOwn(success.result, 'conversation'), false);
+  assert.equal(b.readGoalEvidence().calls.length, 0);
+  assert.equal((await request(b, route, { arguments: { action: 'pause', reason: 'wrong execution' } }, a.credentials)).status, 401);
+  assert.equal((await request(off, route, { arguments: { action: 'pause', reason: 'disabled' } })).status, 404);
+  for (const name of ['goal_action/extra', 'goal_action_fake', 'conversation_notify', 'room_workspace_bind']) {
+    assert.equal((await request(a, 'capabilities/' + name, {})).status, 404);
+  }
+  const { validateEvaluationGoalEvidence } = require('../../build/server/domain/runtime/badcase-capture/evaluation-goal-evidence');
+  assert.deepEqual(validateEvaluationGoalEvidence(a.readGoalEvidence()), a.readGoalEvidence());
+  await request(a, 'post-message', { visibility: 'public', content: 'finished' });
+  assert.equal((await request(a, route, { arguments: { action: 'pause', reason: 'after finish' } })).status, 409);
+});
+
+test('shipped goal_action extension reaches the replay callback and records only calls that pass local validation', async t => {
+  const f = fixture(t), s = await f.start();
+  const values = { CAFF_CHAT_API_URL: s.apiUrl, CAFF_CHAT_INVOCATION_ID: s.credentials.invocationId, CAFF_CHAT_CALLBACK_TOKEN: s.credentials.callbackToken };
+  const before = Object.fromEntries(Object.keys(values).map(k => [k, process.env[k]]));
+  Object.assign(process.env, values);
+  t.after(() => { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const tools = [], extension = await import(require('node:url').pathToFileURL(path.resolve('lib/pi-extensions/caff-capabilities.mjs')).href);
+  extension.default({ registerTool: tool => tools.push(tool) });
+  const tool = tools.find(tool => tool.name === 'goal_action');
+  await assert.rejects(tool.execute('local-long', { action: 'pause', reason: 'x'.repeat(1001) }), /1000/);
+  assert.equal(s.readGoalEvidence().calls.length, 0);
+  const result = await tool.execute('short-retry', { action: 'pause', reason: '  Short retry  ' });
+  const call = s.readGoalEvidence().calls[0];
+  assert.deepEqual(call.parameters, { arguments: { action: 'pause', reason: 'Short retry' } });
+  assert.equal(call.statusCode, 200); assert.deepEqual(result.details, call.response.result);
 });
 
 test('Goal marker projection validates identities/hashes and leaves absent legacy fields absent', async t => {
