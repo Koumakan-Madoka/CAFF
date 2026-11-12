@@ -56,6 +56,22 @@ test('v4 ignored-case labels use wikiDisplayCases over the full source snapshot,
  // A standalone caller without the full snapshot must not invent a number.
  const unavailable=batch().formatBatch(r);assert.match(unavailable,/未参与判定：编号不可用/);assert.ok(!unavailable.includes(id));
 });
+test('gate reports reserve archived numbers and label archived ignored cases without changing results', async t => {
+ const h=fixture(t), f=execution(h), result=await f.run(), state=h.store.read(), before=JSON.stringify(result);
+ const selected=state.cases.find(c=>c.id===h.marked[7].id), preceding=state.cases.find(c=>c.id===h.marked[5].id);
+ const archived=[{case:preceding,caseNumber:22},{case:selected,caseNumber:24}];
+ const sources=state.cases.filter(c=>!archived.some(r=>r.case.id===c.id));
+ const report=batch().formatBatch({...result,gateDecision:{...result.gateDecision,ignoredCaseIds:[h.marked[6].id,selected.id]}},sources,archived);
+ assert.match(report,/未参与判定：#23, #24 · 已删除/); assert.equal(JSON.stringify(result),before);
+});
+test('validation reports preserve archived gate/control labels and surviving numbers', async t => {
+ const h=await require('../helpers/wiki-holdout-ui.cjs')(t,{scenario:'degraded'}),state=h.data(),before=JSON.stringify(h.result);
+ const ids=new Set(h.result.cases.map(c=>c.sourceCaseId));
+ const archived=state.cases.filter(c=>ids.has(c.id)).map(c=>({case:c,caseNumber:c.displayNumber}));
+ const report=batch().formatBatch(h.result,state.cases.filter(c=>!ids.has(c.id)),archived);
+ for(const n of [17,18,23,24])assert.ok(report.includes('#'+n+' · 已删除'),String(n));
+ assert.doesNotMatch(report,/编号不可用/);assert.equal(JSON.stringify(h.result),before);
+});
 test('scene and no-scene cases route to their unchanged respective kernels and report valid/failure counts separately',async t=>{
  const h=fixture(t);h.makeRun24();const f=execution(h);let traces=0,runs=0;
  f.options.runProductionComparison=async(c,o)=>{traces++;return f.compare(c,o);};

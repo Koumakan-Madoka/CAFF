@@ -59,6 +59,13 @@ test('backfill report numbers come from canonical source IDs, never result order
   assert.deepEqual(projected.map(r => [r.caseId, r.caseNumber]), [[six, 6], [one, 1]]);
   assert.deepEqual(cases, before);
 });
+test('backfill reporting reserves deleted slots without rewriting surviving source or report records', () => {
+  const legacy = { id: 'text-3ff896480224fea1cde010370be091785529db0b1b18d8b5e0648a0a4f15aa89' };
+  const cases = [legacy, ...[17,18,19,20,21,23,24].map(n => ({ id: 'synthetic-' + n }))];
+  const results = [{ caseId: 'synthetic-23', hash: 'unchanged' }], before = JSON.stringify({ cases, results });
+  const projected = projectBackfillResults(results, cases, [{ case: { id: 'synthetic-22' }, caseNumber: 22 }]);
+  assert.equal(projected[0].caseNumber, 23); assert.equal(JSON.stringify({ cases, results }), before);
+});
 test('task fallback uses real task schema and verifies its stored association', t => {
   const h = fixture(t), db = new Database(h.dbFile);
   db.prepare('UPDATE chat_messages SET metadata_json = ?').run('{}');

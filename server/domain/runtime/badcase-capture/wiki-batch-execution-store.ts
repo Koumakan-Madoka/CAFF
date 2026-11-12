@@ -134,17 +134,19 @@ export function createWikiBatchExecutionStore(options: any) {
     const r = readFile(recordId); check(r.status === 'running'); action(r); r.updatedAt = new Date().toISOString(); return write(r);
   });
   return {
-    read() {
+    read(limit = 20) {
       wiki.read(); let names: string[];
       try { names = fs.readdirSync(directory); } catch (e: any) { if (e.code === 'ENOENT') return []; throw fail('wiki_execution_record_invalid'); }
       if (names.some(n => n.endsWith('.json') && !/^batch-execution-[a-f0-9-]{36}\.json$/.test(n))) throw fail('wiki_execution_record_invalid');
       return names.filter(n => /^batch-execution-[a-f0-9-]{36}\.json$/.test(n)).map(n => readFile(n.slice(0, -5)))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, limit);
     },
     start(input: any) {
       const plan = projectPlan(input); check(/^[a-f0-9]{64}$/.test(input.planHash));
       return withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
-        wiki.read(); const now = new Date().toISOString();
+        const state = wiki.read();
+        if (plan.cases.some((c: any) => state.deletedCases?.some((r: any) => r.case.id === c.sourceCaseId))) throw fail('wiki_case_deleted');
+        const now = new Date().toISOString();
         return write({ id: 'batch-execution-' + crypto.randomUUID(), createdAt: now, updatedAt: now, status: 'running', plan, planHash: input.planHash,
           current: null, gateOutcome: null, comparisonId: null, reason: null,
           cases: plan.cases.map((c: any) => ({ sourceCaseId: c.sourceCaseId, stage: c.stage, reportOnly: c.reportOnly, status: 'pending', knownTokens: null, usageComplete: true,

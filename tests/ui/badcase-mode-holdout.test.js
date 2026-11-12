@@ -92,6 +92,22 @@ test('v4 progress supports validation repeats and stages rather than falling thr
   assert.match(text, /正式批量.*门槛（本模式）.*验证（其他模式对照题）/s); assert.match(text, /验证每题每版 5 次/);
   assert.match(text, /已有劣化而停止/); assert.doesNotMatch(text, /测试|字面对照观察/); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
 });
+test('archived gate/validation and progress keep original numbers, marked deleted without changing stored results', async t => {
+  const h = await setup(t, { scenario: 'degraded' }), r = h.result;
+  const ids = new Set(r.cases.map(c => c.sourceCaseId));
+  h.saved.deletedCases = h.saved.cases.filter(c => ids.has(c.id)).map(c => ({ case: c, caseNumber: c.displayNumber, reason: 'resolved', confirmation: { source: 'badcase-page' } }));
+  h.saved.cases = h.saved.cases.filter(c => !ids.has(c.id));
+  h.saved.executions = [{ id: 'archive-execution', status: 'completed', updatedAt: new Date().toISOString(),
+    plan: { kind: r.kind, model: r.model, modelConfig: r.modelConfig, validationRepeats: 5 },
+    summary: { plannedRuns: 60, completedRuns: 50, knownTokens: 0, usageComplete: true, byStage: r.byStage }, cases: r.cases }];
+  const before = JSON.stringify(h.saved);
+  await h.panel.load(); await h.click('[data-tab="impact"]');
+  for (const selector of ['#execution-progress', '[data-evaluation-stage="gate"]', '[data-evaluation-stage="validation"]']) {
+    assert.match(h.root.querySelector(selector).textContent, /#(?:17|18|23|24).*已删除/);
+    assert.doesNotMatch(h.root.querySelector(selector).textContent, /编号不可用|未关联/);
+  }
+  assert.equal(JSON.stringify(h.saved), before); assert.equal(h.calls.filter(c => c.method === 'POST').length, 0);
+});
 test('Badcase mode6 shows both holdout groups in gate and missing other-mode controls as coverage, not as a gate blocker', async t => {
   const h = await setup(t, { scenario: 'uncovered' }); await h.panel.load(); await h.click('[data-tab="badcases"]');
   await h.click('[data-bc-pattern="entry-6"]');

@@ -23,7 +23,13 @@ export const wikiGoalCaseNumber = (id: string): number | null => { const n = goa
 export const wikiRoundStage = (id: string): 'gate' | 'test' | null => {
   const n = wikiGoalCaseNumber(id); return [1,2,6,16].includes(n!) ? 'gate' : [4,10,14].includes(n!) ? 'test' : null;
 };
-export function wikiDisplayCases(cases: any[]): any[] {
-  let next = cases.some(c => wikiGoalCaseNumber(c.id) !== null) ? 17 : 1;
-  return cases.map(c => ({...c, displayNumber: wikiGoalCaseNumber(c.id) ?? next++, evaluationStage: wikiRoundStage(c.id)}));
+export function wikiDisplayCases(cases: any[], deletedCases: any[] = []): any[] {
+  // Archive numbers reserve their slots; deleting a case must not relabel the
+  // following cases or make a historical reference point at a different case.
+  const archived = new Set<number>(deletedCases.map(r => r.caseNumber).filter(Number.isSafeInteger));
+  let next = [...cases, ...deletedCases.map(r => r.case)].some(c => wikiGoalCaseNumber(c.id) !== null) ? 17 : 1;
+  return cases.map(c => {
+    while (archived.has(next)) next++;
+    return {...c, displayNumber: wikiGoalCaseNumber(c.id) ?? next++, evaluationStage: wikiRoundStage(c.id)};
+  });
 }

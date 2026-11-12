@@ -216,10 +216,17 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 - Badcase 分组区与知识库都调用现有 `/api/wikiskill/review`；允许修改四项内容（准则仍≤300字）、驳回或通过，不能改类别草稿的标题或成员。仅能审核最新版本中的草稿。通过前重核类别未关联与当前训练集合等于草稿 caseIds；训练成员漂移、类别已手动关联或旧版本均拒绝通过。
 - 用户明确通过时在 **同一快照** 完成三件事：草稿置 approved、训练成员记为该模式的 model-confirmed 成员、追加同种不可改 `pendingPatternLinks` 关联；`categoryReviewRequired=false`。门槛和测试成员只经解析成为该模式的目标复现题，不加入训练 caseIds。驳回不关联，可重新归纳；已有手动关联或成员变化不妨碍驳回过时草稿。已通过模式保持原冻结/修订规则，不开放自动修改。
 
-## 删除与分层重分组（历史协议，不用于新题首次分组）
+## 用例删除与归档
 
-- `deleteCases({caseIds,reason,expectedRevision}, confirmation)` 是受信操作方入口，没有 HTTP 删除路由。只接受 B11 已批准的页面 #7、#9、#11、#13，确认来源必须为 `user-via-planner` 并绑定消息引用。writer 锁内追加一个快照：从活动 `cases` 和待处理归属队列移除，原用例整体保存在 `deletedCases`，记录原因、确认、原编号、时间和 hash，另追加逐条 `case-deleted` 事件。重复同一操作幂等，不允许重新导入/标记让已删除来源复活。
-- 旧快照、已冻结知识库版本/准则文字、脱水决定、旧 `replaySplit`/回放登记、请求/结果文件和轨迹包均不改。活动用例被删除后归纳/脱水/选题按未知用例拒绝；轨迹读取/导出允许按归档来源核对原包，用于审计。知识库证据计数与搜索只使用活动引用，因此模式 5 可显示零条用例，不修改准则原文；模式 2、4 不再把已删引用算作证据。
+- `POST /api/wikiskill/case-delete` 是页面单题删除入口，闭合字段为 `confirmed:true,caseId,reason,expectedRevision`，沿用 local-admin 的 Host/loopback/Origin/CSRF 守卫。理由去首尾空白后非空、最多2048 UTF-8字节；revision 必须是当前安全整数。服务端调用 `deleteCases({caseIds,reason,expectedRevision}, {source:'badcase-page'})`；HTTP 不接受确认来源或消息引用。受信操作方仍可用同一 store 方法传 `{source:'user-via-planner',reference:<公开消息ID>}`。不再限定 #7/#9/#11/#13，旧四条归档原样可读。
+- writer 锁内沿用 `assertWikiControlCaseMutable` 拒绝已冻结且当前确认有效的对照题（`wiki_control_case_frozen`）；检查全部预检/单例及批量执行记录，不只检查页面最近20条。存在该题没有结果的预检预约，或状态为 `running` 的评测引用时拒绝 `wiki_case_in_use`。崩溃遗留的无结果预约也会持续阻止删除，目前没有清理入口；心跳过期不等于已解除占用。预检、单例、批量的启动与删除使用同一 writer 锁，开跑时拒绝已删除题，不能靠旧计划启动。
+- 删除只追加一个快照：从活动 `cases` 及该题的 `caseStates/suggestions/classifications` 待处理关联移除；原用例整体保存在 `deletedCases`，沿原格式记录原编号、理由、确认、时间和 hash，并追加逐条 `case-deleted` 事件。同理由/来源的重提在当前 revision 下幂等；不同理由/来源拒绝，不允许重新导入/标记让已删除来源复活。不提供页面批量删除或恢复。
+- 其他用例的编号、分组、首次分组确认、模式标签、冻结断言及任何已存 hash 不变，不重分组。旧快照、知识库版本/准则文字、脱水决定、`replaySplit`/回放登记、预检、请求/结果文件和轨迹包均不改。活动选题排除已删除题；归档只读保留原用例、断言、切点、预检与轨迹/回放导出，历史结果及演进引用保留编号并标「已删除」。展示编号为归档留位，不因删 #22 将 #23 改成 #22；归档不混入活动计数或候选资格。
+- 知识库证据计数与搜索只使用活动引用，不改准则原文。一个模式的题全部删除后可显示没有可评测的题；它会退出动态首次分组规划，使规划总 hash 改变，但其他模式的规划及各模式已存确认/hash 不变，不改写历史规划或确认。
+- 用例详情点「删除」后原位展开说明（归档保留、其他分组不变），理由必填再确认提交。取消/刷新清除确认；提交期间锁定，拒绝时显示对照冻结、正在执行或 revision 冲突等原因；失败或结果未知不自动重试。归档目录和历史深链只读，演进记录显示删除事件及理由。
+
+## 分层重分组（历史协议，不用于新题首次分组）
+
 - `proposeRegroup({expectedRevision})` 只持久化一次固定提议、内容 hash 与 `case-regroup-proposed` 事件，不更改任何有效分组，也没有页面自动生成/确认/应用接口。用户先核对 Badcase 页完整前后对照及 hash；确认后仍保留原提议（包括未采用的 trace 改组），不得事后改写提议内容或 hash。确认后重复提议仅返回原记录，不重新随机。
 - 尚未分配有效 `split`（`train|gate|test`，尤其新标记的 `split=null`）的活动用例不进入提议 rows、输入 hash 或配额。页面独立列为「待分配」，即使尚无提议或已有确认也可看见，留给后续首次分组流程；不自动分配。选择**提议前排除**而不是增加作废/再生成入口：重新分组只保留既有 trace 组别，null 没有可保留组别，提前排除即可避免冻住必然无法确认的提议，也不开放通过重复随机挑组。提议后新增未分配用例同样不改变本次输入，已有可确认提议不因此卡住；已有提议和确认不迁移。
 - 提议建议沿用既有配额比例：trace / run 两层分别按固定种子 `wikiskill-trace-run-stratified-v1` 和用例 ID 的 SHA-256 排序。trace 用现有整数缺口算法（训练:门槛:测试 2:1:1，同缺按训练→门槛→测试）；run 用其训练:门槛 2:1 投影，同缺取训练，且门槛 run 数不超过 GPT 门槛 trace 数，超额留训练。该比例连同实际结果一起交用户确认，不宣称为 B8 已规定的比例。
@@ -245,6 +252,8 @@ run 级用于控制成本：**从用户冻结的切点开始**，而不是从本
 ## 失败与验证
 
 标记已成功而轨迹写入失败时返回 `trace.error: wiki_trace_unavailable`，不泄露路径/原始异常，不掩盖标记和封存状态。GET 遇到损坏返回 `wiki_trace_invalid`（409），未知 case 沿用 `wiki_unknown_case`；无包返回 null。
+
+删除回归：`tests/runtime/badcase-wiki-case-deletion.test.js`、`tests/http/badcase-wiki-case-deletion.test.js`、`tests/ui/badcase-wiki.test.js`、`tests/ui/badcase-mode-holdout.test.js` 及批量执行测试，覆盖任意编号、确认/理由/revision、对照与占用拒绝、原归档兼容、其他用例与冻结证据不变、归档编号留位及只读历史显示；生产形状合成夹具含已分组的 #22–#24、切点和草稿断言。页面删除在隔离实例走通并保留1440宽截图；不调用真实模型、不删除生产题。
 
 定向测试：`badcase-trace.test.js`、`badcase-trace-mark.test.js`、`badcase-wiki-controller.test.js`。覆盖先红后绿、完整长结果、前缀/旁支/续写边界、已知值替换、不可覆盖、原子发布失败恢复、首次失败后拒绝伪造冻结、SQLite 真实消息、删源房间后读取及 HTTP 只读门禁。`badcase-trace-export.test.js` 覆盖 JSON 相等、Markdown 无损重组、只读/远端拒绝、缺包拒绝和仅清单导出；`badcase-pipeline.test.js` 覆盖真实冻结包惰性读取、三段视图、长结果/搜索、转义、失败无摘录兜底、过期响应及来源分组。既有 `badcase-wiki.test.js` 验证原功能未变。`badcase-trace-backfill.test.js` 另覆盖只读选择/查询与复制件、来源变动两次检查、实际 task schema 与关联、旧轮次唯一回复恢复与歧义拒绝、封存轮前材料不冒充当轮输出、大数据库不全量读取、删除来源后的幂等及旧分组保留。相关标记、封存、context snapshot、executor 和 Wiki store 测试作为相邻回归。测试执行必须使用独立临时 Wiki/agent/SQLite 路径并删除继承的 `CAFF_BADCASE_CAPTURE_DIR`。
 
