@@ -63,8 +63,8 @@ function recoverBounds(text, reply) {
     return { sessionAssistantStartIndex: assistants.indexOf(chain[0]), sessionAssistantEndIndex: end };
   } catch { return null; }
 }
-function projectBackfillResults(results, cases) {
-  const numbers = new Map(wikiDisplayCases(cases).map(c => [c.id, c.displayNumber]));
+function projectBackfillResults(results, cases, deletedCases = []) {
+  const numbers = new Map(wikiDisplayCases(cases, deletedCases).map(c => [c.id, c.displayNumber]));
   return results.map(result => {
     if (!numbers.has(result.caseId)) throw fail('wiki_backfill_selection_invalid');
     return { ...result, caseNumber: numbers.get(result.caseId) };
@@ -88,7 +88,7 @@ function backfillWikiTraces({ config, confirmed, knownKeyValues,
   if (!disjoint(...writes) || writes.some(w => sources.some(s => !disjoint(w, s)))
     || new Set(config.selections.map(s => s.caseId)).size !== config.selections.length) throw fail('wiki_backfill_config_invalid');
   const store = createWikiStore({ globalRoot: config.globalRoot, sourceWorktree: config.sourceWorktree });
-  const cases = store.read().cases;
+  const state = store.read(), cases = state.cases;
   const selected = config.selections.map(s => {
     const item = cases.find(c => c.id === s.caseId);
     if (!item || (s.mode === 'live' && (item.kind !== 'text-only' || item.source.origin !== 'http://127.0.0.1:3100' || item.source.agentId !== 'role-family-gpt'))
@@ -211,7 +211,7 @@ function backfillWikiTraces({ config, confirmed, knownKeyValues,
     const packet = store.readCaseTrace(item.id), reference = wikiTraceReference(packet);
     return { caseId: item.id, status: existing ? 'already_frozen' : packet.complete ? 'complete' : packet.steps.length ? 'partial' : 'unavailable', ...reference };
   });
-  return { schemaVersion: 1, frozenAt, results: projectBackfillResults(results, cases), audit };
+  return { schemaVersion: 1, frozenAt, results: projectBackfillResults(results, cases, state.deletedCases), audit };
 }
 async function main(args = process.argv.slice(2)) {
   if (args.length !== 3 || args[0] !== '--config' || !path.isAbsolute(args[1]) || args[2] !== '--confirmed') throw fail('wiki_backfill_usage');

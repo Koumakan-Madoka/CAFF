@@ -138,8 +138,8 @@ async function runBatch(config, options = {}) {
     modelCallsKnown: results.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable: results.some(c => c.callsUnavailable) };
   emit({ event: 'batch_summary', ...result }); return result;
 }
-function formatBatch(result, sourceCases) {
-  if (result.evaluation) return require('./staged-batch.cjs').formatStagedBatch(result, sourceCases);
+function formatBatch(result, sourceCases, deletedCases) {
+  if (result.evaluation) return require('./staged-batch.cjs').formatStagedBatch(result, sourceCases, deletedCases);
   const lines = [result.scope === 'global' ? 'WikiSkill 全局提示词批量对照（不保证提分）' : 'GPT WikiSkill 批量对照（不保证提分）', '计划 ' + result.planHash,
     '材料预检支持 ' + result.preparedReplayableCount + '/' + result.cases.length + '；wiki 训练 ' + result.wikiTrainingCount + '；留出来源 ' + result.split.testCaseIds.length + '；补充训练来源 ' + result.additionalTrainingCaseIds.length,
     '已记录模型请求 ' + result.modelCallsKnown + (result.callsUnavailable ? '（存在未知/不完整调用记录）' : ''),

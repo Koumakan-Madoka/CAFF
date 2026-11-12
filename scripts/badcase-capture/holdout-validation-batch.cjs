@@ -89,10 +89,10 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible});
  emit({event:'batch_summary',...result});return result;
 }
-function formatHoldoutValidationBatch(result,sourceCases=[]){
- const numbers=new Map(require(base+'wiki-suite').wikiDisplayCases(sourceCases).map(c=>[c.id,c.displayNumber]));
- const label=id=>numbers.has(id)?'#'+numbers.get(id):'编号不可用';
- const lines=require('./holdout-gate-batch.cjs').holdoutGateReportLines(result,sourceCases);
+function formatHoldoutValidationBatch(result,sourceCases=[],deletedCases=[]){
+ const numbers=new Map([...require(base+'wiki-suite').wikiDisplayCases(sourceCases,deletedCases).map(c=>[c.id,'#'+c.displayNumber]),...deletedCases.map(r=>[r.case.id,'#'+r.caseNumber+' · 已删除'])]);
+ const label=id=>numbers.get(id)||'编号不可用';
+ const lines=require('./holdout-gate-batch.cjs').holdoutGateReportLines(result,sourceCases,deletedCases);
  lines[0]='WikiSkill 门槛（本模式）';
  for(const c of result.cases.filter(c=>c.stage==='gate'))lines.push(`${label(c.sourceCaseId)} 原版 ${c.totals.original.passed}/${c.totals.original.scored}，候选 ${c.totals.candidate.passed}/${c.totals.candidate.scored}；${c.status}`);
  const v=result.validation;

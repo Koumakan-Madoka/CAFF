@@ -1171,4 +1171,7 @@ test('archived references retain numbers in results and evolution, with readonly
   assert.equal(archive.querySelector('button,input,textarea,select'), null, 'archive is read-only');
   assert.equal(h.root.querySelector('#c-22'), null, 'archive is not an active card');
   assert.match(h.root.querySelector('#cases-summary').textContent, /训练 3 条/); assert.equal(h.posts().length, 0);
+  await h.click('[data-tab="wiki"]');
+  assert.match(h.root.querySelector('#wiki-page').textContent, /没有可评测的题.*历史结果保留/);
+  assert.equal(h.saved().versions[0].entries[0].caseIds[0], c.id, 'deletion display does not rewrite wiki evidence');
 });
