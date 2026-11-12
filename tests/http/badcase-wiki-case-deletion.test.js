@@ -51,4 +51,9 @@ test('running precheck returns actionable conflict; archived trace and run/repor
   }
   const view = await h.invoke(); assert.equal(view.body.runReplays.length, 1); assert.equal(view.body.dehydrations.length, h.state.dehydrations.length);
   assert.equal(view.body.rubrics.length, h.state.rubrics.length);
+  const archive = view.body.archivedPrechecks.find(r => r.caseId === body.caseId);
+  assert.equal(archive.current, null); assert.equal(archive.reproduced, false);
+  assert.equal(archive.history[0].id, r.id); assert.equal(archive.history[0].current, false);
+  assert.equal(archive.history[0].status, 'failed');
+  assert.equal(view.body.pipelineStates.some(r => r.caseId === body.caseId), false);
 });

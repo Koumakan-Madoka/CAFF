@@ -153,6 +153,11 @@ a.chip:hover { text-decoration: none; border-color: var(--border-strong); }
 .kv { margin: 8px 0 0; display: grid; gap: 4px; font-size: 13px; }
 .kv > div { display: grid; grid-template-columns: 5.5em minmax(0,1fr); gap: 8px; }
 .kv dt { color: var(--soft); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.case:has([data-delete-consent]) { grid-column: 1 / -1; }
+[data-delete-consent] { display: grid; gap: 10px; margin-top: 8px; }
+[data-delete-consent] .field { display: grid; align-items: start; gap: 6px; }
+[data-delete-reason] { box-sizing: border-box; width: 100%; min-height: 88px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; background: var(--raised); color: var(--text); font: inherit; }
+[data-delete-error]:not([hidden]) { color: var(--bad); }
 .case-original { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--font-mono); color: var(--soft); }
 .suggest { font-size: 13px; background: var(--surface); border: 1px dashed var(--border-strong); border-radius: 8px; padding: 6px 10px; }
 .suggest-row { display: grid; gap: 6px; }

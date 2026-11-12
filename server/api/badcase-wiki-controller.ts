@@ -22,6 +22,7 @@ import { planWikiInitialSplit, projectWikiPatternLabels } from '../domain/runtim
 import { projectWikiPipelineStates } from '../domain/runtime/badcase-capture/wiki-pipeline';
 import { createWikiPipelinePrecheckStore, readWikiPipelineInputs } from '../domain/runtime/badcase-capture/wiki-pipeline-prechecks';
 import { createWikiOriginalPrecheckStore } from '../domain/runtime/badcase-capture/wiki-original-precheck-store';
+import { projectWikiOriginalPrechecks } from '../domain/runtime/badcase-capture/wiki-original-precheck-projection';
 import { assertWikiControlCaseMutable } from '../domain/runtime/badcase-capture/wiki-gate-control';
 
 import { wikiCategoryTrainingCases, assertWikiCategoryDraftAvailable } from '../domain/runtime/badcase-capture/wiki-category-induction';
@@ -250,7 +251,10 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const replayChecks = readWikiPipelineInputs(state, createWikiPipelinePrecheckStore(scope));
       const originalPrechecks = createWikiOriginalPrecheckStore(scope).list();
       const pipelineStates = projectWikiPipelineStates({ state, comparisons, runReplays, replayChecks, originalPrechecks });
-      sendJson(res, 200, { ...state, cases, caseStates: store.getCaseStates(), casePatterns: projectWikiPatternLabels(state), categoryProposalViews: store.getCategoryProposals(), initialSplitProposal: planWikiInitialSplit(state, runReplays), runReplays, pipelineStates, comparisons, executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
+      // Archive history has no current rubric/admission. Reuse the same historical
+      // projection without putting archived cases back into the active pipeline.
+      const archivedPrechecks = projectWikiOriginalPrechecks({ cases: (state.deletedCases || []).map((r: any) => r.case), rubrics: [] }, originalPrechecks, []);
+      sendJson(res, 200, { ...state, cases, archivedPrechecks, caseStates: store.getCaseStates(), casePatterns: projectWikiPatternLabels(state), categoryProposalViews: store.getCategoryProposals(), initialSplitProposal: planWikiInitialSplit(state, runReplays), runReplays, pipelineStates, comparisons, executions: executions(), targets: listWikiTargets(), eligibleJudges, trustBoundary: 'same_os_user' });
     } catch (e: any) {
       const code = Object.hasOwn(errors, e?.code || '') ? e.code : 'wiki_unavailable';
       throw issue(code, errors[code] || 503);

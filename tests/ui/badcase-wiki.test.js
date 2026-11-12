@@ -1097,3 +1097,78 @@ test('standalone navigation, projects capture-only boundary and responsive proto
   assert.match(css, /\.toolbar \.field\s*\{[^}]*white-space:\s*nowrap/s);
   assert.match(css, /\.search input:focus-visible\s*\{[^}]*outline:\s*none/s);
 });
+
+function deletionFixture(t, handler) {
+  const h = setup(t, handler), s = h.saved();
+  for (const [i, c] of s.cases.entries()) c.displayNumber = 22 + i;
+  return h;
+}
+function deleteReason(h, text) {
+  const input = h.root.querySelector('[data-delete-reason]'); assert.ok(input);
+  input.value = text; input.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+}
+test('case detail deletion uses in-place consent, requires reason, and sends confirmed revision once', async t => {
+  const h = deletionFixture(t, (url, options, s) => {
+    if (url.endsWith('/case-delete') && options.method === 'POST') {
+      const c = s.cases.find(c => c.id === options.body.caseId);
+      s.deletedCases = [{ case: clone(c), caseNumber: c.displayNumber, reason: options.body.reason, deletedAt: '2026-11-12T00:00:00Z', confirmation: { source: 'badcase-page' }, hash: 'a'.repeat(64) }];
+      s.cases = s.cases.filter(v => v.id !== c.id); s.revision++; return clone(s);
+    }
+  });
+  await h.panel.load(); await h.click('[data-tab="cases"]');
+  assert.ok(h.root.querySelector('#c-22 details.more [data-delete-case]'));
+  assert.equal(h.root.querySelector('[data-delete-consent]'), null);
+  await h.click('#c-22 [data-delete-case]');
+  const consent = h.root.querySelector('#c-22 [data-delete-consent]');
+  assert.match(consent.textContent, /活动列表.*待办/); assert.match(consent.textContent, /归档.*保留/); assert.match(consent.textContent, /其他用例.*分组.*不变/);
+  assert.equal(h.posts().length, 0); assert.equal(h.root.querySelector('[data-delete-lock]').disabled, true);
+  deleteReason(h, '   '); assert.equal(h.root.querySelector('[data-delete-lock]').disabled, true);
+  deleteReason(h, '  旧工具问题已解决  '); await h.click('[data-delete-lock]');
+  assert.equal(h.posts().length, 1); assert.deepEqual(clone(h.posts()[0].body), { caseId: 'c1', reason: '旧工具问题已解决', confirmed: true, expectedRevision: 3 });
+  assert.equal(h.root.querySelector('#c-22'), null); assert.ok(h.root.querySelector('#c-23')); assert.equal(h.confirms.length, 0);
+});
+test('cancel, navigation, filter and refresh clear deletion consent rather than reusing it', async t => {
+  const h = deletionFixture(t); await h.panel.load(); await h.click('[data-tab="cases"]');
+  for (const action of [() => h.click('[data-delete-cancel]'), () => h.click('[data-tab="wiki"]'), () => { const el = h.root.querySelector('#cases-q'); el.value = 'MVP'; el.dispatchEvent(new h.window.Event('input', { bubbles: true })); }, () => h.panel.load()]) {
+    await h.click('#c-22 [data-delete-case]'); deleteReason(h, 'reason'); await action();
+    await h.click('[data-tab="cases"]'); assert.equal(h.root.querySelector('[data-delete-consent]'), null);
+  }
+  assert.equal(h.posts().length, 0);
+});
+for (const [code, message] of [['wiki_control_case_frozen', /对照.*不能删除/], ['wiki_case_in_use', /正在.*预检.*评测/], ['wiki_revision_conflict', /版本.*刷新/]]) test('deletion surfaces actionable safe error: ' + code, async t => {
+  const h = deletionFixture(t, (url, options) => url.endsWith('/case-delete') && options.method === 'POST' ? Promise.reject(Object.assign(Error('DO_NOT_SHOW_RAW_RESPONSE'), { issues: [{ code }] })) : undefined);
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('#c-22 [data-delete-case]'); deleteReason(h, 'reason'); await h.click('[data-delete-lock]');
+  assert.match(h.root.querySelector('[data-delete-error]').textContent, message);
+  assert.doesNotMatch(h.root.textContent, /DO_NOT_SHOW_RAW_RESPONSE/);
+  assert.equal(h.root.querySelector('[data-delete-lock]').disabled, true); assert.equal(h.posts().length, 1);
+  await h.panel.load(); assert.equal(h.root.querySelector('[data-delete-consent]'), null);
+});
+test('delete request locks all delete controls and cannot be double-submitted', async t => {
+  let release; const wait = new Promise(resolve => { release = resolve; });
+  const h = deletionFixture(t, (url, options) => url.endsWith('/case-delete') && options.method === 'POST' ? wait : undefined);
+  await h.panel.load(); await h.click('[data-tab="cases"]'); await h.click('#c-22 [data-delete-case]'); deleteReason(h, 'reason');
+  const submit = h.root.querySelector('[data-delete-lock]'); submit.click(); submit.click();
+  assert.ok([...h.root.querySelectorAll('[data-delete-case],[data-delete-lock],[data-delete-cancel],[data-delete-reason]')].every(el => el.disabled));
+  assert.equal(h.posts().length, 1); release(clone(h.saved())); await tick(); await tick();
+});
+test('archived references retain numbers in results and evolution, with readonly original/rubric/cut/report history', async t => {
+  const h = deletionFixture(t), s = h.saved(), c = s.cases.shift();
+  s.deletedCases = [{ case: c, caseNumber: 22, reason: '<script>old issue resolved</script>', confirmation: { source: 'badcase-page' }, deletedAt: '2026-11-12T00:00:00Z', hash: 'a'.repeat(64) }];
+  s.events = [{ type: 'case-deleted', caseIds: [c.id], caseNumbers: [22], reason: s.deletedCases[0].reason, createdAt: '2026-11-12T00:00:00Z' }, { type: 'pattern-label-confirmed', caseIds: [c.id], createdAt: '2026-11-11T00:00:00Z' }];
+  s.rubrics = [{ caseId: c.id, version: 1, status: 'draft', questions: [{ id: 'q1', question: '未引入额外机制', evidence: 'reply' }], hash: 'b'.repeat(64) }];
+  s.dehydrations = [{ caseId: c.id, decision: { kind: 'single', cutStep: 2, hash: 'c'.repeat(64) } }];
+  s.archivedPrechecks = [{ caseId: c.id, history: [{ id: 'old-precheck', status: 'failed', rubricHash: 'b'.repeat(64) }] }];
+  s.runReplays = [{ caseId: c.id, id: 'old-report', reportOnly: true, status: 'pass' }];
+  s.comparisons = [{ id: 'cmp', model: 'synthetic', completed: true, createdAt: '2026-11-11T00:00:00Z', cases: [{ sourceCaseId: c.id, runs: [] }] }];
+  await h.panel.load(); await h.click('[data-tab="impact"]');
+  assert.match(h.root.querySelector('#impact-runs').textContent, /#22.*已删除/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /确认模式标签 #22.*已删除/);
+  assert.match(h.root.querySelector('#impact-log').textContent, /old issue resolved/); assert.equal(h.root.querySelector('#impact-log script'), null);
+  await h.click('[data-case="22"]');
+  const archive = h.root.querySelector('[data-archived-case="c1"]'); assert.ok(archive);
+  assert.match(archive.textContent, /#22.*已删除/); assert.match(archive.textContent, /未引入额外机制/); assert.match(archive.textContent, /old-precheck/); assert.match(archive.textContent, /cutStep/);
+  assert.ok(archive.querySelector('a[href$="old-report/export.json"]'));
+  assert.equal(archive.querySelector('button,input,textarea,select'), null, 'archive is read-only');
+  assert.equal(h.root.querySelector('#c-22'), null, 'archive is not an active card');
+  assert.match(h.root.querySelector('#cases-summary').textContent, /训练 3 条/); assert.equal(h.posts().length, 0);
+});
