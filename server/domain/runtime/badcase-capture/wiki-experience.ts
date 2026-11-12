@@ -56,7 +56,7 @@ export function mergeWikiLiteralObservations(result: any, previous: any[], incom
 export function buildWikiExperienceDraft(state: any, result: any, observations: any[], previous?: any) {
   const candidate = state.candidates.find((c: any) => c.id === result.candidate.id);
   if (!candidate || candidate.entryIds.length !== 1) throw fail();
-  const numbers = new Map(wikiDisplayCases(state.cases).map(c => [c.id, c.displayNumber]));
+  const numbers = new Map(wikiDisplayCases(state.cases, state.deletedCases).map(c => [c.id, c.displayNumber]));
   const rows = result.cases.map((c: any) => ({ sourceCaseId: c.sourceCaseId, displayNumber: numbers.get(c.sourceCaseId), stage: c.stage,
     category: c.category, reportOnly: c.reportOnly, targetReproduction: c.targetReproduction,
     original: c.totals.original, candidate: c.totals.candidate,

@@ -45,6 +45,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     wiki_dehydration_frozen: 409, wiki_dehydration_stale: 409, wiki_dehydration_recommendation_required: 409,
     wiki_dehydration_ineligible: 422, wiki_dehydration_cut_invalid: 422, wiki_dehydration_prefix_unavailable: 422,
     wiki_dehydration_busy: 409, wiki_dehydration_recommendation_exists: 409, wiki_case_deleted: 409,
+    wiki_case_in_use: 409,
     wiki_dehydration_cause_invalid: 422, wiki_dehydration_input_too_large: 422,
     wiki_dehydration_model_unavailable: 503, wiki_dehydration_model_failed: 503, wiki_dehydration_scene_run_unsupported: 409,
     wiki_candidate_invalid: 422, wiki_candidate_already_baseline: 409, wiki_candidate_leak: 422, wiki_candidate_not_found: 404, wiki_candidate_deprecated: 409,
@@ -78,7 +79,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
     const recommendMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/dehydration\/recommend$/);
     const traceMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/trace(?:\/export\.(json|md))?$/);
     const runMatch = pathname.match(/^\/api\/wikiskill\/cases\/([^/]+)\/run-replays\/([a-f0-9]{64})(?:\/export\.(json|md))?$/);
-    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|control-confirm|category-propose|category-confirm|category-reject|category-induct))?$/)
+    const match = pathname.match(/^\/api\/wikiskill(?:\/(review|confirm-candidate|candidate|confirm-global-candidate|induct|suggestion|membership|executions|comparison-review|experience|rubric|draft-rubric|confirm-rubric|dehydration-confirm|pattern-label-confirm|pending-pattern-link|initial-split-confirm|control-confirm|category-propose|category-confirm|category-reject|category-induct|case-delete))?$/)
       || (traceMatch ? [pathname, 'case-trace'] : runMatch ? [pathname, 'run-replay'] : recommendMatch ? [pathname, 'dehydration-recommend'] : null);
     const readOnly = !match?.[1] || ['executions', 'case-trace', 'run-replay'].includes(match[1]);
     if (!match || (readOnly ? req.method !== 'GET' : req.method !== 'POST')) return false;
@@ -108,6 +109,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         'pending-pattern-link': ['confirmed', 'pendingPatternId', 'entryId', 'expectedRevision'],
         'initial-split-confirm': ['confirmed', 'proposalHash', 'patternKey', 'expectedRevision'],
         'control-confirm': ['confirmed', 'caseId', 'proposalHash', 'expectedRevision'],
+        'case-delete': ['confirmed', 'caseId', 'reason', 'expectedRevision'],
         'dehydration-recommend': ['confirmed', 'expectedRevision', 'traceHash', 'retryOf'],
       };
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -149,7 +151,8 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       if (runMatch) {
         let caseId;
         try { caseId = decodeURIComponent(runMatch[1]); } catch { throw Object.assign(Error(), { code: 'wiki_invalid_identifier' }); }
-        if (!store.read().cases.some((c: any) => c.id === caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
+        const current = store.read();
+        if (!current.cases.some((c: any) => c.id === caseId) && !current.deletedCases?.some((r: any) => r.case.id === caseId)) throw Object.assign(Error(), { code: 'wiki_unknown_case' });
         const packet = runs.read(runMatch[2]);
         if (packet.reservation.request.metadata.caseId !== caseId) throw Object.assign(Error(), { code: 'wiki_run_not_found' });
         const accounting = projectWikiRunAccounting(runs.list(caseId), store.read().dehydrations).find(r => r.id === runMatch[2]);
@@ -185,6 +188,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
         try { await options.runDehydration({ store, caseId, ...input }); }
         finally { recommending.delete(key); }
       }
+      if (match[1] === 'case-delete') store.deleteCases({ caseIds: [input.caseId], reason: input.reason, expectedRevision: input.expectedRevision }, { source: 'badcase-page' });
       if (match[1] === 'dehydration-confirm') store.confirmDehydration(input);
       if (match[1] === 'pattern-label-confirm') store.confirmPatternLabel(input);
       if (match[1] === 'pending-pattern-link') store.linkPendingPattern(input);
@@ -231,7 +235,7 @@ export function createBadcaseWikiController(options: any = {}): RouteHandler<any
       const state = store.read();
       const runReplays = projectWikiRunAccounting(runs.list(), state.dehydrations);
       const reportCounts = new Map(projectWikiRunReportCounts(state, runReplays).map((r: any) => [r.caseId, r]));
-      const cases = wikiDisplayCases(state.cases).map((c: any) => {
+      const cases = wikiDisplayCases(state.cases, state.deletedCases).map((c: any) => {
         const previous = (state.dehydrations || []).findLast((r: any) => r.caseId === c.id);
         let availability = pageRecommendationAvailability(c, previous);
         if (availability.eligible) {

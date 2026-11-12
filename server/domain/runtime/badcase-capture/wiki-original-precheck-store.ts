@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveWikiStorageOptions } from './wiki-data-directory';
+import { withProjectWriteLock } from './project-write-lock';
+import { createWikiStore } from './wiki-store';
 import { wikiValueHash } from './wiki-rubric';
 import { validateWikiOriginalPrecheckPlan, validateWikiOriginalPrecheckRecord, summarizeWikiOriginalPrecheck, type WikiOriginalPrecheckPlan, type WikiOriginalPrecheckOutcome } from './wiki-original-precheck';
 const fail = (code = 'wiki_original_precheck_record_invalid') => Object.assign(Error(code), { code });
@@ -56,8 +58,12 @@ export function createWikiOriginalPrecheckStore(input: any) {
     read,
     reserve(value: WikiOriginalPrecheckPlan) {
       const plan = validateWikiOriginalPrecheckPlan(value), id = 'precheck-' + crypto.randomUUID();
-      const reservation = { kind: 'wiki-original-precheck-reservation-v1', id, createdAt: new Date().toISOString(), plan };
-      publish(id, 'reservation', reservation); return structuredClone(reservation);
+      return withProjectWriteLock(root, 'global-wiki', () => {
+        const state = createWikiStore(scope).read();
+        if (state.deletedCases?.some((r: any) => r.case.id === plan.caseId)) throw fail('wiki_case_deleted');
+        const reservation = { kind: 'wiki-original-precheck-reservation-v1', id, createdAt: new Date().toISOString(), plan };
+        publish(id, 'reservation', reservation); return structuredClone(reservation);
+      });
     },
     finish(id: string, outcome: WikiOriginalPrecheckOutcome) {
       const { reservation, result: existing } = read(id);

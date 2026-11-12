@@ -105,18 +105,20 @@ export function createWikiExecutionStore(options: any) {
     });
   }
   return {
-    read() {
+    read(limit = 20) {
       wiki.read(); // Enforce the same global-root/source-worktree layout boundary.
       let names: string[];
       try { names = fs.readdirSync(directory); } catch (e: any) { if (e.code === 'ENOENT') return []; throw fail('wiki_execution_record_invalid'); }
       if (names.some(n => n.endsWith('.json') && !/^execution-[a-f0-9-]{36}\.json$/.test(n))) throw fail('wiki_execution_record_invalid');
       return names.filter(n => /^execution-[a-f0-9-]{36}\.json$/.test(n)).map(n => readFile(n.slice(0, -5)))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, 20);
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0, limit);
     },
     start(input: any) {
       const plan = projectPlan(input);
       return withProjectWriteLock(options.globalRoot, 'global-wiki', () => {
-        wiki.read(); const now = new Date().toISOString();
+        const state = wiki.read();
+        if (state.deletedCases?.some((r: any) => r.case.id === plan.caseId)) throw fail('wiki_case_deleted');
+        const now = new Date().toISOString();
         return write({ id: 'execution-' + crypto.randomUUID(), createdAt: now, updatedAt: now, status: 'running', plan, planHash: digest(input),
           current: null, runs: [], summary: summarize(plan, []), reason: null, conclusion: null }, true);
       });

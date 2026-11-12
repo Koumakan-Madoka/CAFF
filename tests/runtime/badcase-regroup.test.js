@@ -93,7 +93,7 @@ test('approved deletion removes active selection but archives original records a
   for (const k of ['versions', 'replaySplit', 'replayCases', 'dehydrations']) assert.deepEqual(after[k], before[k]);
   assert.deepEqual(fs.readFileSync(path.join(h.dir, '000000000001.json')), oldBytes);
   assert.throws(() => h.store.confirmDehydration({ caseId: deletedId, expectedRevision: after.revision }), /wiki_unknown_case/);
-  assert.throws(() => h.store.deleteCases({ ...input, caseIds: [sourceId], expectedRevision: after.revision }, confirmation), /wiki_deletion_not_approved/);
+  assert.throws(() => h.store.deleteCases({ ...input, caseIds: ['unknown-case'], expectedRevision: after.revision }, confirmation), /wiki_unknown_case/);
   const rev = after.revision; h.store.deleteCases({ ...input, expectedRevision: rev }, confirmation); assert.equal(h.store.read().revision, rev);
   assert.throws(() => h.store.deleteCases({ ...input, expectedRevision: rev }), /wiki_invalid_input/);
 });

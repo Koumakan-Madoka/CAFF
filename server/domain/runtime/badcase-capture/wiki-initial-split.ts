@@ -36,7 +36,7 @@ export function planWikiInitialSplit(state: any, accounting: any[]) {
   // Unknown labels on existing groups hide quota occupancy. Do not allocate
   // any pattern until those labels are known, or a later label confirmation
   // could silently take its run gate count above the frozen trace capacity.
-  const displayNumbers = new Map<string, number>(wikiDisplayCases(state.cases).map(c => [c.id, c.displayNumber]));
+  const displayNumbers = new Map<string, number>(wikiDisplayCases(state.cases, state.deletedCases).map(c => [c.id, c.displayNumber]));
   const blockers = (state.cases as any[]).filter(c => ['train', 'gate', 'test'].includes(c.split) && wikiSourceFamily(c) === 'GPT'
     && ![4, 10, 14].includes(wikiGoalCaseNumber(c.id)!) && !(labels.get(c.id) as any).confirmed)
     .map(c => ({ caseId: c.id, caseNumber: displayNumbers.get(c.id)!, reason: 'pattern_label_unconfirmed' }))

@@ -17,7 +17,7 @@ import { resolveWikiStorageOptions } from './wiki-data-directory';
 import { projectStagedResult } from './wiki-staged-result';
 import { createWikiTraceStore, sameTraceSource, wikiTraceReference } from './wiki-trace';
 import { buildDehydrationPrefix, interpretDehydrationAnswer } from './wiki-dehydration';
-import { wikiGoalCaseNumber } from './wiki-suite';
+import { wikiGoalCaseNumber, wikiDisplayCases } from './wiki-suite';
 import { planWikiRegroup, planConfirmedWikiRegroup } from './wiki-regroup';
 import { planWikiInitialSplit, projectWikiPatternLabels } from './wiki-initial-split';
 import { resolveWikiPatternLabel, wikiPendingPatternText, appendWikiPendingPatternLink } from './wiki-pattern-label';
@@ -29,6 +29,8 @@ import { buildWikiBaseline, assertWikiChangeNotRejected } from './wiki-baseline'
 import { buildWikiExperienceDraft, mergeWikiLiteralObservations, approvedWikiExperiences, revisedWikiExperience } from './wiki-experience';
 import { createWikiRubric, validateWikiRubric, resolveFrozenWikiRubric, wikiRubricSourceHash, type WikiRubric } from './wiki-rubric';
 import { createWikiOriginalPrecheckStore } from './wiki-original-precheck-store';
+import { createWikiExecutionStore } from './wiki-execution-store';
+import { createWikiBatchExecutionStore } from './wiki-batch-execution-store';
 import { createWikiPipelinePrecheckStore, readWikiPipelineInputs } from './wiki-pipeline-prechecks';
 import { projectWikiGateControls, createWikiGateControlConfirmation, validateWikiGateControl, assertWikiControlCaseMutable } from './wiki-gate-control';
 
@@ -510,20 +512,25 @@ export function createWikiStore(options: any) {
         return { changed: true, value: row.decision };
       }).value;
     },
-    // User-approved B11 retirement, not a public delete API. Originals remain
-    // in old snapshots and this audit archive; packet and evaluation files are untouched.
+    // Page or trusted operator consent. Originals remain in this audit archive
+    // and old snapshots; packet, assertion and evaluation files are untouched.
     deleteCases(input: any, confirmation: any) {
       if (!global) throw fail('wiki_global_required');
       shape(input, ['caseIds', 'reason', 'expectedRevision']);
-      shape(confirmation, ['source', 'reference']);
-      if (confirmation.source !== 'user-via-planner') throw fail('wiki_invalid_input');
-      id(confirmation.reference);
+      shape(confirmation, confirmation?.source === 'badcase-page' ? ['source'] : ['source', 'reference']);
+      if (confirmation.source === 'user-via-planner') id(confirmation.reference);
+      else if (confirmation.source !== 'badcase-page') throw fail('wiki_invalid_input');
       const selected = ids(input.caseIds), reason = text(input.reason, 2048);
-      if (selected.some(k => ![7, 9, 11, 13].includes(wikiGoalCaseNumber(k)!))) throw fail('wiki_deletion_not_approved');
       return change(state => {
         if (!Number.isSafeInteger(input.expectedRevision)) throw fail('wiki_invalid_input');
         if (state.revision !== input.expectedRevision) throw fail('wiki_revision_conflict');
         const archive = state.deletedCases || (state.deletedCases = []);
+        const numbers = new Map(wikiDisplayCases(state.cases, archive).map((c: any) => [c.id, c.displayNumber]));
+        // Check every reservation/progress record, not the page's last 20. An
+        // unfinished precheck remains in use (including a crash-left claim).
+        // Starts share this writer lock and reject already archived identities.
+        const prechecks = createWikiOriginalPrecheckStore(options).list();
+        const executions = [...createWikiExecutionStore(options).read(Infinity), ...createWikiBatchExecutionStore(options).read(Infinity)];
         let changed = false;
         for (const caseId of selected) {
           const old = archive.find((v: any) => v.case.id === caseId);
@@ -534,7 +541,9 @@ export function createWikiStore(options: any) {
           const c = state.cases.find((v: any) => v.id === caseId);
           if (!c) throw fail('wiki_unknown_case');
           assertWikiControlCaseMutable(state, c.id);
-          const record = { case: c, caseNumber: wikiGoalCaseNumber(c.id), reason, confirmation: structuredClone(confirmation), deletedAt: new Date().toISOString() };
+          if (prechecks.some(r => r.reservation.plan.caseId === caseId && !r.result)
+            || executions.some(r => r.status === 'running' && (r.plan.caseId === caseId || r.plan.cases?.some((row: any) => row.sourceCaseId === caseId)))) throw fail('wiki_case_in_use');
+          const record = { case: c, caseNumber: numbers.get(c.id), reason, confirmation: structuredClone(confirmation), deletedAt: new Date().toISOString() };
           const saved = { ...record, hash: hash(JSON.stringify(record)) }; archive.push(saved);
           state.cases = state.cases.filter((v: any) => v.id !== caseId);
           // Remove only active work queues, not frozen knowledge/decisions/results.
