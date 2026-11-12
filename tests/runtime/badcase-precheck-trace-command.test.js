@@ -103,6 +103,32 @@ test('trace command uses production comparison and record scorer, retains Goal/n
   assert.equal(fs.readFileSync(h.outputFile, 'utf8').includes(h.access), false); assert.equal(JSON.stringify(h.store.read()), before);
   for (const folder of ['comparisons', 'run-replays', 'experiment-results']) assert.equal(fs.existsSync(path.join(h.scope.globalRoot, folder)), false);
 });
+test('trace optional receipt fields hash as retained JSON without aborting later scored slots', async t => {
+  const h = setup(t, { reply: true, repeats: 2 }), p = await h.plan(), before = JSON.stringify(h.store.read());
+  const execute = h.dependencies.traceOptions.executeCodex;
+  const r = await h.run(p, { traceOptions: { ...h.dependencies.traceOptions, async executeCodex(...args) {
+    const result = await execute(...args);
+    // Valid optional receipt fields can be own undefined properties before
+    // serialization. The existing JSONL receipt event already omits them.
+    result.receipt.replaySession = undefined; result.receipt.projectResources = undefined;
+    return result;
+  } } });
+  assert.equal(r.status, 'completed'); assert.equal(r.summary.pass, 2); assert.equal(r.summary.errors, 0);
+  assert.equal(h.state.containers, 2); assert.equal(h.state.sends, 2); assert.equal(h.state.closed, 2); assert.equal(h.state.judgeSends, 6);
+  assert.equal(r.budget.workerRequests, 2); assert.equal(r.budget.judgeRequests, 6); assert.equal(r.budget.knownUsage.totalTokens, 56);
+  const saved = require(base + 'wiki-original-precheck-store').createWikiOriginalPrecheckStore(h.scope).read(r.id);
+  const events = fs.readFileSync(h.outputFile, 'utf8').trim().split('\n').map(JSON.parse), artifacts = events.filter(e => e.event === 'attempt_result');
+  assert.equal(artifacts.length, 2); assert.equal(events.at(-1).event, 'precheck_finished');
+  for (const [i, a] of artifacts.entries()) {
+    assert.equal(Object.hasOwn(a.artifact.packet.receipts[0], 'replaySession'), false);
+    assert.equal(Object.hasOwn(a.artifact.packet.receipts[0], 'projectResources'), false);
+    assert.equal(a.artifactHash, require(base + 'wiki-rubric').wikiValueHash(a.artifact));
+    assert.equal(saved.result.runs[i].artifactHash, a.artifactHash);
+    assert.equal(a.artifact.packet.comparison.runs[0].assessment.votes.length, 3);
+  }
+  assert.equal(JSON.stringify(h.store.read()), before);
+  for (const folder of ['comparisons', 'run-replays', 'experiment-results']) assert.equal(fs.existsSync(path.join(h.scope.globalRoot, folder)), false);
+});
 test('trace record failure skips AI credentials and votes; invalid observations stay outside the denominator', async t => {
   for (const [reasons, expected] of [[['x'.repeat(1001), 'safe retry'], 'fail'], [[], 'invalid']]) {
     const h = setup(t, { reasons, reply: expected === 'fail' }), p = await h.plan(), r = await h.run(p);

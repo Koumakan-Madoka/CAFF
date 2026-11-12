@@ -182,10 +182,12 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
       finally { try { await client?.close(); } catch { cleanupFailed = true; fatal = 'wiki_run_client_cleanup_failed'; } }
       let status = traceStatus ?? scored?.checks?.status ?? scored?.assessment?.status ?? (['pass', 'fail', 'invalid', 'error'].includes(packet?.outcome?.status) ? packet.outcome.status : 'error');
       if (fatal || cleanupFailed) status = 'error';
-      const artifact = { iteration, packet: packet ?? null, scoring: scored ?? null, status, reason: fatal }, artifactHash = wikiValueHash(artifact), artifactId = reservation.id + '-attempt-' + iteration;
-      // Hash the exact redacted retained packet, not an unsanitized predecessor.
-      const retained = redactTraceKnownValues(artifact, values);
+      const retained = redactTraceKnownValues({ iteration, packet: packet ?? null, scoring: scored ?? null, status, reason: fatal }, values);
       if (retained.count) { fatal = 'wiki_original_precheck_output_contains_key'; throw fail(fatal); }
+      // Native SDK packets may own undefined optional fields (e.g. wire cache
+      // keys). Hash the exact redacted JSON shape we retain, not the in-memory
+      // predecessor. Keep the shared strict hash validator and old records intact.
+      const artifact = JSON.parse(JSON.stringify(retained.value)), artifactHash = wikiValueHash(artifact), artifactId = reservation.id + '-attempt-' + iteration;
       append({ event: 'attempt_result', artifactId, artifactHash, artifact });
       const b = budget.snapshot();
       // Store complete whole-output cost only. A stopped/unknown or zero-call
