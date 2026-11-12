@@ -62,7 +62,7 @@ PLAN_EOF
 
 - `draft`（讨论期）：可整体创建/替换 plan，结构随意改
 - `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind/verify/base_branch/worker/verifier，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误。上游任一传递节点为 `blocked` 时，下游 `pending→doing` 会被 `409 plan_upstream_blocked` 拒绝（fail-closed），先解阻上游
-- 节点执行由子会话结构化 Goal 持续驱动（D27）：完成实现后先用 `update-goal` 记录真实 work-item 状态、criterion-linked evidence，并将满足的 criterion 标为 `passed`；只有全部 criterion 为 `passed` 或 `waived` 后，工作 Agent 才能调用结构化工具 `goal_action({ action: "complete", reason: "<结果摘要>" })`。有 verifier 的节点由验收 Agent 用 `goal_action({ action: "accept", reason: "<验收依据>" })` 或 `goal_action({ action: "reject", reason: "<具体反馈>" })` 裁决（accept→done，reject→带反馈重干，不限次数）。所有轻动作的 reason 都必填，trim 后 ≤1000 UTF-16 码元；不要通过 bash 调轻动作。不是「回完一条消息就算完」
+- 节点执行由子会话结构化 Goal 持续驱动（D27）：完成实现后先用 `update-goal` 记录真实 work-item 状态、criterion-linked evidence，并将满足的 criterion 标为 `passed`；只有全部 criterion 为 `passed` 或 `waived` 后，工作 Agent 才能调用结构化工具 `goal_action({ action: "complete", reason: "<结果摘要>" })`。有 verifier 的节点由验收 Agent 用 `goal_action({ action: "accept", reason: "<验收依据>" })` 或 `goal_action({ action: "reject", reason: "<具体反馈>" })` 裁决（accept→done，reject→带反馈重干，不限次数）。所有轻动作的 reason 原始字符串都必须 ≤1000 UTF-16 码元、trim 后非空，仅发送 trim 后的值；不要通过 bash 调轻动作。不是「回完一条消息就算完」
 - `done / archived`：拒写
 - draft→active 只能由用户或根会话主理人 agent 触发；子会话里的你没有 activate/revert 权限（403），可以建议，但不要替用户「开工」
 

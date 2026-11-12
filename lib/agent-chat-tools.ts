@@ -587,7 +587,7 @@ async function listParticipants(config: any) {
 async function suggestGoal(config: any, flags: any, options: any = {}) {
   const action = String(flags.action || flags.status || '').trim().toLowerCase();
   if (['pause', 'resume', 'complete', 'clear', 'accept', 'reject'].includes(action)) {
-    throw new Error('suggest-goal light actions have been removed from the CLI. Use the structured goal_action tool with action and required reason (at most 1000 UTF-16 code units after trim).');
+    throw new Error('suggest-goal light actions have been removed from the CLI. Use the structured goal_action tool with action and required reason (raw string at most 1000 UTF-16 code units, nonblank after trim; only the trimmed value is sent).');
   }
   const objective = String(flags.objective || flags.goal || '').trim();
   const reason = String(flags.reason || '').trim();

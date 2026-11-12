@@ -69,7 +69,7 @@ trace worker 在关闭前读取完整 `goalEvidence`；宿主验证 seed hash/�
 ### Goal 轻动作工具与历史 CLI 兼容
 
 - 正式 trace 批量 `direct-comparison` 和 trace 预检 `wiki-precheck-trace` 都通过 `direct-docker.cjs` 打包。`stageReplayGoalCli` 只在一次性回放发行包内把当前 CLI 放到 `agent-chat-tools-current.js`，在原 `build/lib/agent-chat-tools.js` 路径生成最小兼容入口：仅 `suggest-goal` 沿旧解析/HTTP 请求/错误显示，其他命令转交当前 CLI。历史轻动作超长理由仍由原服务端判为400，不变成生产的本地“已移除”错误。生产 CLI 无环境变量或参数可恢复旧写法；不改归档包、冻结提示词、session 或 hash，不声称恢复整个历史运行时。
-- 当前扩展的 `goal_action(action,reason)` 照常本地校验；回调仅开放 `POST /api/agent-tools/capabilities/goal_action`，用同一参数校验器、原 Goal handler 和安全返回投影，沿本次独立 Goal store 的同步事务记入参数/结果。禁止通用 capability 透传或自选身份/数据库，不改生产服务规则。
+- 当前扩展的 `goal_action(action,reason)` 本地校验原始 reason ≤1000 UTF-16 码元、trim 后非空，仅发送 trim 后的值；schema 保留 maxLength 1000，实际原始 UTF-16 上限由 prepareArguments 保证（已安装 Pi/TypeBox 的 schema 按字素簇计数）。服务端和 facade 仍校验 trim 后的值，不改变历史 CLI 行为。回调仅开放 `POST /api/agent-tools/capabilities/goal_action`，用同一参数校验器、原 Goal handler 和安全返回投影，沿本次独立 Goal store 的同步事务记入参数/结果。禁止通用 capability 透传或自选身份/数据库，不改生产服务规则。
 - 容器会话保留 `goal_action` 校验前原始参数，不 trim、不截断，包括本地拒绝而没有 HTTP 的尝试。工具检查必须用 native 目标读取这些事件；caff-chat 目标不支持 `goal_action`，不能拿只有成功重试的回调账本冒充全部尝试。先超长、后改短仍判工具规则失败。回调账本只记录实际收到的调用；两类证据不混同，见[评分契约](wikiskill-scoring.md#trace-级结构化工具调用检查m2)。
 - `retained-caff-initialization.cjs` 用于封存初始化/桥接探针，`sdk-docker-validation.cjs` 用于全新实例验证，`verify-sdk-model-gateway.cjs` 用于合成网关验证；它们虽使用 `prepareCaffRuntimeFiles`，不执行历史 trace，保留当前 CLI，不接历史兼容入口。
 - 回归只用合成库、假模型/裁判/容器；新工具实际模型冒烟的凭据范围和用量必须另获批准。本契约不授权读生产 `.pi-sandbox` 或调用真实模型。

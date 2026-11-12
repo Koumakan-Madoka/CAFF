@@ -203,11 +203,15 @@ accepted architecture rationale.
   `resume`, `complete`, `clear`, `accept`, and `reject`. It uses the authenticated
   capability facade and the original Goal proposal/ruling handler. Proposer
   self-review, planner/DAG binding and revision-conflict rules are unchanged.
-  `reason` is required, nonblank and limited to 1000 UTF-16 code units after
-  trim (JavaScript `string.length`); the schema advertises `maxLength: 1000`
-  and argument preparation enforces the exact service semantics before
-  execution/HTTP, including surrogate pairs. Invalid input is returned to the
-  model for correction, not retried or truncated. The service revalidates too.
+  `reason` is required: the **raw string** is limited to 1000 UTF-16 code units
+  (JavaScript `string.length`) and must be nonblank after trim. Only the trimmed
+  value is sent. The schema retains `minLength: 1` / `maxLength: 1000` as a
+  model-visible bound. Installed Pi 0.85.1 / TypeBox 1.3.7 schema validation counts
+  grapheme clusters, not UTF-16 units or code points; `prepareArguments` runs
+  before schema validation and enforces the stricter raw UTF-16 bound, including
+  surrogate pairs. Invalid input is returned for correction before execution/HTTP,
+  not retried or truncated. The unchanged service/facade still revalidates the
+  trimmed value; direct HTTP and historical CLI limits are not tightened.
   Production bash light actions fail locally before reading stdin or issuing
   HTTP, with guidance to `goal_action`; no flag/environment compatibility
   switch restores them. `set`, `revise`, and `update-goal` keep their existing

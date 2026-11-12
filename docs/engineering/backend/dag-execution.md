@@ -158,8 +158,9 @@
 - **Completion protocol (D27/D28)**: a finished turn NEVER completes a
   goal-driven node. The worker announces completion via
   structured `goal_action({ action: "complete", reason: "<result summary>" })`;
-  reason is required, nonblank, and at most 1000 UTF-16 code units after trim
-  (the production bash light-action form is removed). Invalid arguments are
+  reason is required: raw string at most 1000 UTF-16 code units, nonblank after
+  trim; only the trimmed value is sent (the production bash light-action form
+  is removed). Invalid arguments are
   returned to the worker for correction before HTTP: they create no proposal
   and do not complete the node; only a subsequent valid call can do so. The
   scheduler observes `conversation_goal_proposal_updated` and routes the

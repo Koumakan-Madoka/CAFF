@@ -1052,9 +1052,11 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - The extension registers nine model-visible tools:
   - `goal_action(action, reason)` — sequential Goal lifecycle proposals/rulings;
     action is one of `pause|resume|complete|clear|accept|reject`, reason is
-    required/nonblank and ≤1000 UTF-16 code units after trim. Parameter
-    preparation and direct execute validation reject invalid inputs before
-    HTTP; the authenticated facade calls the original Goal handler, returning
+    required: raw string ≤1000 UTF-16 code units, nonblank after trim; only the
+    trimmed value is sent. Pi 0.85.1 / TypeBox 1.3.7 schema `maxLength` counts
+    grapheme clusters, so preparation enforces the stricter raw UTF-16 bound
+    before schema validation. Direct execute revalidates before HTTP;
+    the authenticated facade calls the original Goal handler, returning
     its result/error without changing permissions or pending-proposal rules.
   - `jev_ask(state, questions, model?)` — optional typed judgment facade,
     disabled unless explicitly configured; see its TypeSafe integration contract.
@@ -1146,7 +1148,8 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 ### Required tests
 
 - `tests/runtime/goal-action-capability.test.js`: six lifecycle actions, local
-  trim/UTF-16 boundary validation (including installed Pi fake-model recovery),
+  raw UTF-16 boundary validation, trimmed delivery, installed Pi grapheme-schema
+  counting and fake-model recovery (including trim-valid but raw-overlong input),
   service error propagation, self-review/planner/DAG authority and stale pending
   proposal conflicts. `agent-chat-tools.test.js` covers production CLI rejection
   before HTTP/stdin and unchanged set/revise/update JSON forwarding;
@@ -1248,7 +1251,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Delegation is the Agent-facing task collaboration path: `create-delegation` followed by `await-delegation` when the result is required.
 - Private send remains an underlying compatibility command: `node <agentToolRelativePath> send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin`. The command/API/bridge/storage/replay are retained but omitted from new Agent prompt instructions and `agent_expectations`.
 - Context recall: `read-context`, `search-messages --query "..." --limit 5`, and `search-memory --query "..." --limit 5` or `--latest`.
-- Governance: `list-participants`; `suggest-goal --action set|revise --reason "..." --content-stdin` with a full Goal JSON object; structured `goal_action({ action, reason })` for `pause|resume|complete|clear|accept|reject`; `update-goal --content-stdin` for factual updates with a full Goal JSON object. Light-action reason is required and nonblank, at most 1000 UTF-16 code units after trim; argument preparation rejects invalid inputs before execution/HTTP. The facade uses the original Goal service and authority checks. Production bash light actions fail locally and point to `goal_action`, without an opt-in compatibility switch. DAG worker completion, verifier accept/reject, rejection feedback and Goal Runner continuation instructions all use the structured tool; each action needs a reason.
+- Governance: `list-participants`; `suggest-goal --action set|revise --reason "..." --content-stdin` with a full Goal JSON object; structured `goal_action({ action, reason })` for `pause|resume|complete|clear|accept|reject`; `update-goal --content-stdin` for factual updates with a full Goal JSON object. Light-action reason is required: raw string at most 1000 UTF-16 code units, nonblank after trim; only the trimmed value is sent. Argument preparation enforces this bound before schema validation and execution/HTTP. The facade uses the original Goal service and authority checks. Production bash light actions fail locally and point to `goal_action`, without an opt-in compatibility switch. DAG worker completion, verifier accept/reject, rejection feedback and Goal Runner continuation instructions all use the structured tool; each action needs a reason.
 - Trellis writes: `trellis-init --task "my-task" [--confirm] [--force]` and `trellis-write --path ".trellis/..." --content-stdin [--confirm] [--force]`.
 
 ### 3. Contracts
