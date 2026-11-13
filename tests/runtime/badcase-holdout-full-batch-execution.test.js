@@ -126,6 +126,31 @@ test('fresh direct staged inputs and exact confirmation are mandatory before any
   await assert.rejects(direct(h.config, p, e.options), { code: 'evaluation_batch_input_changed' }); assert.deepEqual(e.events, []); assert.deepEqual(e.executions, []);
   await assert.rejects(require('../../scripts/badcase-capture/batch-comparison.cjs').runBatch(h.config, { ...e.options, expectedPlanHash: hash('wrong') }), { code: 'evaluation_batch_confirmation_required' });
 });
+for (const reason of ['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable']) test(`batch3 unknown replacement ${reason} completes scoring without hiding unknown usage or stopping later cases`, async t => {
+  const h=fixture(t),e=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h,reason),r=await e.run();
+  assert.equal(r.cases[0].status,'completed'); assert.equal(r.cases[0].callsUnavailable,true);
+  assert.equal(r.cases[0].totals.candidate.errors,1); assert.equal(r.cases[0].totals.candidate.scored,10);
+  assert.equal(r.completed,true); assert.equal(r.callsUnavailable,true); assert.equal(r.adoptionEligible,false);
+  assert.equal(e.executions.length,3); assert.equal(r.modelCallsKnown,50);
+  const row=r.cases[0].runs.find(row=>row.status==='error');
+  assert.equal(row.reason,reason); assert.equal(row.tokenUsage.complete,false); assert.equal(row.tokenUsage.knownTokens,null);
+});
+test('batch3 unavailable calls outside recoverable error replacements still stop the full kernel', async t => {
+  for(const fault of ['auth','unexplained','valid-row','missing-row-usage','unclean','fatal','call-count']){
+    const h=fixture(t),e=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h),compare=e.options.runProductionComparison;
+    e.options.runProductionComparison=async(...args)=>{const r=await compare(...args),bad=r.runs.find(row=>row.status==='error');
+      if(fault==='auth')bad.reason='evaluation_codex_access_expired';
+      if(fault==='unexplained')bad.tokenUsage.callsUnavailable=false;
+      if(fault==='valid-row')r.runs[0].tokenUsage={...bad.tokenUsage};
+      if(fault==='missing-row-usage')delete r.runs[0].tokenUsage;
+      if(fault==='unclean')bad.cleaned=false;
+      if(fault==='fatal')r.fatal=true;
+      if(fault==='call-count')r.modelCallsKnown--;
+      return r;};
+    const r=await e.run(); assert.equal(r.cases[0].status,'error',fault); assert.equal(r.completed,false,fault);
+    assert.equal(r.cases[1].status,'not-run',fault); assert.equal(r.adoptionEligible,false,fault);
+  }
+});
 test('malformed schedules, fatal or unknown/mismatched call accounting cannot claim completion or enable adoption', async t => {
   for (const fault of ['schedule', 'fatal', 'unknown-calls', 'call-count']) {
     const h = fixture(t), e = execution(h); let sent = 0;

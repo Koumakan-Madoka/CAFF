@@ -6,6 +6,7 @@ const {validateWikiHoldoutFullExperimentPlan,decideWikiHoldoutFullExperiment}=re
 const {wikiExperimentRun}=require(base+'wiki-experiment-plan');
 const {wikiComparisonTotals}=require(base+'wiki-comparison-totals');
 const {wikiObjectiveAssertionIds}=require(base+'wiki-comparison-scoring');
+const {wikiHoldoutReplacementCallFlags}=require(base+'wiki-holdout-replacement-calls');
 const {assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
 const fail=code=>Object.assign(Error(code),{code});
 const safeCode=(e,fallback)=>/^(evaluation|wiki)_[a-z_]+$/.test(e?.code||'')?e.code:fallback;
@@ -53,14 +54,16 @@ async function runHoldoutValidationBatch(config,plan,options={}){
       emit({...event,sourceCaseId:item.sourceCaseId,stage:item.stage,split:item.split,category:item.category});
      }});
     const observedCalls=[...calls.values()].reduce((n,a)=>n+a.length,0);
+    const replacementUnknown=measured.completed===true&&measured.callsUnavailable===true
+     &&wikiHoldoutReplacementCallFlags(measured.runs)!==null;
     if(!Array.isArray(measured.runs)||!Number.isSafeInteger(measured.modelCallsKnown)||measured.modelCallsKnown<0||typeof measured.callsUnavailable!=='boolean'
-     ||!measured.callsUnavailable&&measured.modelCallsKnown!==observedCalls
-     ||measured.completed===true&&(measured.fatal===true||measured.callsUnavailable))throw fail('wiki_holdout_execution_result_invalid');
+     ||(!measured.callsUnavailable||replacementUnknown)&&measured.modelCallsKnown!==observedCalls
+     ||measured.completed===true&&(measured.fatal===true||measured.callsUnavailable&&!replacementUnknown))throw fail('wiki_holdout_execution_result_invalid');
     result={...result,status:measured.completed?'completed':'error',runs:measured.runs,modelCallsKnown:measured.modelCallsKnown,callsUnavailable:measured.callsUnavailable===true};
     // Check schedules/eligibility before spending another case. Scoring remains
     // owned by the unchanged trace/single-call scorers and later projection.
     decideWikiHoldoutFullExperiment(experiment,decisionRows([...results,result]));
-    fatal||=measured.fatal===true||measured.callsUnavailable;
+    fatal||=measured.fatal===true||measured.callsUnavailable&&!replacementUnknown;
    }catch(e){
     result={...result,status:'error',reason:safeCode(e,'case_execution_failed'),runs:observed,
      modelCallsKnown:[...calls.values()].reduce((n,a)=>n+a.length,0),callsUnavailable:true};fatal=true;
@@ -83,10 +86,11 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  // remaining controls were deliberately not run. Never count them as passes.
  const completed=gate.outcome==='rejected'||gate.outcome==='accepted'&&selection.budgetStatus==='ready'&&results.every(c=>c.status==='completed'
   ||decision.outcome==='validation-degraded'&&c.stage==='validation'&&c.status==='not-run'&&c.reason==='wiki_validation_prior_degradation');
- const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible,
+ const callsUnavailable=results.some(c=>c.callsUnavailable),adoptionEligible=decision.adoptionEligible&&!callsUnavailable;
+ const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible,
   byStage:{gate:totals(results.filter(c=>c.stage==='gate'),10),validation:totals(results.filter(c=>c.stage==='validation'),selection.policy.repeats)},
-  modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
- emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible});
+  modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable};
+ emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible});
  emit({event:'batch_summary',...result});return result;
 }
 function formatHoldoutValidationBatch(result,sourceCases=[],deletedCases=[]){

@@ -104,6 +104,46 @@ test('full unknown-usage projection remains indeterminate without backfilling or
  const f = execution(h), p = project(await f.run()); assert.equal(p.outcome, 'indeterminate'); assert.equal(p.validation.status, 'usage-unknown'); assert.equal(p.adoptionEligible, false);
  assert.equal(f.executions.length, 2); assert.deepEqual(project(p), p);
 });
+test('batch3 unknown replacement flags require bounded shared attempts and exact per-row attribution', () => {
+ const check=require(base+'wiki-holdout-replacement-calls').wikiHoldoutReplacementCallFlags;
+ const bad={status:'error',reason:'evaluation_codex_proxy_failed',cleaned:true,callsUnavailable:true};
+ assert.deepEqual(check(Array.from({length:5},()=>({...bad}))),[true,true,true,true,true]);
+ assert.equal(check(Array.from({length:6},()=>({...bad}))),null);
+ assert.equal(check([{...bad},{status:'invalid',callsUnavailable:false},{status:'invalid',callsUnavailable:false},
+  {status:'invalid',callsUnavailable:false},{status:'invalid',callsUnavailable:false},{status:'invalid',callsUnavailable:false}]),null);
+ for(const row of [{...bad,status:'pass'},{...bad,reason:'run_evidence_unavailable'},{...bad,callsUnavailable:null},
+  {...bad,tokenUsage:{callsUnavailable:false,complete:false}},{...bad,tokenUsage:{callsUnavailable:true,complete:true}},null])assert.equal(check([row]),null);
+});
+test('batch3 completed+unavailable raw row shape passes the retained boundary independently of dispatcher completion', async t => {
+ const h=fixture(t),r=await require('../helpers/wiki-holdout-unknown-replacement.cjs')(h).run();
+ r.cases[0].status='completed'; delete r.cases[0].reason;
+ const d=require(base+'wiki-holdout-validation-plan').decideWikiHoldoutFullExperiment(r.experiment,r.cases.map(c=>({caseId:c.sourceCaseId,status:c.status,runs:c.runs.map(require(base+'wiki-experiment-plan').wikiExperimentRun)})));
+ Object.assign(r,{gateDecision:d.gate,validation:d.validation,outcome:d.outcome,adoptionEligible:false});
+ assert.doesNotThrow(()=>project(r)); assert.equal(project(r).cases[0].callsUnavailable,true);
+});
+test('batch3 completed unknown replacement projects idempotently, remains partial in progress and is not trusted usage history', async t => {
+ const h=fixture(t),f=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h),r=await f.run();
+ // Before the fix this assertion is red: the v4 kernel rejects completed+unknown.
+ assert.equal(r.cases[0].status,'completed'); const p=project(r);
+ assert.equal(p.completed,true); assert.equal(p.callsUnavailable,true); assert.equal(p.adoptionEligible,false);
+ assert.equal(p.cases[0].callsUnavailable,true); assert.equal(p.cases[0].runs.filter(r=>r.callsUnavailable).length,1);
+ assert.deepEqual(project(p),p);
+ const store=require(base+'wiki-batch-execution-store').createWikiBatchExecutionStore(h.config),start=store.start(f.pinned.summary);
+ for(const e of f.events)store.event(start.id,e);
+ const finish=store.finish(start.id,saved(r)); assert.equal(finish.summary.usageComplete,false);
+ assert.equal(finish.cases[0].usageComplete,false);
+ const method=require('../../scripts/badcase-capture/production-holdout-suite.cjs'),settings=h.config.evaluation.validation;
+ const before=method.readProductionHoldoutValidationEvidence(h.scope,h.store.read(),h.config.evaluation.targetEntryId,settings).history;
+ const fs=require('node:fs'),path=require('node:path'),dir=path.join(h.scope.globalRoot,'comparisons');fs.mkdirSync(dir,{recursive:true});
+ fs.writeFileSync(path.join(dir,'partial-completed.json'),JSON.stringify(p));
+ assert.deepEqual(method.readProductionHoldoutValidationEvidence(h.scope,h.store.read(),h.config.evaluation.targetEntryId,settings).history,before);
+ for(const mutate of [x=>x.cases[0].runs.find(r=>r.callsUnavailable).reason='evaluation_codex_access_expired',
+  x=>x.cases[0].runs[0].callsUnavailable=true,x=>delete x.cases[0].runs[0].callsUnavailable,
+  x=>x.cases[0].runs.find(r=>r.callsUnavailable).cleaned=false,
+  x=>x.cases[0].runs.forEach(r=>r.callsUnavailable=false),x=>x.adoptionEligible=true]){
+  const bad=structuredClone(p);mutate(bad);assert.throws(()=>project(bad));
+ }
+});
 test('full immutable read is byte/hash stable after current confirmations/assertions change; no re-admission or silent upgrade', async t => {
  const fs = require('node:fs'), path = require('node:path'), h = fixture(t), payload = project(await execution(h).run());
  const byteHash = v => require('node:crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');

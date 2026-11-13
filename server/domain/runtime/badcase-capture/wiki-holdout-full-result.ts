@@ -4,6 +4,7 @@
 import { validateWikiHoldoutFullExperimentPlan, decideWikiHoldoutFullExperiment } from './wiki-holdout-validation-plan';
 import { projectWikiHoldoutResult } from './wiki-holdout-result';
 import { projectWikiHoldoutScoredCases } from './wiki-holdout-scored-cases';
+import { wikiHoldoutReplacementCallFlags } from './wiki-holdout-replacement-calls';
 import { wikiExperimentRun } from './wiki-experiment-plan';
 import { wikiValueHash } from './wiki-rubric';
 const invalid = () => Object.assign(Error('wiki_comparison_invalid'), { code: 'wiki_comparison_invalid' });
@@ -28,14 +29,18 @@ export function projectWikiHoldoutFullResult(input: any, totals: (cases: any[], 
     gateCaseIds: experiment.gate.caseIds.slice(), validationCaseIds: selection.caseIds.slice() };
   check(same(input.evaluation, evaluation) && same(input.split, split));
   const stageTotals = (rows: any[], repeats: number) => totals(rows.map(c => c.stage === 'validation' ? { ...c, stage: 'gate' } : c), repeats);
-  const cases = projectWikiHoldoutScoredCases(input.cases, experiment, splits, stageTotals);
-  check(cases.every(c => c.status !== 'completed' || !c.callsUnavailable));
+  const cases = projectWikiHoldoutScoredCases(input.cases, experiment, splits, stageTotals).map((c, n) => {
+    if (c.status !== 'completed' || !c.callsUnavailable) return c;
+    const flags = wikiHoldoutReplacementCallFlags(input.cases[n].runs); check(flags);
+    return { ...c, runs: c.runs.map((r: any, i: number) => ({ ...r, callsUnavailable: flags[i] })) };
+  });
   const decision = decideWikiHoldoutFullExperiment(experiment, cases.map(c => ({ caseId: c.sourceCaseId, status: c.status, runs: c.runs.map(wikiExperimentRun) })));
   const completed = decision.gate.outcome === 'rejected' || decision.gate.outcome === 'accepted' && selection.budgetStatus === 'ready' && cases.every(c => c.status === 'completed'
     || decision.outcome === 'validation-degraded' && c.stage === 'validation' && c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation');
-  check(same(input.gateDecision, decision.gate) && same(input.validation, decision.validation) && input.outcome === decision.outcome
-    && input.adoptionEligible === decision.adoptionEligible && input.completed === completed);
   const modelCallsKnown = cases.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable = cases.some(c => c.callsUnavailable);
+  const adoptionEligible = decision.adoptionEligible && !callsUnavailable;
+  check(same(input.gateDecision, decision.gate) && same(input.validation, decision.validation) && input.outcome === decision.outcome
+    && input.adoptionEligible === adoptionEligible && input.completed === completed);
   check(Number.isSafeInteger(modelCallsKnown) && input.modelCallsKnown === modelCallsKnown && input.callsUnavailable === callsUnavailable
     && (!input.adoptionEligible || !callsUnavailable));
   // Reuse v4 gate-only's envelope/candidate/config/scoring checks through a
@@ -53,5 +58,5 @@ export function projectWikiHoldoutFullResult(input: any, totals: (cases: any[], 
   check(Number.isSafeInteger(input.preparedReplayableCount) && input.preparedReplayableCount >= 0 && input.preparedReplayableCount <= cases.length);
   return { ...common, kind: input.kind, evaluation, experiment, split, preparedReplayableCount: input.preparedReplayableCount, completed, cases,
     gateDecision: decision.gate, byStage: { gate: stageTotals(gateCases, 10), validation: stageTotals(cases.filter(c => c.stage === 'validation'), selection.policy.repeats) },
-    outcome: decision.outcome, validation: decision.validation, adoptionEligible: decision.adoptionEligible, modelCallsKnown, callsUnavailable };
+    outcome: decision.outcome, validation: decision.validation, adoptionEligible, modelCallsKnown, callsUnavailable };
 }
