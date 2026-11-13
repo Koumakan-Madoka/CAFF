@@ -151,6 +151,20 @@ test('failed mailbox exec while the container is still running remains a hard re
   const wrapped = relayDockerTransport(run, async () => assert.fail(), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 });
   await assert.rejects(wrapped(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/); assert.equal(killed, true);
 });
+test('relay failure reports only an allowlisted phase/code after joining, never Docker stderr', async () => {
+  const id = 'a'.repeat(64), diagnostics = []; let finish, killed = false;
+  const run = async args => {
+    if (args[0] === 'start') return new Promise(resolve => { finish = resolve; });
+    if (args[0] === 'inspect') return { code: 0, stdout: JSON.stringify([{ Id: id, State: { Running: !killed } }]), stderr: '' };
+    if (args[0] === 'kill') { killed = true; finish({ code: 137, stdout: '', stderr: '' }); return { code: 0, stdout: '', stderr: '' }; }
+    return { code: null, failure: 'timeout', stdout: 'PRIVATE-OUTPUT', stderr: 'PRIVATE-ERROR' };
+  };
+  const relay = relayDockerTransport(run, async () => assert.fail('no provider request'), { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 }, undefined, d => diagnostics.push(d));
+  await assert.rejects(relay(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/);
+  assert.equal(killed, true);
+  assert.deepEqual(diagnostics, [{ phase: 'read', errorCode: 'relay_failed' }]);
+  assert.equal(JSON.stringify(diagnostics).includes('PRIVATE'), false);
+});
 test('external precheck cancellation stops the pinned container between model calls and joins attach', async () => {
   const controller = new AbortController(), id = 'a'.repeat(64); let finish, killed = false, reads = 0, joined = false;
   const run = async args => {

@@ -50,6 +50,17 @@ test('key inherited by env name only; no host mounts/socket/privileged; receipt 
   const start = f.calls.find(c => c.args[0] === 'start'); assert.equal(start.options.input.includes(key), false);
   assert.equal(JSON.stringify(r).includes(key), false);
 });
+test('launcher emits a safe cleanup summary even when start throws and returns no receipt', async () => {
+  const f = fake(), diagnostics = [];
+  const runDocker = async (...args) => {
+    if (args[0][0] === 'start') throw Error('PRIVATE-LAUNCHER-ERROR');
+    return f.run(...args);
+  };
+  await assert.rejects(runDirectDockerTask(image, files, { key, runDocker, timeoutMs: 1000, onDiagnostic: d => diagnostics.push(d) }));
+  assert.equal(f.remaining(), false);
+  assert.deepEqual(diagnostics, [{ phase: 'cleanup', errorCode: 'none', cleanup: { attempted: true, completed: true } }]);
+  assert.equal(JSON.stringify(diagnostics).includes('PRIVATE'), false);
+});
 test('file-backed dependencies are chunk-scanned, copied without readFile, and revalidated before create', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'direct-file-backed-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -299,14 +299,24 @@ async function runComparison(config, options = {}) {
       let task;
       emit({ event: 'run_start', variant, iteration });
       const started = performance.now(), hostBefore = transport?.state().requests;
+      const onDiagnostic = value => {
+        // Diagnostic events cannot substitute for receipt/isolation evidence.
+        if (!['inspect', 'read', 'request', 'send', 'write', 'cleanup'].includes(value?.phase)) return;
+        const cleanup = value.phase === 'cleanup';
+        if (cleanup ? !['none', 'cleanup_failed'].includes(value.errorCode)
+          || typeof value.cleanup?.attempted !== 'boolean' || typeof value.cleanup?.completed !== 'boolean'
+          : value.errorCode !== 'relay_failed') return;
+        emit({ event: 'launcher_diagnostic', variant, iteration, phase: value.phase, errorCode: value.errorCode,
+          ...(cleanup ? { cleanup: { attempted: value.cleanup.attempted, completed: value.cleanup.completed } } : {}) });
+      };
       try {
         transport?.beginAttempt();
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
-        task = await execute(fixed.image, files[variant], native
+        task = await execute(fixed.image, files[variant], { onDiagnostic, ...(native
           ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash,
             ...(fixed.nativeMaxRequests === undefined ? {} : { maxRequests: fixed.nativeMaxRequests }),
             ...(options.signal ? { signal: options.signal } : {}) }
-          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash });
+          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash }) });
       } catch { task = { failed: true, reason: 'evaluation_failed' }; }
       const durationMs = performance.now() - started, environmentReason = transport?.state().reason;
       const hostRequestAttempts = native ? transport.state().requests - hostBefore : undefined;
