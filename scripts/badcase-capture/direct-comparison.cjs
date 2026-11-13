@@ -308,7 +308,9 @@ async function runComparison(config, options = {}) {
         if (cleanup ? !['none', 'cleanup_failed'].includes(value.errorCode)
           || typeof value.cleanup?.attempted !== 'boolean' || typeof value.cleanup?.completed !== 'boolean'
           : !RELAY_ERROR_CODES.includes(value.errorCode)) return;
+        const transportReason = transport?.state().reason;
         emit({ event: 'launcher_diagnostic', variant, iteration, phase: value.phase, errorCode: value.errorCode,
+          ...(RELAY_ERROR_CODES.includes(transportReason) ? { transportReason } : {}),
           ...(cleanup ? { cleanup: { attempted: value.cleanup.attempted, completed: value.cleanup.completed } } : {}) });
       };
       try {

@@ -167,7 +167,8 @@ test('relay failure reports only an allowlisted phase/code after joining, never 
 });
 test('host send refusal preserves only exact allowlisted causes after stopping and joining the worker', async () => {
   for (const code of ['evaluation_codex_access_expired', 'evaluation_codex_input_contains_known_key', 'evaluation_codex_input_contains_access',
-    'wiki_precheck_trace_input_contains_key', 'evaluation_codex_mailbox_request_invalid', 'evaluation_codex_PRIVATE', 'PRIVATE']) {
+    'evaluation_codex_request_aborted', 'evaluation_codex_transport_stopped', 'wiki_precheck_trace_input_contains_key',
+    'evaluation_codex_mailbox_request_invalid', 'evaluation_codex_private_detail', 'evaluation_codex_PRIVATE', 'PRIVATE']) {
     const id = 'a'.repeat(64), diagnostics = []; let finish, killed = false, joined = false;
     const run = async args => {
       if (args[0] === 'start') return new Promise(resolve => { finish = () => { joined = true; resolve({ code: 137, stdout: '', stderr: '' }); }; });
@@ -179,7 +180,7 @@ test('host send refusal preserves only exact allowlisted causes after stopping a
       { maxRequests: 2, maxRequestBytes: 100, maxResponseBytes: 100 }, undefined, d => { assert.equal(joined, true); diagnostics.push(d); });
     await assert.rejects(relay(['start', '-a', '-i', id], { timeoutMs: 1000 }), /container_model_relay_failed/);
     assert.equal(killed, true); assert.equal(joined, true);
-    assert.deepEqual(diagnostics, [{ phase: 'send', errorCode: code.includes('PRIVATE') ? 'relay_failed' : code }]);
+    assert.deepEqual(diagnostics, [{ phase: 'send', errorCode: code.includes('PRIVATE') || code === 'evaluation_codex_private_detail' ? 'relay_failed' : code }]);
     assert.equal(JSON.stringify(diagnostics).includes('PRIVATE'), false);
   }
 });

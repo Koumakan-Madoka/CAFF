@@ -33,32 +33,30 @@ function createCodexAccess(authFile, { now = Date.now } = {}) {
   // select the authorized host .pi-sandbox/auth.json, not an agent sandbox.
   if (typeof authFile !== 'string' || !path.isAbsolute(authFile) || path.basename(authFile) !== 'auth.json'
     || path.basename(path.dirname(authFile)) !== '.pi-sandbox') throw fail('auth_source_invalid');
-  const file = path.resolve(authFile); let selectedAccount, closed = false;
+  const file = path.resolve(authFile); let lease, closed = false;
   const get = () => {
     if (closed) throw fail('access_closed');
-    // Re-read ONLY this approved source with the same read-only identity checks.
-    // External rotation is not OAuth refresh; never fall back to a cached lease.
-    const entry = own(readAuth(file), 'openai-codex');
-    // Deliberately never access entry.refresh or pass the document to pi's
-    // credential store. Its automatic OAuth refresh would mutate production.
-    const access = own(entry, 'access'), expires = own(entry, 'expires');
-    if (own(entry, 'type') !== 'oauth' || typeof access !== 'string' || access.length > 16384
-      || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(access) || !Number.isSafeInteger(expires)) throw fail('access_invalid');
-    let payload;
-    try { payload = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString('utf8')); } catch { throw fail('access_invalid'); }
-    const accountId = own(own(payload, 'https://api.openai.com/auth'), 'chatgpt_account_id'), exp = own(payload, 'exp');
-    if (typeof accountId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(accountId) || !Number.isSafeInteger(exp)
-      || !Number.isSafeInteger(exp * 1000)) throw fail('access_invalid');
-    // Local claims are only an expiry/routing check, not signature validation.
-    // The provider still authenticates the original token on every request.
-    const lease = Object.freeze({ access, accountId, expiresAt: Math.min(expires, exp * 1000) });
+    if (!lease) {
+      const entry = own(readAuth(file), 'openai-codex');
+      // Deliberately never access entry.refresh or pass the document to pi's
+      // credential store. Its automatic OAuth refresh would mutate production.
+      const access = own(entry, 'access'), expires = own(entry, 'expires');
+      if (own(entry, 'type') !== 'oauth' || typeof access !== 'string' || access.length > 16384
+        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(access) || !Number.isSafeInteger(expires)) throw fail('access_invalid');
+      let payload;
+      try { payload = JSON.parse(Buffer.from(access.split('.')[1], 'base64url').toString('utf8')); } catch { throw fail('access_invalid'); }
+      const accountId = own(own(payload, 'https://api.openai.com/auth'), 'chatgpt_account_id'), exp = own(payload, 'exp');
+      if (typeof accountId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(accountId) || !Number.isSafeInteger(exp)
+        || !Number.isSafeInteger(exp * 1000)) throw fail('access_invalid');
+      // Local claims are only an expiry/routing check, not signature validation.
+      // The provider still authenticates the original token on every request.
+      lease = Object.freeze({ access, accountId, expiresAt: Math.min(expires, exp * 1000) });
+    }
     if (now() >= lease.expiresAt) throw fail('access_expired');
-    if (selectedAccount !== undefined && accountId !== selectedAccount) throw fail('access_changed');
-    selectedAccount = accountId;
     return lease;
   };
   // Avoid accidental serialization of access/account identity or the source path.
-  return Object.defineProperties({}, { get: { value: get }, close: { value: () => { closed = true; selectedAccount = undefined; } } });
+  return Object.defineProperties({}, { get: { value: get }, close: { value: () => { closed = true; lease = undefined; } } });
 }
 const ALLOWED_HEADERS = new Set(['authorization', 'chatgpt-account-id', 'originator', 'user-agent', 'openai-beta', 'accept',
   'content-type', 'content-encoding', 'session-id', 'x-client-request-id']);
@@ -135,11 +133,6 @@ function createCodexTransport(config, dependencies = {}) {
   if (!object(config) || Object.keys(config).some(k => !['authFile', 'confirmed', 'timeoutMs'].includes(k))
     || !Number.isSafeInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 2700000) throw fail('config_invalid');
   const credential = createCodexAccess(config.authFile, { now: dependencies.now || Date.now });
-  // Retain selected values only in this host scanner, including earlier rotated
-  // access, so accepting rotation cannot weaken subsequent leak checks.
-  const selectedValues = new Set();
-  const getAccess = () => { const lease = credential.get(); selectedValues.add(lease.access); return lease; };
-  const containsAccess = bytes => [...selectedValues].some(value => hasAccess(bytes, value));
   const timeoutMs = config.timeoutMs, send = dependencies.fetch || ((...args) => require('undici').fetch(...args));
   const createDispatcher = dependencies.createDispatcher || (uri => new (require('undici').ProxyAgent)({ uri }));
   let dispatcher, closed = false, stopped = false, busy = false, active, reason = null, diagnostic = null, requests = 0;
@@ -152,8 +145,8 @@ function createCodexTransport(config, dependencies = {}) {
     try {
       const q = snapshotRequest(url, options);
       if (dependencies.containsKnownValue?.(q.plain)) throw fail('input_contains_known_key');
-      const access = getAccess();
-      if (containsAccess(q.plain) || [...q.headers.values()].some(s => containsAccess(s))) throw fail('input_contains_access');
+      const access = credential.get();
+      if (hasAccess(q.plain, access.access) || [...q.headers.values()].some(s => s.includes(access.access))) throw fail('input_contains_access');
       if (options.signal?.aborted) throw fail('request_aborted');
       dispatcher ??= createDispatcher(PROFILE.proxy); // explicit per-request dispatcher; NO_PROXY/global dispatcher never wins
       controller = new AbortController(); active = controller;
@@ -188,7 +181,7 @@ function createCodexTransport(config, dependencies = {}) {
         else stop(code);
         return new Response(JSON.stringify({ error: { code: reason, message: reason } }), { status: response.status, headers: { 'content-type': 'application/json' } });
       }
-      if (containsAccess(bytes)) throw fail('output_contains_access');
+      if (hasAccess(bytes, access.access)) throw fail('output_contains_access');
       if (dependencies.containsKnownValue?.(bytes)) throw fail('output_contains_known_key');
       const terminal = sseTerminalReason(bytes); if (terminal) stop(terminal);
       return new Response(bytes, { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -197,7 +190,7 @@ function createCodexTransport(config, dependencies = {}) {
       // A transient send/read failure ends this turn, not the batch. The host
       // may start another attempt only after its launcher proves cleanup.
       stopped = code !== 'evaluation_codex_proxy_failed'; reason = code; throw Object.assign(Error(code), { code });
-    } finally { clearTimeout(timer); active = undefined; busy = false; if (closed) selectedValues.clear(); }
+    } finally { clearTimeout(timer); active = undefined; busy = false; }
   };
   return { fetch: transportFetch, state: () => ({ profile: PROFILE, requests, stopped, closed, reason, diagnostic: diagnostic && { ...diagnostic } }),
     beginAttempt() {
@@ -208,12 +201,12 @@ function createCodexTransport(config, dependencies = {}) {
       if (closed) throw fail('transport_closed');
       if (stopped) throw Object.assign(Error(reason), { code: reason });
       let access;
-      try { access = getAccess().access; }
+      try { access = credential.get().access; }
       catch (e) { stopped = true; reason = e.code; throw e; }
       // Trusted synchronous host input/output checks only; never pass this
       // callback, credential lease or returned access into a worker or event.
       check(access);
     },
-    async close() { if (closed) return; closed = true; credential.close(); active?.abort(); try { await dispatcher?.destroy(); } finally { if (!busy) selectedValues.clear(); } } };
+    async close() { if (closed) return; closed = true; credential.close(); active?.abort(); await dispatcher?.destroy(); } };
 }
 module.exports = { PROFILE, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, createCodexAccess, createCodexTransport, readPrivateJson: readAuth };
