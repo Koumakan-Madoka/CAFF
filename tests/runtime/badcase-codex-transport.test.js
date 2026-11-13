@@ -43,17 +43,45 @@ function fakeTransport(f, { send = () => new Response(sse(), { headers: { 'conte
   }, fetch: async (url, options) => { calls.push({ url, options }); return send(url, options); } });
   return { transport, calls, agents };
 }
-test('access source is explicit, lazy, access-only, pinned in memory, with no refresh or auth-file writeback', t => {
+test('access source is explicit, lazy and re-read only from the same file without refresh or writeback', t => {
   const f = fixture(t), { createCodexAccess } = load(); let at = epoch;
   const credential = createCodexAccess(f.config.authFile, { now: () => at });
   assert.equal(JSON.stringify(credential), '{}');
   const first = credential.get(); assert.equal(first.access, f.access); assert.equal(first.accountId, 'synthetic-account');
   fs.writeFileSync(f.authFile, JSON.stringify({ 'openai-codex': { type: 'oauth', access: jwt(epoch / 1000 + 1200), expires: epoch + 1200000 } }));
-  assert.equal(credential.get().access, first.access, 'no token rotation/re-read while the lease is active');
-  at = epoch + 600000; assert.throws(() => credential.get(), /evaluation_codex_access_expired/);
+  assert.equal(credential.get().access, jwt(epoch / 1000 + 1200), 'external rotation is visible before the previous access expires');
+  at = epoch + 600000; assert.equal(credential.get().expiresAt, epoch + 1200000);
+  at = epoch + 1200000; assert.throws(() => credential.get(), /evaluation_codex_access_expired/);
   credential.close(); assert.throws(() => credential.get(), /evaluation_codex_access_closed/);
   const untouched = fixture(t), copy = createCodexAccess(untouched.authFile, { now: () => epoch });
   copy.get(); copy.close(); assert.equal(fs.readFileSync(untouched.authFile, 'utf8'), untouched.bytes);
+});
+test('request-time access rotation survives the old expiry, protects all selected values and never writes the source', async t => {
+  for (const direction of ['out', 'in']) {
+    const f = fixture(t); let at = epoch, echoOld = false;
+    const g = fakeTransport(f, { now: () => at, send: () => new Response(sse() + (echoOld ? f.access : '')) });
+    assert.equal((await g.transport.fetch(endpoint, request())).status, 200);
+    const access = jwt(epoch / 1000 + 1200), bytes = JSON.stringify({ 'openai-codex': { type: 'oauth', access, expires: epoch + 1200000 } });
+    fs.writeFileSync(f.authFile, bytes); at = epoch + 600000;
+    assert.equal((await g.transport.fetch(endpoint, request())).status, 200);
+    assert.equal(g.calls[1].options.headers.get('authorization'), 'Bearer ' + access);
+    assert.equal(fs.readFileSync(f.authFile, 'utf8'), bytes);
+    echoOld = direction === 'in';
+    await assert.rejects(g.transport.fetch(endpoint, direction === 'out' ? request({ instructions: f.access }) : request()),
+      new RegExp('evaluation_codex_' + (direction === 'out' ? 'input' : 'output') + '_contains_access'));
+    assert.equal(g.calls.length, direction === 'out' ? 2 : 3); assert.equal(g.transport.state().requests, g.calls.length);
+    assert.equal(JSON.stringify(g.transport.state()).includes(access), false); await g.transport.close();
+  }
+});
+test('a rotated source cannot switch account, disappear or become invalid with fallback to a still-live cached lease', t => {
+  for (const change of ['account', 'missing', 'invalid', 'expired']) {
+    const f = fixture(t), reader = load().createCodexAccess(f.authFile, { now: () => epoch }); reader.get();
+    if (change === 'missing') fs.unlinkSync(f.authFile);
+    else fs.writeFileSync(f.authFile, change === 'invalid' ? '{}' : JSON.stringify({ 'openai-codex': { type: 'oauth',
+      access: jwt(change === 'expired' ? epoch / 1000 - 1 : epoch / 1000 + 1200, change === 'account' ? 'other-account' : 'synthetic-account'), expires: epoch + 1200000 } }));
+    assert.throws(() => reader.get(), new RegExp('evaluation_codex_' + ({ account: 'access_changed', missing: 'auth_unavailable', invalid: 'access_invalid', expired: 'access_expired' })[change]));
+    reader.close();
+  }
 });
 test('wrong source, missing provider, invalid/expired access never falls back to ambient credentials or refresh', t => {
   const { createCodexAccess, createCodexTransport } = load(), f = fixture(t);

@@ -3,6 +3,11 @@
 // daemon. Container data is never a host path, executable, URL or credential.
 const assert = require('node:assert/strict');
 const good = r => r && r.code === 0 && !r.failure && r.stderr === '';
+// Exact host-produced codes only. Prefix matches would admit arbitrary data.
+const RELAY_ERROR_CODES = Object.freeze(['relay_failed', 'evaluation_codex_auth_unavailable', 'evaluation_codex_access_invalid',
+  'evaluation_codex_access_expired', 'evaluation_codex_access_changed', 'evaluation_codex_input_contains_known_key',
+  'evaluation_codex_input_contains_access', 'evaluation_codex_request_invalid', 'evaluation_codex_mailbox_request_invalid',
+  'wiki_precheck_trace_input_contains_key', 'wiki_precheck_trace_request_invalid', 'evaluation_codex_proxy_failed']);
 const ENV = ['/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin', '/usr/local/bin/node', '-e'];
 const READ = `const fs=require('node:fs');try{const p='/work/model-relay/request.json',s=fs.lstatSync(p,{bigint:true});if(!s.isFile()||s.size>8388736n)throw Error();const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const t=fs.fstatSync(fd,{bigint:true});if(t.ino!==s.ino||t.dev!==s.dev||t.size!==s.size)throw Error();const b=Buffer.alloc(Number(s.size)+1);let n=0,k;while(n<b.length&&(k=fs.readSync(fd,b,n,b.length-n,n)))n+=k;if(n!==Number(s.size))throw Error();process.stdout.write(b.subarray(0,n));}finally{fs.closeSync(fd)}}catch(e){if(e.code!=='ENOENT')process.exitCode=70}`;
 const WRITE = `const fs=require('node:fs');let n=0,a=[];process.stdin.on('data',b=>{n+=b.length;if(n>8388736)process.exit(70);a.push(b)});process.stdin.on('end',()=>{try{fs.writeFileSync('/work/model-relay/response.tmp',Buffer.concat(a),{flag:'wx',mode:0o600});fs.renameSync('/work/model-relay/response.tmp','/work/model-relay/response.json')}catch{process.exitCode=70}})`;
@@ -87,11 +92,11 @@ function relayDockerTransport(runDocker, send, limits, signal, onDiagnostic = ()
     }
     if (failure) {
       // Fixed host enums only: no assertion message, Docker output or cause.
-      onDiagnostic({ phase: failurePhase, errorCode: 'relay_failed' });
+      onDiagnostic({ phase: failurePhase, errorCode: failurePhase === 'send' && RELAY_ERROR_CODES.includes(failure.code) ? failure.code : 'relay_failed' });
       if (failure.code === 'evaluation_codex_proxy_failed') throw Object.assign(Error(failure.code), { code: failure.code });
       throw Error('container_model_relay_failed');
     }
     return execution;
   };
 }
-module.exports = { relayDockerTransport };
+module.exports = { relayDockerTransport, RELAY_ERROR_CODES };

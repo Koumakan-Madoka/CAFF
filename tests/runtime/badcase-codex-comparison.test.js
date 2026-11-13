@@ -202,6 +202,38 @@ test('known-value inventory also blocks credentials discovered by tools at the a
   assert.equal(f.state.sends, 0); assert.equal(f.state.nativeRuns, 1); assert.equal(result.runs[0].status, 'error');
   assert.equal(result.runs[0].reason, 'evaluation_codex_input_contains_known_key'); assert.equal(f.state.transports[0].state().closed, true);
 });
+test('safe launcher causes reach JSONL events without replacing missing receipt or authorizing replacements', async t => {
+  for (const code of ['evaluation_codex_access_expired', 'evaluation_codex_input_contains_known_key', 'evaluation_codex_input_contains_access', 'wiki_precheck_trace_input_contains_key']) {
+    const f = fixture(t);
+    f.options.executeCodex = async (_image, _files, opts) => {
+      f.state.nativeRuns++;
+      opts.onDiagnostic({ phase: 'send', errorCode: code, message: f.access, cause: { code: f.access } });
+      opts.onDiagnostic({ phase: 'send', errorCode: 'evaluation_codex_' + f.access });
+      opts.onDiagnostic({ phase: 'cleanup', errorCode: 'none', cleanup: { attempted: true, completed: true } });
+      throw Error('PRIVATE launcher error ' + f.access);
+    };
+    const result = await runComparison(f.config, f.options);
+    assert.equal(f.state.nativeRuns, 1); assert.equal(f.state.sends, 0);
+    assert.equal(result.completed, false); assert.equal(result.callsUnavailable, true);
+    assert.equal(result.runs[0].reason, 'run_evidence_unavailable'); assert.equal(result.runs[0].cleaned, false);
+    assert.equal(result.runs[0].hostRequestAttempts, 0);
+    assert.deepEqual(f.state.events.filter(e => e.event === 'launcher_diagnostic'), [
+      { event: 'launcher_diagnostic', variant: 'original', iteration: 1, phase: 'send', errorCode: code },
+      { event: 'launcher_diagnostic', variant: 'original', iteration: 1, phase: 'cleanup', errorCode: 'none', cleanup: { attempted: true, completed: true } },
+    ]);
+    assert.equal(JSON.stringify([result, f.state.events]).includes(f.access), false);
+  }
+});
+test('expiry before a later container is explicitly diagnosed and still stops without a replacement', async t => {
+  const f = fixture(t), execute = f.options.executeCodex;
+  f.options.executeCodex = async (...args) => { const task = await execute(...args); f.expire(); return task; };
+  const result = await runComparison(f.config, f.options);
+  assert.equal(result.completed, false); assert.equal(f.state.nativeRuns, 1); assert.equal(f.state.sends, 1);
+  assert.deepEqual(f.state.events.filter(e => e.event === 'launcher_diagnostic'), [
+    { event: 'launcher_diagnostic', variant: 'original', iteration: 2, phase: 'access', errorCode: 'evaluation_codex_access_expired' },
+  ]);
+  assert.equal(result.runs.at(-1).reason, 'evaluation_codex_access_expired');
+});
 test('native receipt config mismatch or encoded output leak never scores, and thrown event callback still closes transport', async t => {
   for (const mode of ['config', 'output', 'event']) {
     const f = fixture(t), execute = f.options.executeCodex;
