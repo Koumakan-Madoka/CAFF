@@ -49,7 +49,8 @@ function prepareProductionBatch(config,options={}){
   // Scene-backed cases always keep the real trace executor, regardless of a
   // historical dehydration recommendation. No-scene marked cases never fake a
   // sealed replay or inherit repository/dependency restoration from a trace.
-  if(source.kind==='marked-badcase' && !source.sealedCheckpointId && !record.reportOnly)return prepareProductionRun({config,store,source,item,record,candidate,scoringPlan,toolset:options.runToolset,
+  // V4 text-only cases use the frozen run, never their obsolete legacy replay.
+  if((full || source.kind==='marked-badcase') && !source.sealedCheckpointId && !record.reportOnly)return prepareProductionRun({config,store,source,item,record,candidate,scoringPlan,toolset:options.runToolset,
    ...(full&&record.stage==='validation'?{repeats:suite.validation.policy.repeats}:{})});
   const replay=item.replayVersionId===undefined?state.replayCases.find(c=>c.sourceCaseId===source.id):resolveSampleReplayVersion(state,source.id,item.replayVersionId);
   if(item.replayVersionId!==undefined&&(record.category!=='control'||item.repository!==undefined||item.dependencies!==undefined))throw fail('evaluation_batch_cases_invalid');

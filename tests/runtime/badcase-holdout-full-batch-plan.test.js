@@ -27,6 +27,25 @@ test('run validation is preferred despite higher cost, uses one frozen request p
   assert.equal(p.summary.experiment.cases.at(-1).execution.traceBundleHash, run.item().traceBundle.hash);
   assert.equal(p.summary.experiment.cases.at(-1).execution.dehydrationHash, run.decision.hash);
 });
+test('v4 text-only gate uses its frozen run instead of a stale legacy train replay', t => {
+  const h = fixture(t), id = h.marked[7].id;
+  const legacy = structuredClone(h.store.read().replayCases.find(r => r.sourceCaseId === id));
+  const run = h.makeRun24();
+  h.mutate(s => {
+    s.cases.find(c => c.id === id).kind = 'text-only';
+    s.replayCases.push({ ...legacy, split: 'train' });
+  });
+  const p = h.plan(), c = p.prepared.find(c => c.sourceCaseId === id);
+  assert.equal(c.stage, 'gate'); assert.equal(c.execution.level, 'run'); assert.equal(c.supported, true);
+  assert.equal(c.comparisonConfig.caseId, id); assert.equal(c.comparisonConfig.scoring.task, run.task);
+  assert.equal(c.execution.traceBundleHash, run.item().traceBundle.hash);
+  assert.equal(c.execution.dehydrationHash, run.decision.hash);
+  assert.equal(p.summary.experiment.cases.find(c => c.caseId === id).execution.level, 'run');
+  assert.equal(Object.hasOwn(c.comparisonConfig, 'repository'), false);
+  assert.equal(h.calls.some(c => c.scoring.rubric.caseId === id), false);
+  assert.equal(h.store.read().replayCases.find(r => r.sourceCaseId === id).split, 'train');
+  assert.equal(fs.existsSync(h.config.codexAuthFile), false);
+});
 test('configurable validation repeats/threshold/token limit are bound, while gate remains ten outputs per version', t => {
   const h = fixture(t); h.config.evaluation.validation.policy = { repeats: 3, degradationThreshold: 1, maxEstimatedTokens: 2000 };
   const p = h.plan(); assert.equal(p.summary.experiment.validation.policy.repeats, 3); assert.equal(p.prepared.at(-1).comparisonConfig.repeats, 3);
