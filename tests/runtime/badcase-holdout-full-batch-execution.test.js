@@ -126,11 +126,12 @@ test('fresh direct staged inputs and exact confirmation are mandatory before any
   await assert.rejects(direct(h.config, p, e.options), { code: 'evaluation_batch_input_changed' }); assert.deepEqual(e.events, []); assert.deepEqual(e.executions, []);
   await assert.rejects(require('../../scripts/badcase-capture/batch-comparison.cjs').runBatch(h.config, { ...e.options, expectedPlanHash: hash('wrong') }), { code: 'evaluation_batch_confirmation_required' });
 });
-for (const reason of ['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable']) test(`batch3 unknown replacement ${reason} completes scoring without hiding unknown usage or stopping later cases`, async t => {
+for (const reason of ['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable', 'evaluation_codex_server_overloaded']) test(`batch3 unknown replacement ${reason} completes scoring without hiding unknown usage or stopping later cases`, async t => {
   const h=fixture(t),e=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h,reason),r=await e.run();
   assert.equal(r.cases[0].status,'completed'); assert.equal(r.cases[0].callsUnavailable,true);
   assert.equal(r.cases[0].totals.candidate.errors,1); assert.equal(r.cases[0].totals.candidate.scored,10);
-  assert.equal(r.completed,true); assert.equal(r.callsUnavailable,true); assert.equal(r.adoptionEligible,false);
+  assert.equal(r.completed,true); assert.equal(r.callsUnavailable,true); assert.equal(r.adoptionEligible,true);
+  assert.match(require('../../scripts/badcase-capture/holdout-validation-batch.cjs').formatHoldoutValidationBatch(r),/用量不完整/);
   assert.equal(e.executions.length,3); assert.equal(r.modelCallsKnown,50);
   const row=r.cases[0].runs.find(row=>row.status==='error');
   assert.equal(row.reason,reason); assert.equal(row.tokenUsage.complete,false); assert.equal(row.tokenUsage.knownTokens,null);

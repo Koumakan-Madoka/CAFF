@@ -38,11 +38,19 @@ export function projectWikiHoldoutFullResult(input: any, totals: (cases: any[], 
   const completed = decision.gate.outcome === 'rejected' || decision.gate.outcome === 'accepted' && selection.budgetStatus === 'ready' && cases.every(c => c.status === 'completed'
     || decision.outcome === 'validation-degraded' && c.stage === 'validation' && c.status === 'not-run' && c.reason === 'wiki_validation_prior_degradation');
   const modelCallsKnown = cases.reduce((n, c) => n + c.modelCallsKnown, 0), callsUnavailable = cases.some(c => c.callsUnavailable);
-  const adoptionEligible = decision.adoptionEligible && !callsUnavailable;
+  // D7: verified replacement unknowns disclose partial usage, not a veto.
+  // Keep historical false byte-identical: only this precisely attributed case
+  // may retain the former conservative value. Never upgrade a saved record or
+  // accept an invented true / a false on an ordinary complete known-usage result.
+  const verifiedUnknowns = callsUnavailable && cases.filter(c => c.callsUnavailable).every(c => c.status === 'completed'
+    && wikiHoldoutReplacementCallFlags(c.runs) !== null);
+  const eligible = decision.adoptionEligible && (!callsUnavailable || verifiedUnknowns);
+  const legacyFalse = eligible && verifiedUnknowns && input.adoptionEligible === false;
+  check(typeof input.adoptionEligible === 'boolean' && (input.adoptionEligible === eligible || legacyFalse));
+  const adoptionEligible = input.adoptionEligible;
   check(same(input.gateDecision, decision.gate) && same(input.validation, decision.validation) && input.outcome === decision.outcome
-    && input.adoptionEligible === adoptionEligible && input.completed === completed);
-  check(Number.isSafeInteger(modelCallsKnown) && input.modelCallsKnown === modelCallsKnown && input.callsUnavailable === callsUnavailable
-    && (!input.adoptionEligible || !callsUnavailable));
+    && input.completed === completed);
+  check(Number.isSafeInteger(modelCallsKnown) && input.modelCallsKnown === modelCallsKnown && input.callsUnavailable === callsUnavailable);
   // Reuse v4 gate-only's envelope/candidate/config/scoring checks through a
   // private gate projection, never the historical gate/test decision. Its
   // reconstructed hash is not returned, persisted or execution permission.

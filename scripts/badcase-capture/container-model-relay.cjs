@@ -10,7 +10,7 @@ const RELAY_ERROR_CODES = Object.freeze(['relay_failed', 'evaluation_codex_auth_
   'evaluation_codex_request_timeout', 'evaluation_codex_transport_closed', 'evaluation_codex_transport_stopped',
   'evaluation_codex_transport_busy', 'evaluation_codex_mailbox_request_invalid', 'evaluation_codex_response_invalid',
   'evaluation_codex_response_too_large', 'evaluation_codex_output_contains_access', 'evaluation_codex_output_contains_known_key',
-  'evaluation_codex_proxy_failed', 'evaluation_codex_access_rejected', 'evaluation_codex_gateway_unavailable',
+  'evaluation_codex_proxy_failed', 'evaluation_codex_access_rejected', 'evaluation_codex_gateway_unavailable', 'evaluation_codex_server_overloaded',
   'evaluation_codex_quota_exhausted', 'evaluation_codex_rate_limited', 'evaluation_codex_http_failed', 'evaluation_codex_provider_failed',
   'wiki_precheck_trace_input_contains_key', 'wiki_precheck_trace_request_invalid']);
 const ENV = ['/usr/bin/env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin', '/usr/local/bin/node', '-e'];

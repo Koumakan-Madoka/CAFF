@@ -81,6 +81,18 @@ test('retention failure stops before provider or before another exchange, with u
     await assert.rejects(h.transport.fetch(PROFILE.endpoint, h.q()), /wiki_precheck_stopped/);
   }
 });
+test('trace adapter carries only the exact overload classification alongside unknown usage for the operator budget', async () => {
+  const bytes=Buffer.from('data: '+JSON.stringify(require('../fixtures/wikiskill-provider-overload.json'))+'\n\n');let measured,sends=0;
+  const budget={signal:new AbortController().signal,check:()=>true,snapshot:()=>({requests:1}),request:async(_kind,send,measure)=>{
+    const result=await send(budget.signal);measured=result;assert.equal(measure(result),null);return result;
+  }};
+  const transport=api().createBudgetedTraceTransport({}, {},{budget,append:()=>{},knownValues:[],createTransport:()=>({
+    state:()=>({reason:'evaluation_codex_server_overloaded'}),inspectAccess:check=>check('synthetic-access'),close:async()=>{},
+    fetch:async()=>{sends++;return new Response(bytes);}
+  })});
+  const r=await transport.fetch('offline://inert',{body:'{}',headers:{}});assert.deepEqual(Buffer.from(await r.arrayBuffer()),bytes);
+  assert.equal(measured.environmentReason,'evaluation_codex_server_overloaded');assert.equal(measured.usage,null);assert.equal(sends,1);await transport.close();
+});
 test('STOP/Ctrl+C cancellation reaches an in-flight actual host transport; no automatic resend', async t => {
   let observed, ready;
   const started = new Promise(resolve => ready = resolve), h = setup(t, { send: options => { observed = options.signal; ready(); return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(Error('PRIVATE-UPSTREAM')))); } });

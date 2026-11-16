@@ -137,6 +137,21 @@ test('forbid execution accepts ordinary continuation without tools being execute
   const r = await h.run(); assert.equal(r.completed, true); assert.equal(h.judged(), 0); assert.equal(h.requests.length, 20);
   assert.ok(r.runs.every(row => row.status === 'pass' && row.toolExecutions === 0));
 });
+test('D7 single-call overload is an unknown-usage replacement, other provider errors and cleanup failures still stop', async t => {
+  for(const mode of ['recover','exhausted','provider','cleanup']){
+    const h=setup(t),factory=h.options.createRunClient;let clients=0;
+    h.options.createRunClient=async()=>{
+      if(++clients>(mode==='exhausted'?5:1))return factory();
+      const reason=mode==='provider'?'evaluation_codex_provider_failed':'evaluation_codex_server_overloaded';
+      return {state:()=>({reason}),close:async()=>{if(mode==='cleanup')throw Error('synthetic cleanup');},complete:async()=>{throw Object.assign(Error(reason),{code:reason});}};
+    };
+    const r=await h.run();assert.equal(r.completed,mode==='recover');assert.equal(r.callsUnavailable,true);
+    assert.equal(r.runs.length,mode==='recover'?21:mode==='exhausted'?5:1);
+    assert.equal(r.runs[0].status,'error');assert.equal(r.runs[0].tokenUsage.knownTokens,null);assert.equal(r.runs[0].tokenUsage.complete,false);
+    assert.equal(r.fatal,['provider','cleanup'].includes(mode));
+    if(mode==='recover'){assert.equal(r.modelCallsKnown,20);assert.equal(h.judged(),0);}
+  }
+});
 test('legacy reply-only path keeps original raw packet/outcome/row shape and model request unchanged', async t => {
   const h = setup(t, { kind: 'reply', content: [{ type: 'text', text: 'Clear result.' }] }), r = await h.run();
   assert.equal(r.completed, true); assert.equal(h.judged(), 60); assert.equal(h.requests.length, 20);

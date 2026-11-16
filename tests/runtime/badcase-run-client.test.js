@@ -95,6 +95,15 @@ test('provider/network failure cannot trigger retries, an auth refresh or diagno
   await assert.rejects(client.complete(request()), e => e.code === 'wiki_run_model_failed' && !e.message.includes('PRIVATE'));
   assert.equal(calls, 1); assert.equal(fs.readFileSync(f.authFile, 'utf8'), f.bytes);
 });
+test('batch4 overload reaches the operator budget as an exact safe error, without retry or fabricated usage', async t => {
+  const f=fixture(t);let sends=0;
+  const client=await createWikiRunClient({authFile:f.authFile},{transport:{createDispatcher:()=>({destroy:async()=>{}}),fetch:async()=>{
+    sends++;return new Response('data: '+JSON.stringify(require('../fixtures/wikiskill-provider-overload.json'))+'\n\n');
+  }}});t.after(()=>client.close());
+  await assert.rejects(client.complete(request()),{code:'evaluation_codex_server_overloaded'});
+  assert.equal(sends,1);assert.equal(client.state().reason,'evaluation_codex_server_overloaded');assert.equal(client.state().stopped,false);
+  assert.equal(fs.readFileSync(f.authFile,'utf8'),f.bytes);
+});
 test('fixed SDK and pinned capabilities produce JSON-only schemas, never executors', async () => {
   const root = path.resolve(__dirname, '../..'), sha = require('node:child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
   const t = await loadWikiRunTools({ sourceWorktree: root, capabilitiesSha: sha });

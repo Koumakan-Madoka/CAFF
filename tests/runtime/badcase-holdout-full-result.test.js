@@ -125,7 +125,7 @@ test('batch3 completed unknown replacement projects idempotently, remains partia
  const h=fixture(t),f=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h),r=await f.run();
  // Before the fix this assertion is red: the v4 kernel rejects completed+unknown.
  assert.equal(r.cases[0].status,'completed'); const p=project(r);
- assert.equal(p.completed,true); assert.equal(p.callsUnavailable,true); assert.equal(p.adoptionEligible,false);
+ assert.equal(p.completed,true); assert.equal(p.callsUnavailable,true); assert.equal(p.adoptionEligible,true);
  assert.equal(p.cases[0].callsUnavailable,true); assert.equal(p.cases[0].runs.filter(r=>r.callsUnavailable).length,1);
  assert.deepEqual(project(p),p);
  const store=require(base+'wiki-batch-execution-store').createWikiBatchExecutionStore(h.config),start=store.start(f.pinned.summary);
@@ -140,9 +140,23 @@ test('batch3 completed unknown replacement projects idempotently, remains partia
  for(const mutate of [x=>x.cases[0].runs.find(r=>r.callsUnavailable).reason='evaluation_codex_access_expired',
   x=>x.cases[0].runs[0].callsUnavailable=true,x=>delete x.cases[0].runs[0].callsUnavailable,
   x=>x.cases[0].runs.find(r=>r.callsUnavailable).cleaned=false,
-  x=>x.cases[0].runs.forEach(r=>r.callsUnavailable=false),x=>x.adoptionEligible=true]){
+  x=>x.cases[0].runs.forEach(r=>r.callsUnavailable=false),x=>x.adoptionEligible='true']){
   const bad=structuredClone(p);mutate(bad);assert.throws(()=>project(bad));
  }
+});
+test('D7 legacy completed replacement result stays readable byte-for-byte with adoptionEligible=false; new result may be eligible', async t => {
+ const fs=require('node:fs'),path=require('node:path'),h=fixture(t),r=await require('../helpers/wiki-holdout-unknown-replacement.cjs')(h).run();
+ assert.equal(r.adoptionEligible,true); const current=project(r); assert.equal(current.adoptionEligible,true);
+ const legacy={...current,adoptionEligible:false}; assert.deepEqual(project(legacy),legacy);
+ const byteHash=v=>require('node:crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+ const record={id:'comparison-'+byteHash(legacy),createdAt:'2026-11-13T00:00:00.000Z',...legacy};
+ const dir=path.join(h.scope.globalRoot,'comparisons');fs.mkdirSync(dir,{recursive:true});
+ const file=path.join(dir,record.id.slice(11)+'.json'),bytes=JSON.stringify({schemaVersion:1,checksum:byteHash(record),record})+'\n';fs.writeFileSync(file,bytes);
+ const read=()=>require(base+'wiki-comparison-record').readWikiComparisonRecord(h.scope.globalRoot,record.id,project);
+ assert.deepEqual(read(),record); assert.deepEqual(read(),record); assert.equal(fs.readFileSync(file,'utf8'),bytes);
+ assert.equal(byteHash(read()),byteHash(record)); assert.equal(project(current).adoptionEligible,true);
+ const bad=structuredClone(current); bad.cases[0].runs.find(r=>r.callsUnavailable).reason='evaluation_codex_provider_failed';
+ assert.throws(()=>project(bad)); bad.adoptionEligible=false; assert.throws(()=>project(bad),'legacy compatibility cannot hide a non-replacement unknown');
 });
 test('full immutable read is byte/hash stable after current confirmations/assertions change; no re-admission or silent upgrade', async t => {
  const fs = require('node:fs'), path = require('node:path'), h = fixture(t), payload = project(await execution(h).run());

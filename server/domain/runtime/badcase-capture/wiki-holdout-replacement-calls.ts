@@ -17,7 +17,7 @@ export function wikiHoldoutReplacementCallFlags(rows: any[]): boolean[] | null {
     if (row.status === 'invalid' || row.status === 'error' && !isWikiJudgeTechnicalError(row.assessment)) replacements++;
     if (flag) {
       if (row.status !== 'error' || row.cleaned !== true || isWikiJudgeTechnicalError(row.assessment)
-        || !['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable'].includes(row.reason)) return null;
+        || !['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable', 'evaluation_codex_server_overloaded'].includes(row.reason)) return null;
       unavailable++;
     }
     flags.push(flag);

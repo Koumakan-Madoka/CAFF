@@ -342,6 +342,41 @@ test('native upstream 502/503/504 alone share the five environment replacements 
     assert.doesNotMatch(JSON.stringify([result, h.state.events]), /PRIVATE/);
   });
 });
+test('batch4 overload shares environment replacements, requires verified cleanup/identity, and always discloses unknown usage', async t => {
+  for(const mode of ['recover','receipt','six-mixed','cleanup','hash','network','config']) await t.test(mode,async t=>{
+    const h=setup(t,{publicReply:true}),dir=path.join(h.root,'.pi-sandbox');fs.mkdirSync(dir);
+    const {PROFILE,createCodexTransport}=require('../../scripts/badcase-capture/codex-transport.cjs');
+    const access='test.'+Buffer.from(JSON.stringify({exp:2000000600,'https://api.openai.com/auth':{chatgpt_account_id:'synthetic'}})).toString('base64url')+'.test';
+    const authFile=path.join(dir,'auth.json');fs.writeFileSync(authFile,JSON.stringify({'openai-codex':{type:'oauth',access,expires:2000000600000}}));
+    Object.assign(h.single,{modelProfile:PROFILE.model,keySource:'caff-codex-access',codexAuthFile:authFile,repeats:10,executionPolicy:'alternating-valid-v1'});
+    h.options.knownValues=[];h.options.prepareTarget=(...args)=>{const p=prepareSealedPromptTarget(...args);p.input.recordedModelConfig={provider:'openai-codex',model:'gpt-6.1-sol',thinking:'xhigh',fast:false};return p;};
+    let sends=0,executions=0,transport;
+    h.options.createCodexTransport=(c,g)=>transport=createCodexTransport(c,{...g,now:()=>2000000000000,createDispatcher:()=>({destroy:async()=>{}}),fetch:async()=>{
+      ++sends;if(mode==='six-mixed'&&sends===1)throw Object.assign(Error('synthetic proxy'),{code:'ECONNRESET'});
+      return new Response(sends<=(mode==='six-mixed'?6:1)?'data: '+JSON.stringify(require('../fixtures/wikiskill-provider-overload.json'))+'\n\n':'data: synthetic\n\n');
+    }});
+    h.options.executeCodex=async(_image,files,o)=>{
+      ++executions;const m=manifestFor(files,{replayWorkspace:true}),input=JSON.parse(files[0].bytes);
+      const launcher={containerId:'a'.repeat(64),cleaned:mode!=='cleanup',isolation:{network:mode==='network'?'bridge':'none'},inputHash:mode==='hash'?'0'.repeat(64):m.inputHash,runtimeHash:m.runtimeHash};
+      try{await o.sendNativeRequest(Buffer.from(JSON.stringify({headers:{'content-type':'application/json',accept:'text/event-stream'},body:Buffer.from(JSON.stringify({model:'gpt-6.1-sol',input:[],stream:true,store:false,reasoning:{effort:'xhigh'}})).toString('base64')})));}
+      catch{return {...launcher,failed:true,reason:transport.state().reason};}
+      const failed=!!transport.state().reason;
+      // Batch4 relay lost its receipt. Also exercise a retained, failed HTTP-200 call.
+      if(failed&&!['receipt','config'].includes(mode))return {...launcher,failed:true,reason:transport.state().reason};
+      return {...launcher,code:0,receipt:{kind:'direct-caff-turn-v1',inputHash:m.inputHash,runtimeHash:m.runtimeHash,beforeHash:expectedTreeHash(input),success:!failed,
+        recordedModelConfig:input.recordedModelConfig,modelConfig:{api:PROFILE.api,thinking:mode==='config'?'off':'xhigh',fast:false,transport:'sse',credentialDelivery:'host-only-mailbox'},
+        modelCalls:[{model:PROFILE.model,success:!failed,durationMs:1,httpStatus:200,usage:failed?null:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2}}],finalText:failed?'':'done',replySource:'public'}};
+    };
+    const r=await runComparison(h.single,h.options),complete=['recover','receipt'].includes(mode);
+    assert.equal(r.completed,complete);assert.equal(executions,complete?21:mode==='six-mixed'?6:1);assert.equal(sends,executions);
+    const row=r.runs.find(r=>r.reason==='evaluation_codex_server_overloaded');assert(row);assert.equal(row.status,'error');
+    assert.equal(row.tokenUsage.callsUnavailable,true);assert.equal(row.tokenUsage.complete,false);assert.equal(row.tokenUsage.knownTokens,null);
+    assert.equal(r.callsUnavailable,true);assert.equal(r.measurements.tokenUsage.complete,false);
+    assert.equal(r.runs.some(r=>r.status==='fail'),false);assert.equal(r.fatal,!complete);
+    if(complete){assert.equal(r.totals.original.passed,10);assert.equal(r.totals.candidate.passed,10);}
+    if(mode==='six-mixed')assert.equal(r.runs.at(-1).stopReason,'environment_replacements_exhausted');
+  });
+});
 test('model loop/request ceiling and proven container model timeout count as fail, not retriable environment error', async t=>{
   for(const mode of ['modelLimit','timeout']) {
     const h=setup(t,{staged:true}); stagedDriver(h,{[mode]:true}); const r=await h.run();

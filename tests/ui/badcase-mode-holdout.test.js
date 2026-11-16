@@ -76,6 +76,15 @@ test('degradation on the last validation case does not claim later cases were st
   assert.match(validation.textContent, /已有验证题劣化/);
   assert.doesNotMatch(validation.textContent, /停止后续题/); h.readonly();
 });
+test('D7 completed results disclose incomplete usage without hiding scoring eligibility or upgrading legacy false', async t => {
+  for(const eligible of [true,false]){
+    const h=await setup(t);h.saved.comparisons[0].callsUnavailable=true;h.saved.comparisons[0].adoptionEligible=eligible;
+    const before=JSON.stringify(h.saved);await h.panel.load();await h.click('[data-tab="impact"]');
+    const box=h.root.querySelector('#impact-runs');assert.match(box.textContent,/用量不完整.*未知不记零/s);
+    assert.match(box.textContent,eligible?/可提交人工评审/:/不可提交采纳/);
+    assert.equal(h.calls.filter(c=>c.method==='POST').length,0);assert.equal(JSON.stringify(h.saved),before);
+  }
+});
 test('candidate confirmation describes v4 gate and validation, not a separate test stage', async t => {
   const h = await setup(t); await h.panel.load(); await h.click('[data-tab="targets"]');
   const text = h.root.querySelector('.cand-foot').textContent;

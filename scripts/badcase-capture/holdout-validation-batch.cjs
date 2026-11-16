@@ -86,7 +86,11 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  // remaining controls were deliberately not run. Never count them as passes.
  const completed=gate.outcome==='rejected'||gate.outcome==='accepted'&&selection.budgetStatus==='ready'&&results.every(c=>c.status==='completed'
   ||decision.outcome==='validation-degraded'&&c.stage==='validation'&&c.status==='not-run'&&c.reason==='wiki_validation_prior_degradation');
- const callsUnavailable=results.some(c=>c.callsUnavailable),adoptionEligible=decision.adoptionEligible&&!callsUnavailable;
+ // Completed unknown calls were already attributed to verified replacements;
+ // they disclose partial cost, not a scoring/adoption veto. Other unknowns stop.
+ const callsUnavailable=results.some(c=>c.callsUnavailable);
+ const verifiedUnknowns=callsUnavailable&&results.filter(c=>c.callsUnavailable).every(c=>c.status==='completed'&&wikiHoldoutReplacementCallFlags(c.runs)!==null);
+ const adoptionEligible=decision.adoptionEligible&&(!callsUnavailable||verifiedUnknowns);
  const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible,
   byStage:{gate:totals(results.filter(c=>c.stage==='gate'),10),validation:totals(results.filter(c=>c.stage==='validation'),selection.policy.repeats)},
   modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable};
@@ -114,7 +118,7 @@ function formatHoldoutValidationBatch(result,sourceCases=[],deletedCases=[]){
   '结果：'+({'gate-rejected':'门槛未通过','validation-passed':'门槛通过、验证通过','validation-degraded':'门槛通过、验证劣化',
    'validation-uncovered':'门槛通过、验证全部未覆盖','validation-partial-coverage':'门槛通过、验证部分未覆盖',indeterminate:'无法判定'}[result.outcome]),
   result.adoptionEligible?'可提交人工评审；是否采纳由人决定，未覆盖不等于验证通过。':'不可提交采纳；未完成不等于没有劣化。',
-  '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（存在未知/不完整记录）':''));
+  '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（用量不完整：已知成本仅为部分，未知不记零）':''));
  return lines.join('\n')+'\n';
 }
 module.exports={runHoldoutValidationBatch,formatHoldoutValidationBatch};
