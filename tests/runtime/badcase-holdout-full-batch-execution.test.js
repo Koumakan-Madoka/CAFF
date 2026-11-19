@@ -102,6 +102,27 @@ test('fatal or incomplete gate stops later gate/validation work, preserves known
   assert.equal(r.callsUnavailable, true); assert.equal(r.modelCallsKnown, 1); assert.equal(r.cases[0].reason, 'evaluation_codex_auth_failed'); assert.equal(r.cases.at(-1).status, 'not-run');
   assert.ok(!JSON.stringify(r).includes('private failure'));
 });
+test('D8 dispatcher consumes batch5-shaped judge error without a new worker, but never pads validation or fatal cases', async t => {
+  for(const scenario of ['gate','validation','fatal']){
+    const h=fixture(t),e=execution(h),id=scenario==='validation'?e.pinned.summary.evaluation.validationCaseIds[0]:e.pinned.summary.evaluation.gateCaseIds[0];
+    const convert=row=>row.variant==='candidate'&&row.iteration===3?{...row,...require('../fixtures/wikiskill-judge-shortfall.json')}:row;
+    e.options.runProductionComparison=async(c,o)=>{
+      if(c.scoring.rubric.caseId!==id)return e.compare(c,o);
+      const r=await e.compare(c,{...o,onEvent:event=>o.onEvent(event.event==='run'?convert(event):event)});
+      return {...r,completed:false,fatal:scenario==='fatal',runs:r.runs.map(convert)};
+    };
+    const r=await e.run();
+    assert.equal(r.cases.find(c=>c.sourceCaseId===id).runs.filter(r=>r.reason==='judge_backend_failed').length,1);
+    if(scenario==='gate'){
+      assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');assert.equal(r.gateDecision.imputation.total,1);
+      assert.equal(r.modelCallsKnown,50,'no replacement worker/judge calls are added by padding');
+      assert.equal(r.cases[0].totals.candidate.scored,9);assert.equal(r.cases[0].totals.candidate.errors,1);
+    }else{
+      assert.equal(r.completed,false);assert.equal(r.outcome,'indeterminate');assert.equal(r.adoptionEligible,false);
+      assert.equal(r.gateDecision.imputation.total,0);assert.equal(r.cases.find(c=>c.sourceCaseId===id).status,'error');
+    }
+  }
+});
 test('validation technical failure after an accepted gate is indeterminate, not a no-degradation pass', async t => {
   const h = fixture(t), e = execution(h), id = e.pinned.summary.evaluation.validationCaseIds[0];
   e.options.runProductionComparison = async (c, o) => {

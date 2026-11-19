@@ -11,6 +11,9 @@ import { bindWikiHoldoutCase, validateWikiHoldoutCaseBinding } from './wiki-hold
 import { wikiExactKeys, wikiRubricText, wikiValueHash, wikiRubricFail as fail } from './wiki-rubric';
 import { containsSecretSentinel } from './secrets';
 export const WIKI_HOLDOUT_GATE_POLICY = Object.freeze({ kind: 'wikiskill-holdout-gate-v1', alpha: .05, maxExtraAttemptsPerCase: 5 });
+// Explicitly frozen into NEW full plans. Marker-free retained plans stay strict.
+export const WIKI_HOLDOUT_GATE_WORST_CASE_POLICY = Object.freeze({ ...WIKI_HOLDOUT_GATE_POLICY, missingSamples: 'worst-case-executed-v1' as const });
+type GatePolicy = typeof WIKI_HOLDOUT_GATE_POLICY & { missingSamples?: 'worst-case-executed-v1' };
 export interface WikiHoldoutExperimentDefinition {
   kind: 'wiki-experiment-v3'; variants: WikiExperimentDefinition['variants']; runner: WikiExperimentDefinition['runner'];
   repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof WIKI_HOLDOUT_GATE_POLICY;
@@ -20,7 +23,7 @@ export interface WikiHoldoutExperimentDefinition {
 }
 export interface WikiHoldoutExperimentPlan {
   kind: 'wiki-experiment-plan-v4'; variants: WikiHoldoutExperimentDefinition['variants']; runner: WikiHoldoutExperimentDefinition['runner'];
-  repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: typeof WIKI_HOLDOUT_GATE_POLICY;
+  repeats: 10; executionPolicy: 'alternating-valid-v1'; decision: GatePolicy;
   gate: WikiHoldoutGateSelection;
   cases: { caseId: string; stage: 'gate'; originalSplit: 'gate' | 'test'; category: 'reproduction'; targetReproduction: true;
     sceneHash: string; inputHash: string; hardAssertionsHash: string; rubricHash: string; judge: WikiJudgeBinding | null;
@@ -34,8 +37,9 @@ function safeJson(value: unknown, maxBytes: number) {
   wikiValueHash(value);
   const text = JSON.stringify(value); ensure(Buffer.byteLength(text) <= maxBytes && !containsSecretSentinel(text));
 }
-function checkCommon(value: Pick<WikiHoldoutExperimentDefinition, 'variants' | 'runner' | 'repeats' | 'executionPolicy' | 'decision'>) {
-  ensure(value.repeats === 10 && value.executionPolicy === 'alternating-valid-v1' && wikiValueHash(value.decision) === wikiValueHash(WIKI_HOLDOUT_GATE_POLICY));
+function checkCommon(value: Pick<WikiHoldoutExperimentPlan, 'variants' | 'runner' | 'repeats' | 'executionPolicy' | 'decision'>) {
+  ensure(value.repeats === 10 && value.executionPolicy === 'alternating-valid-v1'
+    && [WIKI_HOLDOUT_GATE_POLICY, WIKI_HOLDOUT_GATE_WORST_CASE_POLICY].some(p => wikiValueHash(value.decision) === wikiValueHash(p)));
   ensure(Array.isArray(value.variants) && value.variants.length === 2);
   for (const [i, v] of value.variants.entries()) {
     wikiExactKeys(v, ['id', 'promptHash']); ensure(v.id === (i === 0 ? 'original' : 'candidate') && digest(v.promptHash));
@@ -69,6 +73,7 @@ export function validateWikiHoldoutExperimentPlan(plan: WikiHoldoutExperimentPla
 export function createWikiHoldoutExperimentPlan(definition: WikiHoldoutExperimentDefinition, catalog: WikiExperimentCase[], selection: WikiHoldoutGateSelection): WikiHoldoutExperimentPlan {
   wikiExactKeys(definition, ['kind', 'variants', 'runner', 'repeats', 'executionPolicy', 'decision', 'cases']);
   ensure(definition.kind === 'wiki-experiment-v3'); checkCommon(definition);
+  ensure(wikiValueHash(definition.decision) === wikiValueHash(WIKI_HOLDOUT_GATE_POLICY));
   const gate = validateWikiHoldoutGateSelection(selection);
   ensure(gate.caseIds.length > 0, 'wiki_holdout_plan_targets_required');
   ensure(Array.isArray(catalog) && new Set(catalog.map(c => c?.id)).size === catalog.length);
@@ -98,7 +103,7 @@ export function assertWikiHoldoutExperimentPlan(plan: WikiHoldoutExperimentPlan,
 }
 export function decideWikiHoldoutExperimentGate(plan: WikiHoldoutExperimentPlan, results: WikiExperimentCaseResult[]) {
   validateWikiHoldoutExperimentPlan(plan);
-  const decision = decideWikiHoldoutGate(plan.gate, results);
+  const decision = decideWikiHoldoutGate(plan.gate, results, plan.decision.missingSamples ?? 'strict-v1');
   for (const row of results) {
     const source = plan.cases.find(c => c.caseId === row.caseId)!;
     ensure(source.execution.level === 'run' || source.traceToolCheck === 'structured-v1' || !row.runs.some(r => r.status === 'invalid'), 'wiki_holdout_gate_result_invalid');

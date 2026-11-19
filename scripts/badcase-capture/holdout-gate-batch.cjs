@@ -84,6 +84,7 @@ function holdoutGateReportLines(result,sourceCases=[],deletedCases=[]){
   `门槛判定：${{accepted:'通过',rejected:'未通过',indeterminate:'无法判定'}[d.outcome]}`,
   `合计：原版 ${d.repair.original.passed}/${d.repair.original.total}，候选 ${d.repair.candidate.passed}/${d.repair.candidate.total}；单侧 Fisher p=${d.repair.pValue??'N/A'}（阈值 0.05）`];
  for(const warning of d.warnings)lines.push(warning);
+ if(result.experiment?.decision.missingSamples==='worst-case-executed-v1')lines.push('仅补已执行的缺失槽：候选缺失算失败，原版缺失算通过；逐题和分级报告保留实际有效判分，不改原始错误／无效。未运行题、整批中断不补齐。');
  for(const level of ['trace','run']){const t=d.byLevel[level];lines.push(`${level} 级：原版 ${t.original.passed}/${t.original.total}，候选 ${t.candidate.passed}/${t.candidate.total}；失败 ${t.original.failed}/${t.candidate.failed}，无效 ${t.original.invalid}/${t.candidate.invalid}，错误 ${t.original.errors}/${t.candidate.errors}`);}
  if(d.ignoredCaseIds.length)lines.push('未参与判定：'+d.ignoredCaseIds.map(id=>numbers.get(id)||'编号不可用').join(', '));
  return lines;

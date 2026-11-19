@@ -84,34 +84,44 @@ export function planWikiHoldoutGate(input: { state: any; records: any[]; replayC
   const payload = { kind: 'wiki-holdout-gate-selection-v1' as const, targetEntryId, cases, caseIds: cases.filter(c => c.eligible).map(c => c.caseId) };
   return validateWikiHoldoutGateSelection({ ...payload, hash: wikiValueHash(payload) });
 }
-// Same ten valid outputs per arm, alternating execution, and five shared
-// environment/invalid replacements. Terminal judge errors consume a slot and
-// make the gate indeterminate; they never turn into model failures or passes.
-function validateResults(selection: WikiHoldoutGateSelection, results: WikiExperimentCaseResult[]) {
+// A replacement retries the current logical slot for that arm. Track whether
+// its still-pending slot was actually attempted; early exhaustion cannot buy
+// unexecuted slots. Judge errors consume a slot but remain errors in reports.
+export function wikiHoldoutGateCaseExecuted(runs: WikiExperimentCaseResult['runs']): boolean {
+  const attempts = { original: 0, candidate: 0 }, slots = { original: 0, candidate: 0 }, pending = { original: false, candidate: false };
+  let next: 'original' | 'candidate' = 'original', replacements = 0;
+  ensure(Array.isArray(runs) && runs.length <= 25, RESULT);
+  for (const row of runs) {
+    exact(row, ['variant', 'iteration', 'status', ...(Object.hasOwn(row, 'judgeError') ? ['judgeError'] : [])], RESULT);
+    ensure(!Object.hasOwn(row, 'judgeError') || row.judgeError === true && row.status === 'error', RESULT);
+    if (slots[next] === 10) next = next === 'original' ? 'candidate' : 'original';
+    ensure(row.variant === next && row.iteration === ++attempts[next] && slots[next] < 10
+      && ['pass', 'fail', 'invalid', 'error'].includes(row.status), RESULT);
+    pending[next] = row.status === 'invalid' || row.status === 'error' && !row.judgeError;
+    if (pending[next]) replacements++;
+    else slots[next]++;
+    next = next === 'original' ? 'candidate' : 'original';
+  }
+  ensure(replacements <= 5, RESULT);
+  return (!(pending.original || pending.candidate) || replacements === 5)
+    && (['original', 'candidate'] as const).every(v => slots[v] + Number(pending[v]) === 10);
+}
+function validateResults(selection: WikiHoldoutGateSelection, results: WikiExperimentCaseResult[], worstCase: boolean) {
   ensure(Array.isArray(results) && new Set(results.map(r => r?.caseId)).size === results.length, RESULT);
   for (const result of results) {
     exact(result, ['caseId', 'status', 'runs'], RESULT);
     ensure(selection.caseIds.includes(result.caseId) && ['completed', 'error', 'not-run', 'unsupported'].includes(result.status)
       && Array.isArray(result.runs) && result.runs.length <= 25
       && (!['not-run', 'unsupported'].includes(result.status) || !result.runs.length), RESULT);
-    const attempts = { original: 0, candidate: 0 }, slots = { original: 0, candidate: 0 }, valid = { original: 0, candidate: 0 };
-    let next: 'original' | 'candidate' = 'original', replacements = 0;
-    for (const row of result.runs) {
-      exact(row, ['variant', 'iteration', 'status', ...(Object.hasOwn(row, 'judgeError') ? ['judgeError'] : [])], RESULT);
-      ensure(!Object.hasOwn(row, 'judgeError') || row.judgeError === true && row.status === 'error', RESULT);
-      if (slots[next] === 10) next = next === 'original' ? 'candidate' : 'original';
-      ensure(row.variant === next && row.iteration === ++attempts[next] && slots[next] < 10
-        && ['pass', 'fail', 'invalid', 'error'].includes(row.status), RESULT);
-      if (row.status === 'pass' || row.status === 'fail') valid[next]++;
-      if (row.status === 'invalid' || row.status === 'error' && !row.judgeError) replacements++;
-      else slots[next]++;
-      next = next === 'original' ? 'candidate' : 'original';
-    }
-    ensure(replacements <= 5 && (result.status !== 'completed' || valid.original === 10 && valid.candidate === 10), RESULT);
+    const executed = wikiHoldoutGateCaseExecuted(result.runs);
+    const valid = (variant: 'original' | 'candidate') => result.runs.filter(r => r.variant === variant && ['pass', 'fail'].includes(r.status)).length;
+    ensure(result.status !== 'completed' || (worstCase ? executed : valid('original') === 10 && valid('candidate') === 10), RESULT);
   }
 }
-export function decideWikiHoldoutGate(selection: WikiHoldoutGateSelection, results: WikiExperimentCaseResult[]) {
-  validateWikiHoldoutGateSelection(selection); validateResults(selection, results);
+export function decideWikiHoldoutGate(selection: WikiHoldoutGateSelection, results: WikiExperimentCaseResult[], policy: 'strict-v1' | 'worst-case-executed-v1' = 'strict-v1') {
+  ensure(policy === 'strict-v1' || policy === 'worst-case-executed-v1', RESULT);
+  const worstCase = policy === 'worst-case-executed-v1';
+  validateWikiHoldoutGateSelection(selection); validateResults(selection, results, worstCase);
   const selected = selection.cases.filter(c => c.eligible);
   const rows = selected.map(c => ({ ...c, ...(results.find(r => r.caseId === c.caseId) ?? { status: 'not-run', runs: [] }) }));
   const totals = (cases: typeof rows, variant: 'original' | 'candidate') => {
@@ -121,15 +131,21 @@ export function decideWikiHoldoutGate(selection: WikiHoldoutGateSelection, resul
   };
   const original = totals(rows, 'original'), candidate = totals(rows, 'candidate');
   const complete = rows.length > 0 && rows.every(c => c.status === 'completed');
-  const pValue = original.total && candidate.total ? fisherImprovement(original.passed, original.total, candidate.passed, candidate.total) : null;
-  const passed = complete && pValue !== null && pValue < .05 && candidate.passed > original.passed;
+  const missing = { original: complete && worstCase ? rows.length * 10 - original.total : 0,
+    candidate: complete && worstCase ? rows.length * 10 - candidate.total : 0 };
+  const imputation = { ...missing, total: missing.original + missing.candidate };
+  const adjustedOriginal = { passed: original.passed + missing.original, total: original.total + missing.original };
+  const adjustedCandidate = { passed: candidate.passed, total: candidate.total + missing.candidate };
+  const pValue = adjustedOriginal.total && adjustedCandidate.total ? fisherImprovement(adjustedOriginal.passed, adjustedOriginal.total, adjustedCandidate.passed, adjustedCandidate.total) : null;
+  const passed = complete && pValue !== null && pValue < .05 && adjustedCandidate.passed > adjustedOriginal.passed;
   const byLevel = Object.fromEntries(['trace', 'run'].map(level => {
     const cases = rows.filter(c => c.level === level);
     return [level, { caseIds: cases.map(c => c.caseId), original: totals(cases, 'original'), candidate: totals(cases, 'candidate') }];
   }));
-  return { policy: 'wikiskill-holdout-gate-v1', outcome: !complete ? 'indeterminate' : passed ? 'accepted' : 'rejected',
-    repair: { caseIds: selection.caseIds.slice(), original: { passed: original.passed, total: original.total },
-      candidate: { passed: candidate.passed, total: candidate.total }, pValue, alpha: .05, passed },
+  return { policy: worstCase ? 'wikiskill-holdout-gate-v2' : 'wikiskill-holdout-gate-v1',
+    outcome: !complete ? 'indeterminate' : passed ? 'accepted' : imputation.total ? 'indeterminate' : 'rejected',
+    repair: { caseIds: selection.caseIds.slice(), original: adjustedOriginal, candidate: adjustedCandidate, pValue, alpha: .05, passed },
+    ...(worstCase ? { imputation } : {}),
     ignoredCaseIds: selection.cases.filter(c => !c.eligible).map(c => c.caseId),
-    warnings: selected.length === 1 ? ['只有 1 道门槛题'] : [], byLevel };
+    warnings: [...(selected.length === 1 ? ['只有 1 道门槛题'] : []), ...(imputation.total ? [`按最坏情况补齐 ${imputation.total} 个缺失样本`] : [])], byLevel };
 }

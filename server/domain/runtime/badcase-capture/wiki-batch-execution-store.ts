@@ -7,12 +7,13 @@ import crypto from 'node:crypto';
 import { createWikiStore } from './wiki-store';
 import { withProjectWriteLock } from './project-write-lock';
 import { containsSecretSentinel } from './secrets';
-import { validateWikiExperimentPlan, wikiExperimentRunSceneHash } from './wiki-experiment-plan';
+import { validateWikiExperimentPlan, wikiExperimentRunSceneHash, wikiExperimentRun } from './wiki-experiment-plan';
 import { wikiValueHash } from './wiki-rubric';
 import { validateWikiHoldoutExperimentPlan } from './wiki-holdout-plan';
 import { validateWikiHoldoutFullExperimentPlan } from './wiki-holdout-validation-plan';
 import { projectWikiHoldoutFullResult } from './wiki-holdout-full-result';
 import { wikiComparisonTotals } from './wiki-comparison-totals';
+import { wikiHoldoutGateCaseExecuted } from './wiki-holdout-gate';
 const fail = (code = 'wiki_execution_invalid') => Object.assign(Error(code), { code });
 function check(v: any): asserts v { if (!v) throw fail(); }
 const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
@@ -28,6 +29,9 @@ function projectPlan(v: any) {
   check((v2 || holdout || v?.kind === 'wiki-staged-batch-comparison-v1') && v.model === 'openai-codex/gpt-6.1-sol' && v.repeats === 10);
   const experiment = holdout && v.experiment !== undefined ? full ? validateWikiHoldoutFullExperimentPlan(v.experiment) : validateWikiHoldoutExperimentPlan(v.experiment) : undefined;
   const validationRepeats = full ? (experiment as any)?.validation.policy.repeats ?? v.validationRepeats : undefined;
+  const gateMissingSamples = full ? experiment?.decision.missingSamples ?? v.gateMissingSamples : undefined;
+  check(gateMissingSamples === undefined || full && gateMissingSamples === 'worst-case-executed-v1');
+  if (experiment) check(v.gateMissingSamples === undefined || v.gateMissingSamples === experiment.decision.missingSamples);
   if (full) check(Number.isSafeInteger(validationRepeats) && validationRepeats >= 1 && validationRepeats <= 20
     && (v.validationRepeats === undefined || v.validationRepeats === validationRepeats));
   const modelConfig = { api: 'openai-codex-responses', thinking: 'xhigh', fast: false, transport: 'sse', credentialDelivery: 'host-only-mailbox' };
@@ -56,7 +60,8 @@ function projectPlan(v: any) {
   const experimentHash = holdout ? experiment?.planHash ?? v.experimentHash : v2 ? (v.experiment === undefined ? v.experimentHash : validateWikiExperimentPlan(v.experiment).planHash) : undefined;
   if (v2 || holdout) check(typeof experimentHash === 'string' && /^[a-f0-9]{64}$/.test(experimentHash) && (v.scoringKind === undefined || v.scoringKind === 'wiki-score-v2'));
   return { kind: v.kind, model: v.model, modelConfig, variants: [...variants], repeats: 10, cases,
-    ...(v2 || holdout ? { scoringKind: 'wiki-score-v2', experimentHash } : {}), ...(full ? { validationRepeats } : {}) };
+    ...(v2 || holdout ? { scoringKind: 'wiki-score-v2', experimentHash } : {}), ...(full ? { validationRepeats } : {}),
+    ...(gateMissingSamples === undefined ? {} : { gateMissingSamples }) };
 }
 const empty = (planned: number, run = false) => ({ planned, attempted: 0, passed: 0, failed: 0, errors: 0, ...(run ? { invalid: 0 } : {}), notRun: planned });
 function summarize(record: any) {
@@ -89,7 +94,8 @@ function validate(record: any) {
       check(Object.keys(t).sort().join(',') === Object.keys(empty(0, run)).sort().join(','));
       Object.values(t).forEach(count);
       check(t.planned === (c.reportOnly ? 0 : repeatsFor(record.plan, c)) && t.attempted === t.passed + t.failed + t.errors + (t.invalid ?? 0) && t.notRun === t.planned - t.passed - t.failed);
-      check(c.status !== 'completed' || t.notRun === 0);
+      check(c.status !== 'completed' || t.notRun === 0 || record.plan.gateMissingSamples === 'worst-case-executed-v1'
+        && c.stage === 'gate' && t.attempted >= t.planned && t.notRun <= t.errors + (t.invalid ?? 0));
       check(!c.reportOnly || t.attempted === 0);
     }
     check(c.totals.original.attempted + c.totals.candidate.attempted <= 2 * repeatsFor(record.plan, c) + 5);
@@ -165,6 +171,8 @@ export function createWikiBatchExecutionStore(options: any) {
         const c = r.cases.find((c: any) => c.sourceCaseId === e.sourceCaseId); check(c && c.status === 'pending' && (e.stage === undefined || e.stage === c.stage));
         if (e.event === 'case_summary') {
           check(['completed', 'error', 'unsupported', 'not-run'].includes(e.status));
+          if (e.status === 'completed' && r.plan.gateMissingSamples === 'worst-case-executed-v1' && c.stage === 'gate')
+            check(wikiHoldoutGateCaseExecuted(e.runs.map(wikiExperimentRun)));
           if (r.current?.sourceCaseId === c.sourceCaseId) r.current = null;
           c.status = e.status; return;
         }

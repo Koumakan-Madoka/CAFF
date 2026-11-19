@@ -4,6 +4,7 @@ const crypto=require('node:crypto');
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {validateWikiHoldoutFullExperimentPlan,decideWikiHoldoutFullExperiment}=require(base+'wiki-holdout-validation-plan');
 const {wikiExperimentRun}=require(base+'wiki-experiment-plan');
+const {wikiHoldoutGateCaseExecuted}=require(base+'wiki-holdout-gate');
 const {wikiComparisonTotals}=require(base+'wiki-comparison-totals');
 const {wikiObjectiveAssertionIds}=require(base+'wiki-comparison-scoring');
 const {wikiHoldoutReplacementCallFlags}=require(base+'wiki-holdout-replacement-calls');
@@ -54,12 +55,16 @@ async function runHoldoutValidationBatch(config,plan,options={}){
       emit({...event,sourceCaseId:item.sourceCaseId,stage:item.stage,split:item.split,category:item.category});
      }});
     const observedCalls=[...calls.values()].reduce((n,a)=>n+a.length,0);
-    const replacementUnknown=measured.completed===true&&measured.callsUnavailable===true
+    // D8 completes attempted gate slots only, never a fatal/aborted case or a
+    // validation shortfall. The immutable plan binds which rule applies.
+    const completed=measured.completed===true||item.stage==='gate'&&experiment.decision.missingSamples==='worst-case-executed-v1'
+     &&measured.fatal!==true&&wikiHoldoutGateCaseExecuted(measured.runs.map(wikiExperimentRun));
+    const replacementUnknown=completed&&measured.callsUnavailable===true
      &&wikiHoldoutReplacementCallFlags(measured.runs)!==null;
     if(!Array.isArray(measured.runs)||!Number.isSafeInteger(measured.modelCallsKnown)||measured.modelCallsKnown<0||typeof measured.callsUnavailable!=='boolean'
      ||(!measured.callsUnavailable||replacementUnknown)&&measured.modelCallsKnown!==observedCalls
-     ||measured.completed===true&&(measured.fatal===true||measured.callsUnavailable&&!replacementUnknown))throw fail('wiki_holdout_execution_result_invalid');
-    result={...result,status:measured.completed?'completed':'error',runs:measured.runs,modelCallsKnown:measured.modelCallsKnown,callsUnavailable:measured.callsUnavailable===true};
+     ||completed&&(measured.fatal===true||measured.callsUnavailable&&!replacementUnknown))throw fail('wiki_holdout_execution_result_invalid');
+    result={...result,status:completed?'completed':'error',runs:measured.runs,modelCallsKnown:measured.modelCallsKnown,callsUnavailable:measured.callsUnavailable===true};
     // Check schedules/eligibility before spending another case. Scoring remains
     // owned by the unchanged trace/single-call scorers and later projection.
     decideWikiHoldoutFullExperiment(experiment,decisionRows([...results,result]));

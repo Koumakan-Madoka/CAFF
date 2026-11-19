@@ -158,6 +158,24 @@ test('D7 legacy completed replacement result stays readable byte-for-byte with a
  const bad=structuredClone(current); bad.cases[0].runs.find(r=>r.callsUnavailable).reason='evaluation_codex_provider_failed';
  assert.throws(()=>project(bad)); bad.adoptionEligible=false; assert.throws(()=>project(bad),'legacy compatibility cannot hide a non-replacement unknown');
 });
+test('D8 new full plans bind worst-case policy; late exhausted attempts round-trip, disclose and finish progress without inventing scores', async t => {
+ const h=fixture(t),id=h.config.cases[0].sourceCaseId;
+ const prefixes={ [id]: Object.assign(Array(24), {0:'invalid',1:'invalid',2:'invalid',3:'invalid',23:'invalid'}) };
+ const f=execution(h,{gateCandidatePasses:8,prefixes}),r=await f.run();
+ assert.equal(r.experiment.decision.missingSamples,'worst-case-executed-v1');
+ assert.equal(r.cases[0].status,'completed'); assert.equal(r.completed,true); assert.equal(r.gateDecision.outcome,'accepted');
+ assert.deepEqual(r.gateDecision.imputation,{original:0,candidate:1,total:1});
+ const p=project(r); assert.deepEqual(project(p),p); assert.equal(p.cases[0].totals.candidate.scored,9);
+ assert.match(require('../../scripts/badcase-capture/holdout-validation-batch.cjs').formatHoldoutValidationBatch(p),/按最坏情况补齐 1 个缺失样本/);
+ const store=require(base+'wiki-batch-execution-store').createWikiBatchExecutionStore(h.config),start=store.start(f.pinned.summary);
+ for(const e of f.events)store.event(start.id,e);
+ const finish=store.finish(start.id,saved(r)); assert.equal(finish.status,'completed'); assert.deepEqual(store.read()[0],finish);
+ assert.equal(finish.cases[0].totals.candidate.notRun,1,'raw effective-score shortfall is not rewritten');
+ const bad=structuredClone(p);bad.gateDecision.imputation.candidate=0;assert.throws(()=>project(bad));
+ const legacy=structuredClone(p);delete legacy.experiment.decision.missingSamples;
+ const {planHash,...payload}=legacy.experiment;legacy.experiment.planHash=hash(payload);
+ assert.throws(()=>project(legacy),'new decisions cannot be smuggled into a historical plan');
+});
 test('full immutable read is byte/hash stable after current confirmations/assertions change; no re-admission or silent upgrade', async t => {
  const fs = require('node:fs'), path = require('node:path'), h = fixture(t), payload = project(await execution(h).run());
  const byteHash = v => require('node:crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
