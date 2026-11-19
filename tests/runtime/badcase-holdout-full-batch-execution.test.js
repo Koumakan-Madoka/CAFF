@@ -102,6 +102,27 @@ test('fatal or incomplete gate stops later gate/validation work, preserves known
   assert.equal(r.callsUnavailable, true); assert.equal(r.modelCallsKnown, 1); assert.equal(r.cases[0].reason, 'evaluation_codex_auth_failed'); assert.equal(r.cases.at(-1).status, 'not-run');
   assert.ok(!JSON.stringify(r).includes('private failure'));
 });
+test('D8 dispatcher consumes batch5-shaped judge error without a new worker, but never pads validation or fatal cases', async t => {
+  for(const scenario of ['gate','validation','fatal']){
+    const h=fixture(t),e=execution(h),id=scenario==='validation'?e.pinned.summary.evaluation.validationCaseIds[0]:e.pinned.summary.evaluation.gateCaseIds[0];
+    const convert=row=>row.variant==='candidate'&&row.iteration===3?{...row,...require('../fixtures/wikiskill-judge-shortfall.json')}:row;
+    e.options.runProductionComparison=async(c,o)=>{
+      if(c.scoring.rubric.caseId!==id)return e.compare(c,o);
+      const r=await e.compare(c,{...o,onEvent:event=>o.onEvent(event.event==='run'?convert(event):event)});
+      return {...r,completed:false,fatal:scenario==='fatal',runs:r.runs.map(convert)};
+    };
+    const r=await e.run();
+    assert.equal(r.cases.find(c=>c.sourceCaseId===id).runs.filter(r=>r.reason==='judge_backend_failed').length,1);
+    if(scenario==='gate'){
+      assert.equal(r.completed,true);assert.equal(r.gateDecision.outcome,'accepted');assert.equal(r.gateDecision.imputation.total,1);
+      assert.equal(r.modelCallsKnown,50,'no replacement worker/judge calls are added by padding');
+      assert.equal(r.cases[0].totals.candidate.scored,9);assert.equal(r.cases[0].totals.candidate.errors,1);
+    }else{
+      assert.equal(r.completed,false);assert.equal(r.outcome,'indeterminate');assert.equal(r.adoptionEligible,false);
+      assert.equal(r.gateDecision.imputation.total,0);assert.equal(r.cases.find(c=>c.sourceCaseId===id).status,'error');
+    }
+  }
+});
 test('validation technical failure after an accepted gate is indeterminate, not a no-degradation pass', async t => {
   const h = fixture(t), e = execution(h), id = e.pinned.summary.evaluation.validationCaseIds[0];
   e.options.runProductionComparison = async (c, o) => {
@@ -125,6 +146,32 @@ test('fresh direct staged inputs and exact confirmation are mandatory before any
   const p = structuredClone(e.pinned); p.prepared[0].comparisonConfig.scoring.task += 'substitution';
   await assert.rejects(direct(h.config, p, e.options), { code: 'evaluation_batch_input_changed' }); assert.deepEqual(e.events, []); assert.deepEqual(e.executions, []);
   await assert.rejects(require('../../scripts/badcase-capture/batch-comparison.cjs').runBatch(h.config, { ...e.options, expectedPlanHash: hash('wrong') }), { code: 'evaluation_batch_confirmation_required' });
+});
+for (const reason of ['evaluation_codex_proxy_failed', 'evaluation_codex_gateway_unavailable', 'evaluation_codex_server_overloaded']) test(`batch3 unknown replacement ${reason} completes scoring without hiding unknown usage or stopping later cases`, async t => {
+  const h=fixture(t),e=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h,reason),r=await e.run();
+  assert.equal(r.cases[0].status,'completed'); assert.equal(r.cases[0].callsUnavailable,true);
+  assert.equal(r.cases[0].totals.candidate.errors,1); assert.equal(r.cases[0].totals.candidate.scored,10);
+  assert.equal(r.completed,true); assert.equal(r.callsUnavailable,true); assert.equal(r.adoptionEligible,true);
+  assert.match(require('../../scripts/badcase-capture/holdout-validation-batch.cjs').formatHoldoutValidationBatch(r),/用量不完整/);
+  assert.equal(e.executions.length,3); assert.equal(r.modelCallsKnown,50);
+  const row=r.cases[0].runs.find(row=>row.status==='error');
+  assert.equal(row.reason,reason); assert.equal(row.tokenUsage.complete,false); assert.equal(row.tokenUsage.knownTokens,null);
+});
+test('batch3 unavailable calls outside recoverable error replacements still stop the full kernel', async t => {
+  for(const fault of ['auth','unexplained','valid-row','missing-row-usage','unclean','fatal','call-count']){
+    const h=fixture(t),e=require('../helpers/wiki-holdout-unknown-replacement.cjs')(h),compare=e.options.runProductionComparison;
+    e.options.runProductionComparison=async(...args)=>{const r=await compare(...args),bad=r.runs.find(row=>row.status==='error');
+      if(fault==='auth')bad.reason='evaluation_codex_access_expired';
+      if(fault==='unexplained')bad.tokenUsage.callsUnavailable=false;
+      if(fault==='valid-row')r.runs[0].tokenUsage={...bad.tokenUsage};
+      if(fault==='missing-row-usage')delete r.runs[0].tokenUsage;
+      if(fault==='unclean')bad.cleaned=false;
+      if(fault==='fatal')r.fatal=true;
+      if(fault==='call-count')r.modelCallsKnown--;
+      return r;};
+    const r=await e.run(); assert.equal(r.cases[0].status,'error',fault); assert.equal(r.completed,false,fault);
+    assert.equal(r.cases[1].status,'not-run',fault); assert.equal(r.adoptionEligible,false,fault);
+  }
 });
 test('malformed schedules, fatal or unknown/mismatched call accounting cannot claim completion or enable adoption', async t => {
   for (const fault of ['schedule', 'fatal', 'unknown-calls', 'call-count']) {

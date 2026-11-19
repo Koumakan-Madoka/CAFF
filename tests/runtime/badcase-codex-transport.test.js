@@ -193,6 +193,43 @@ test('HTTP-200 SSE quota error stops, but ordinary answer text mentioning quota 
   const normal = fakeTransport(f, { send: () => new Response(sse().replaceAll('synthetic answer', 'usage_limit_reached')) });
   await normal.transport.fetch(endpoint, request()); assert.equal(normal.transport.state().reason, null); await normal.transport.close();
 });
+test('batch4 HTTP-200 response.failed/server_is_overloaded permits only a new bounded host attempt, never an in-turn retry', async t => {
+  const event = require('../fixtures/wikiskill-provider-overload.json');
+  const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
+  const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');
+  const { normalizeContext } = await import('@earendil-works/pi-ai/utils/transcript');
+  // Batch4 emitted an error event BEFORE response.failed, both with this code.
+  const f = fixture(t), bytes = [{type:'error',error:event.response.error},event].map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''); let sends = 0;
+  const g = fakeTransport(f, { send: () => new Response(++sends === 1 ? bytes : sse()) });
+  const output = await streamSimple(OPENAI_CODEX_MODELS['gpt-6.1-sol'], normalizeContext({ systemPrompt: 'Synthetic system.',
+    messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] }),
+    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoning: 'xhigh', maxRetries: 0 }).result();
+  assert.equal(output.stopReason, 'error'); assert.equal(sends, 1);
+  assert.equal(g.transport.state().reason, 'evaluation_codex_server_overloaded'); assert.equal(g.transport.state().stopped, false);
+  g.transport.beginAttempt(); assert.equal(g.transport.state().reason, null);
+  assert.equal(await (await g.transport.fetch(endpoint, request())).text(), sse()); assert.equal(sends, 2);
+  await g.transport.close(); assert.equal(fs.readFileSync(f.authFile, 'utf8'), f.bytes);
+});
+test('overload exception cannot match ordinary answer text, a different event, or any other provider error', async t => {
+  const overload = require('../fixtures/wikiskill-provider-overload.json');
+  for (const code of ['usage_limit_reached', 'invalid_api_key', 'rate_limit_exceeded', 'protocol_error', 'server_is_overloaded_extra']) {
+    const event = structuredClone(overload); event.response.error.code = code;
+    const f = fixture(t), g = fakeTransport(f, { send: () => new Response('data: ' + JSON.stringify(event) + '\n\n') });
+    await g.transport.fetch(endpoint, request()); assert.equal(g.transport.state().stopped, true, code);
+    assert.notEqual(g.transport.state().reason, 'evaluation_codex_server_overloaded'); await g.transport.close();
+  }
+  const f = fixture(t), g = fakeTransport(f, { send: () => new Response(sse().replaceAll('synthetic answer', 'server_is_overloaded')) });
+  await g.transport.fetch(endpoint, request()); assert.equal(g.transport.state().reason, null); await g.transport.close();
+  const other = fakeTransport(f, { send: () => new Response('data: {"type":"error","code":"server_is_overloaded"}\n\n') });
+  await other.transport.fetch(endpoint, request()); assert.equal(other.transport.state().reason, 'evaluation_codex_provider_failed');
+  assert.equal(other.transport.state().stopped, true); await other.transport.close();
+  const frame=e=>'data: '+JSON.stringify(e)+'\n\n';
+  for(const body of [frame(overload)+frame(overload),frame(overload)+sse(),frame({...overload,response:{...overload.response,status:'in_progress'}}),
+    frame({type:'error',error:{code:'protocol_error'}})+frame(overload)]){
+    const bad=fakeTransport(f,{send:()=>new Response(body)});await bad.transport.fetch(endpoint,request());
+    assert.equal(bad.transport.state().reason,'evaluation_codex_provider_failed');assert.equal(bad.transport.state().stopped,true);await bad.transport.close();
+  }
+});
 test('real pi-ai Codex parser does not retry an upstream gateway error inside a turn', async t => {
   const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
   const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');

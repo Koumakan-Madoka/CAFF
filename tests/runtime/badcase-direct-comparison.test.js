@@ -160,6 +160,23 @@ function fakes({ badReply = false, modelError = false, workerError = false, badB
   };
   return { state, input, options: { prepare, stage, execute, confirmed: true, readKey: () => { state.keys++; return key; }, onEvent: e => state.events.push(e) } };
 }
+test('launcher diagnostics survive a thrown attempt without becoming evidence or exposing extra strings', async () => {
+  const f = fakes();
+  f.options.execute = async (_image, _files, options) => {
+    options.onDiagnostic({ phase: 'read', errorCode: 'relay_failed', message: key, stdout: key });
+    options.onDiagnostic({ phase: key, errorCode: key });
+    options.onDiagnostic({ phase: 'cleanup', errorCode: 'none', cleanup: { attempted: true, completed: true, stderr: key } });
+    throw Error(key);
+  };
+  const result = await runComparison({ ...config(), repeats: 1 }, f.options);
+  assert.deepEqual(f.state.events.filter(e => e.event === 'launcher_diagnostic'), [
+    { event: 'launcher_diagnostic', variant: 'original', iteration: 1, phase: 'read', errorCode: 'relay_failed' },
+    { event: 'launcher_diagnostic', variant: 'original', iteration: 1, phase: 'cleanup', errorCode: 'none', cleanup: { attempted: true, completed: true } },
+  ]);
+  assert.equal(result.runs[0].reason, 'run_evidence_unavailable'); assert.equal(result.runs[0].status, 'error');
+  assert.equal(result.runs[0].cleaned, false); assert.equal(result.callsUnavailable, true); assert.equal(result.completed, false);
+  assert.equal(JSON.stringify(f.state.events).includes(key), false);
+});
 test('public-reply literal rules stay on the host, score public output, and require reply evidence', async () => {
   const c = { ...config(), rules: { kind: 'public-reply-literals-v1', leadChars: 30, conclusionMarkers: ['LITERAL_MARKER'], forbiddenTerms: ['P2'], forbiddenPatterns: ['commit-hash'] } };
   const f = fakes(), execute = f.options.execute;

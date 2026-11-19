@@ -536,9 +536,11 @@
       const coverage = (v.uncovered || []).map(c => `${entryChip(c.entryId, undefined, true)}（${c.reason === 'operator-skipped' ? '操作方跳过' : '无已确认对照题'}）`).join('、');
       $('#impact-runs').innerHTML = `${comparisonHistory(result)}<p class="scoring-label"><b>判分：硬断言＋AI 裁判</b> · 字面指标只作参考；仅工具检查时不调用裁判。</p>
         <p class="hint">${esc(fmt(result.createdAt))} · ${esc(result.model)} · thinking ${esc(result.modelConfig?.thinking)} · 已记录 ${esc(result.modelCallsKnown)} 次模型请求。仅使用本次执行，不拼接其他执行；${interrupted ? '中断，不计入判定。' : result.completed ? '完整执行；不表示获准采纳。' : '执行不完整；错误和未运行不算通过。'}</p>
+        ${result.callsUnavailable ? '<p class="hint">用量不完整：已知成本仅为部分，未知不记零；已核实的环境替补不单独阻挡采纳资格，也不作为可信验证用量历史。</p>' : ''}
         ${shared.wikiGoalNotes(result.cases.flatMap(c => c.runs || []))}<p class="holdout-outcome"><b>结果：${esc(holdoutOutcome(result.outcome))}</b> · ${result.adoptionEligible ? '可提交人工评审；是否采纳由人决定。' : '不可提交采纳。'}</p>${comparisonReview(result)}
         <section class="evaluation-stage" data-evaluation-stage="gate"><h3>门槛（本模式）</h3><p class="hint">只用本模式留出题（原门槛组和测试组），当前预检已复现才参与判定。每题每版 10 次有效输出，原版与候选交替执行；门槛内不做逐题劣化检查。</p>
         <div class="gate-decision"><h3>${interrupted ? '中断观察（不计入正式判定）' : '门槛判定：' + ({ accepted: '通过', rejected: '未通过', indeterminate: '无法判定' }[d.outcome] || '待运行')}</h3><p>合计：原版 ${aggregate.original.passed}/${aggregate.original.total}，候选 ${aggregate.candidate.passed}/${aggregate.candidate.total}；单侧 Fisher p=${aggregate.pValue == null ? 'N/A' : esc(Number(aggregate.pValue).toPrecision(4))}（阈值 0.05）；要求 p&lt;0.05 且候选合计通过数大于原版，${aggregate.passed ? '满足' : '不满足'}。</p>${(d.warnings || []).map(w => `<p>${esc(w)}</p>`).join('')}</div>
+        ${result.experiment?.decision.missingSamples === 'worst-case-executed-v1' ? '<p class="hint">仅已执行的缺失槽按最坏情况计算：候选缺失算失败，原版缺失算通过；补齐后未显著改善仍无法判定。逐题和分级报告保留实际有效判分，不改原始错误／无效；未运行题、整批中断不补齐。</p>' : ''}
         ${holdoutRows(result, 'gate')}${stageSummary(result.byStage?.gate)}${levelReports(d.byLevel, 'gate')}
         ${d.ignoredCaseIds?.length ? `<p class="hint">未参与判定：${d.ignoredCaseIds.map(id => `${esc(caseNumber(id))}（${esc(ignoredReason[selection?.cases.find(c => c.caseId === id)?.reason] || '未满足当前准入')}）`).join('、')}</p>` : ''}
         ${result.cases.filter(c => c.stage === 'gate').map(assertionResults).join('')}</section>

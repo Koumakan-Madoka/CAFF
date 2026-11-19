@@ -4,8 +4,10 @@ const crypto=require('node:crypto');
 const base='../../build/server/domain/runtime/badcase-capture/';
 const {validateWikiHoldoutFullExperimentPlan,decideWikiHoldoutFullExperiment}=require(base+'wiki-holdout-validation-plan');
 const {wikiExperimentRun}=require(base+'wiki-experiment-plan');
+const {wikiHoldoutGateCaseExecuted}=require(base+'wiki-holdout-gate');
 const {wikiComparisonTotals}=require(base+'wiki-comparison-totals');
 const {wikiObjectiveAssertionIds}=require(base+'wiki-comparison-scoring');
+const {wikiHoldoutReplacementCallFlags}=require(base+'wiki-holdout-replacement-calls');
 const {assertWikiScoringJudge}=require('./wiki-receipt-scoring.cjs');
 const fail=code=>Object.assign(Error(code),{code});
 const safeCode=(e,fallback)=>/^(evaluation|wiki)_[a-z_]+$/.test(e?.code||'')?e.code:fallback;
@@ -53,14 +55,20 @@ async function runHoldoutValidationBatch(config,plan,options={}){
       emit({...event,sourceCaseId:item.sourceCaseId,stage:item.stage,split:item.split,category:item.category});
      }});
     const observedCalls=[...calls.values()].reduce((n,a)=>n+a.length,0);
+    // D8 completes attempted gate slots only, never a fatal/aborted case or a
+    // validation shortfall. The immutable plan binds which rule applies.
+    const completed=measured.completed===true||item.stage==='gate'&&experiment.decision.missingSamples==='worst-case-executed-v1'
+     &&measured.fatal!==true&&wikiHoldoutGateCaseExecuted(measured.runs.map(wikiExperimentRun));
+    const replacementUnknown=completed&&measured.callsUnavailable===true
+     &&wikiHoldoutReplacementCallFlags(measured.runs)!==null;
     if(!Array.isArray(measured.runs)||!Number.isSafeInteger(measured.modelCallsKnown)||measured.modelCallsKnown<0||typeof measured.callsUnavailable!=='boolean'
-     ||!measured.callsUnavailable&&measured.modelCallsKnown!==observedCalls
-     ||measured.completed===true&&(measured.fatal===true||measured.callsUnavailable))throw fail('wiki_holdout_execution_result_invalid');
-    result={...result,status:measured.completed?'completed':'error',runs:measured.runs,modelCallsKnown:measured.modelCallsKnown,callsUnavailable:measured.callsUnavailable===true};
+     ||(!measured.callsUnavailable||replacementUnknown)&&measured.modelCallsKnown!==observedCalls
+     ||completed&&(measured.fatal===true||measured.callsUnavailable&&!replacementUnknown))throw fail('wiki_holdout_execution_result_invalid');
+    result={...result,status:completed?'completed':'error',runs:measured.runs,modelCallsKnown:measured.modelCallsKnown,callsUnavailable:measured.callsUnavailable===true};
     // Check schedules/eligibility before spending another case. Scoring remains
     // owned by the unchanged trace/single-call scorers and later projection.
     decideWikiHoldoutFullExperiment(experiment,decisionRows([...results,result]));
-    fatal||=measured.fatal===true||measured.callsUnavailable;
+    fatal||=measured.fatal===true||measured.callsUnavailable&&!replacementUnknown;
    }catch(e){
     result={...result,status:'error',reason:safeCode(e,'case_execution_failed'),runs:observed,
      modelCallsKnown:[...calls.values()].reduce((n,a)=>n+a.length,0),callsUnavailable:true};fatal=true;
@@ -83,10 +91,15 @@ async function runHoldoutValidationBatch(config,plan,options={}){
  // remaining controls were deliberately not run. Never count them as passes.
  const completed=gate.outcome==='rejected'||gate.outcome==='accepted'&&selection.budgetStatus==='ready'&&results.every(c=>c.status==='completed'
   ||decision.outcome==='validation-degraded'&&c.stage==='validation'&&c.status==='not-run'&&c.reason==='wiki_validation_prior_degradation');
- const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible,
+ // Completed unknown calls were already attributed to verified replacements;
+ // they disclose partial cost, not a scoring/adoption veto. Other unknowns stop.
+ const callsUnavailable=results.some(c=>c.callsUnavailable);
+ const verifiedUnknowns=callsUnavailable&&results.filter(c=>c.callsUnavailable).every(c=>c.status==='completed'&&wikiHoldoutReplacementCallFlags(c.runs)!==null);
+ const adoptionEligible=decision.adoptionEligible&&(!callsUnavailable||verifiedUnknowns);
+ const result={...plan.summary,executionId,runtimeHash,completed,cases:results,gateDecision:decision.gate,outcome:decision.outcome,validation:decision.validation,adoptionEligible,
   byStage:{gate:totals(results.filter(c=>c.stage==='gate'),10),validation:totals(results.filter(c=>c.stage==='validation'),selection.policy.repeats)},
-  modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable:results.some(c=>c.callsUnavailable)};
- emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible:decision.adoptionEligible});
+  modelCallsKnown:results.reduce((n,c)=>n+c.modelCallsKnown,0),callsUnavailable};
+ emit({event:'validation_decision',executionId,outcome:decision.outcome,validation:decision.validation,adoptionEligible});
  emit({event:'batch_summary',...result});return result;
 }
 function formatHoldoutValidationBatch(result,sourceCases=[],deletedCases=[]){
@@ -110,7 +123,7 @@ function formatHoldoutValidationBatch(result,sourceCases=[],deletedCases=[]){
   '结果：'+({'gate-rejected':'门槛未通过','validation-passed':'门槛通过、验证通过','validation-degraded':'门槛通过、验证劣化',
    'validation-uncovered':'门槛通过、验证全部未覆盖','validation-partial-coverage':'门槛通过、验证部分未覆盖',indeterminate:'无法判定'}[result.outcome]),
   result.adoptionEligible?'可提交人工评审；是否采纳由人决定，未覆盖不等于验证通过。':'不可提交采纳；未完成不等于没有劣化。',
-  '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（存在未知/不完整记录）':''));
+  '已记录模型请求 '+result.modelCallsKnown+(result.callsUnavailable?'（用量不完整：已知成本仅为部分，未知不记零）':''));
  return lines.join('\n')+'\n';
 }
 module.exports={runHoldoutValidationBatch,formatHoldoutValidationBatch};

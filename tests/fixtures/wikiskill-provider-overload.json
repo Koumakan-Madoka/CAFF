@@ -1,0 +1,11 @@
+{
+  "type": "response.failed",
+  "response": {
+    "status": "failed",
+    "error": {
+      "code": "server_is_overloaded",
+      "type": "service_unavailable_error"
+    },
+    "usage": null
+  }
+}

@@ -104,10 +104,20 @@ function quotaCode(value) { return /^(?:usage_limit_reached|insufficient_quota|q
 function sseTerminalReason(bytes) {
   // Only protocol error events, never ordinary answer/tool text, affect the
   // environment-stop classification. The native SDK remains the SSE parser.
+  const events = [];
   for (const frame of bytes.toString('utf8').split(/\r?\n\r?\n/)) {
     const data = frame.split(/\r?\n/).filter(s => s.startsWith('data:')).map(s => s.slice(5).trim()).join('\n');
     let event; try { event = JSON.parse(data); } catch { continue; }
-    if (!object(event)) continue;
+    if (object(event)) events.push(event);
+  }
+  // Production may send the matching error event BEFORE response.failed.
+  // Require one failed terminal and no conflicting error, never a keyword in
+  // answer text, a standalone error, duplicate terminal or protocol conflict.
+  const terminals = events.filter(e => ['response.completed', 'response.failed', 'response.incomplete'].includes(e.type));
+  if (terminals.length === 1 && terminals[0].type === 'response.failed' && terminals[0].response?.status === 'failed'
+    && terminals[0].response?.error?.code === 'server_is_overloaded'
+    && events.filter(e => e.type === 'error').every(e => (e.code || e.error?.code) === 'server_is_overloaded')) return 'server_overloaded';
+  for (const event of events) {
     if (event.type === 'error' || event.type === 'response.failed' || event.response?.status === 'failed') {
       const code = event.code || event.error?.code || event.response?.error?.code;
       return quotaCode(code) ? 'quota_exhausted' : ['invalid_api_key', 'token_expired', 'invalid_token'].includes(code) ? 'access_rejected' : 'provider_failed';
@@ -183,7 +193,11 @@ function createCodexTransport(config, dependencies = {}) {
       }
       if (hasAccess(bytes, access.access)) throw fail('output_contains_access');
       if (dependencies.containsKnownValue?.(bytes)) throw fail('output_contains_known_key');
-      const terminal = sseTerminalReason(bytes); if (terminal) stop(terminal);
+      const terminal = sseTerminalReason(bytes);
+      // Exact HTTP-200 failed-response overload only. Preserve the SSE for the
+      // SDK; no in-turn retry. The host still verifies cleanup/shared quota.
+      if (terminal === 'server_overloaded') reason = 'evaluation_codex_' + terminal;
+      else if (terminal) stop(terminal);
       return new Response(bytes, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     } catch (e) {
       const code = /^evaluation_codex_[a-z_]+$/.test(e?.code || '') ? e.code : 'evaluation_codex_request_invalid';

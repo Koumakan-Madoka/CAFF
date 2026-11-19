@@ -118,6 +118,60 @@ test('result schema, alternating attempts, duplicate/unknown cases, replacement 
     const rows = results(s); mutate(rows); assert.throws(() => decide(s, rows), /wiki_holdout_gate_result_invalid/);
   }
 });
+// Decision-relevant projection of batch5 #20 candidate attempt3. The assessment
+// remains a technical error, not a model failure; only the aggregate is padded.
+const shortfall = require('../fixtures/wikiskill-judge-shortfall.json');
+const worst = (s, rows) => api().decideWikiHoldoutGate(s, rows, 'worst-case-executed-v1');
+function batch5() {
+  const s = select(fixture()), extra = structuredClone(s.cases[0]); extra.caseId = 'third-holdout';
+  s.cases.push(extra); s.cases.sort((a,b) => a.caseId.localeCompare(b.caseId)); s.caseIds = s.cases.map(c => c.caseId); rehash(s);
+  const rows = results(s, [[0,6],[0,4],[0,0]]);
+  rows[1].runs[5] = require(base+'wiki-experiment-plan').wikiExperimentRun(shortfall);
+  return {s,rows};
+}
+test('D8 batch5 shape: 9/29 + judge_backend_failed pads to 9/30 vs 0/30 only under the new policy', () => {
+  const {s,rows} = batch5(); rows[1].status = 'error';
+  const old = decide(s, rows); assert.equal(old.outcome,'indeterminate'); assert.equal(old.repair.candidate.total,29);
+  rows[1].status = 'completed'; const d = worst(s, rows);
+  assert.equal(d.outcome,'accepted'); assert.deepEqual(d.repair.original,{passed:0,total:30});
+  assert.deepEqual(d.repair.candidate,{passed:9,total:30});
+  assert.deepEqual(d.imputation,{original:0,candidate:1,total:1});
+  assert.ok(Math.abs(d.repair.pValue - require(base+'wiki-gate-policy').fisherImprovement(0,30,9,30)) < 1e-12);
+  assert.ok(d.warnings.includes('按最坏情况补齐 1 个缺失样本'));
+  assert.equal(d.byLevel.trace.candidate.errors + d.byLevel.run.candidate.errors,1);
+  assert.equal(rows[1].runs[5].status,'error'); assert.throws(()=>decide(s,rows));
+});
+test('D8 original missing is a pass; padded non-significance is indeterminate, not rejected', () => {
+  const s = select(fixture()), rows = results(s,[[0,4],[0,0]]);
+  rows[0].runs[0] = {variant:'original',iteration:1,status:'error',judgeError:true};
+  const d=worst(s,rows); assert.deepEqual(d.repair.original,{passed:1,total:20});
+  assert.equal(d.outcome,'indeterminate'); assert.equal(d.repair.passed,false);
+  assert.deepEqual(d.imputation,{original:1,candidate:0,total:1});
+  const full=worst(s,results(s,[[0,0]])); assert.equal(full.outcome,'rejected'); assert.equal(full.imputation.total,0);
+});
+test('D8 does not pad partial/aborted/error cases or buy never-attempted slots after early replacement exhaustion', () => {
+  const {s,rows}=batch5();
+  for(const status of ['error','not-run','unsupported']){
+    const copy=structuredClone(rows); copy[1]={caseId:copy[1].caseId,status,runs:status==='error'?copy[1].runs:[]};
+    const d=worst(s,copy); assert.equal(d.outcome,'indeterminate'); assert.equal(d.imputation.total,0);
+  }
+  const copy=structuredClone(rows); copy[1].runs=copy[1].runs.slice(0,-1); assert.throws(()=>worst(s,copy));
+  copy[1].runs=Array.from({length:5},(_,i)=>({variant:i%2?'candidate':'original',iteration:Math.floor(i/2)+1,status:'invalid'}));
+  assert.throws(()=>worst(s,copy));
+  const pending=results(s);pending[0].runs.at(-1).status='invalid';
+  assert.throws(()=>worst(s,pending),'a pending attempt before replacement exhaustion is an interruption, not a finished case');
+  assert.throws(()=>api().decideWikiHoldoutGate(s,rows,'unknown-policy'));
+});
+test('D8 near-end replacement exhaustion pads only pending attempted slots, never replacement attempts themselves', () => {
+  const s=select(fixture()),rows=results(s,[[0,8],[0,0]]),r=rows[0];
+  // Four earlier invalids are replaced; the fifth is the attempted final
+  // candidate slot. Every other planned slot has been executed.
+  r.runs.forEach(row=>row.iteration+=2);
+  r.runs.unshift(...Array.from({length:4},(_,i)=>({variant:i%2?'candidate':'original',iteration:Math.floor(i/2)+1,status:'invalid'})));
+  r.runs.at(-1).status='invalid'; const d=worst(s,rows);
+  assert.equal(d.outcome,'accepted'); assert.equal(d.imputation.total,1);
+  assert.equal(d.repair.candidate.total,20); assert.equal(d.byLevel.trace.candidate.total+d.byLevel.run.candidate.total,19);
+});
 test('selection evidence is immutable and closed even if a same-user caller rehashes malformed fields', () => {
   const s = select(fixture());
   for (const mutate of [v => v.hash = hash('changed'), v => v.other = true, v => v.caseIds.reverse(), v => v.cases[0].originalSplit = 'train',

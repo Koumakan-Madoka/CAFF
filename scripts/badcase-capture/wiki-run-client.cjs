@@ -48,7 +48,11 @@ async function createWikiRunClient({ authFile, knownKeyValues = [], timeoutMs = 
       const message = await eventStream.result();
       // Native errors can contain upstream diagnostics. Only successful complete
       // messages cross this boundary. Costs are NOT inferred from the descriptor.
-      if (!['stop', 'toolUse'].includes(message?.stopReason) || networkRequests !== 1) throw fail('wiki_run_model_failed');
+      if (!['stop', 'toolUse'].includes(message?.stopReason) || networkRequests !== 1) {
+        // The operator budget must distinguish this exact replaceable failure
+        // without seeing provider prose or inventing a successful usage record.
+        throw fail(transport.state().reason === 'evaluation_codex_server_overloaded' ? 'evaluation_codex_server_overloaded' : 'wiki_run_model_failed');
+      }
       delete message.usage?.cost;
       return { message, networkRequests, durationMs: performance.now() - start, wireRequest };
     },

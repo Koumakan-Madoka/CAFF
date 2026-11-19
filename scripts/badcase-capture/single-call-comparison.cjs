@@ -17,7 +17,7 @@ const {verifyWikiRunWireRequest}=require(base+'wiki-run-wire');
 const {tokenUsage}=require('./replay-measurements.cjs');
 const fail=code=>Object.assign(Error(code),{code});
 const safeCode=(code,fallback)=>typeof code==='string'&&/^(?:evaluation_codex_|wiki_)[a-z_]{1,80}$/.test(code)?code:fallback;
-const retryable=new Set(['evaluation_codex_proxy_failed','evaluation_codex_gateway_unavailable','evaluation_codex_request_timeout']);
+const retryable=new Set(['evaluation_codex_proxy_failed','evaluation_codex_gateway_unavailable','evaluation_codex_server_overloaded','evaluation_codex_request_timeout']);
 function knownValues(config,options){
  if(Object.hasOwn(options,'knownValues')){
   if(!Array.isArray(options.knownValues)||options.knownValues.some(v=>typeof v!=='string'))throw fail('evaluation_config_invalid');

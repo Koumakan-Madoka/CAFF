@@ -6,6 +6,7 @@ const { isSafeRelativePath } = require('./replay-path.cjs');
 const { prepareSealedDirectTurn, prepareSealedOriginalTurn, prepareSealedPromptTarget } = require('./sealed-direct-input.cjs');
 const { prepareDirectTurnFiles, runDirectDockerTask, runCodexDockerTask } = require('./direct-docker.cjs');
 const { createCodexTransport, createCodexAccess } = require('./codex-transport.cjs');
+const { RELAY_ERROR_CODES } = require('./container-model-relay.cjs');
 const { createCodexRelayExchange, codexMailboxLimits } = require('./codex-mailbox.cjs');
 const { validateWslDockerBackend, createWslDockerRunner } = require('./wsl-docker.cjs');
 const { readKnownKeyValues } = require('./known-key-values.cjs');
@@ -299,15 +300,32 @@ async function runComparison(config, options = {}) {
       let task;
       emit({ event: 'run_start', variant, iteration });
       const started = performance.now(), hostBefore = transport?.state().requests;
+      let checkingAccess = true;
+      const onDiagnostic = value => {
+        // Diagnostic events cannot substitute for receipt/isolation evidence.
+        if (!['access', 'inspect', 'read', 'request', 'send', 'write', 'cleanup'].includes(value?.phase)) return;
+        const cleanup = value.phase === 'cleanup';
+        if (cleanup ? !['none', 'cleanup_failed'].includes(value.errorCode)
+          || typeof value.cleanup?.attempted !== 'boolean' || typeof value.cleanup?.completed !== 'boolean'
+          : !RELAY_ERROR_CODES.includes(value.errorCode)) return;
+        const transportReason = transport?.state().reason;
+        emit({ event: 'launcher_diagnostic', variant, iteration, phase: value.phase, errorCode: value.errorCode,
+          ...(RELAY_ERROR_CODES.includes(transportReason) ? { transportReason } : {}),
+          ...(cleanup ? { cleanup: { attempted: value.cleanup.attempted, completed: value.cleanup.completed } } : {}) });
+      };
       try {
         transport?.beginAttempt();
         transport?.inspectAccess(() => {}); // Expiry stops BEFORE another container.
-        task = await execute(fixed.image, files[variant], native
+        checkingAccess = false;
+        task = await execute(fixed.image, files[variant], { onDiagnostic, ...(native
           ? { sendNativeRequest, network: 'none', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash,
             ...(fixed.nativeMaxRequests === undefined ? {} : { maxRequests: fixed.nativeMaxRequests }),
             ...(options.signal ? { signal: options.signal } : {}) }
-          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash });
-      } catch { task = { failed: true, reason: 'evaluation_failed' }; }
+          : { key, network: 'bridge', timeoutMs: fixed.timeoutMs ?? 120000, expectedInputHash: manifests[variant].inputHash }) });
+      } catch (e) {
+        if (native && checkingAccess && RELAY_ERROR_CODES.includes(e?.code)) onDiagnostic({ phase: 'access', errorCode: e.code });
+        task = { failed: true, reason: 'evaluation_failed' };
+      }
       const durationMs = performance.now() - started, environmentReason = transport?.state().reason;
       const hostRequestAttempts = native ? transport.state().requests - hostBefore : undefined;
       const encodedLeak = Array.isArray(task?.receipt?.fileEvidence) && task.receipt.fileEvidence.some(f =>
@@ -331,7 +349,9 @@ async function runComparison(config, options = {}) {
         && task.runtimeHash === manifests[variant].runtimeHash;
       const recoverableProxy = verifiedLauncher && environmentReason === 'evaluation_codex_proxy_failed'
         && task?.failed === true && task.reason === environmentReason;
-      const modelConfigChanged = native && !recoverableProxy && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
+      const overloadWithoutReceipt = verifiedLauncher && environmentReason === 'evaluation_codex_server_overloaded'
+        && !receipt && task?.failed === true && task.reason === environmentReason;
+      const modelConfigChanged = native && !recoverableProxy && !overloadWithoutReceipt && Object.keys(CODEX_CONFIG).some(k => receipt?.modelConfig?.[k] !== CODEX_CONFIG[k]);
       const recordedConfigChanged = plan.summary.recordedModelConfig && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.recordedModelConfig)
         .some(k => receipt?.recordedModelConfig?.[k] !== plan.summary.recordedModelConfig[k]);
       const sessionChanged = plan.summary.replaySession && receipt?.kind === 'direct-caff-turn-v1' && Object.keys(plan.summary.replaySession)
@@ -424,13 +444,16 @@ async function runComparison(config, options = {}) {
       const recoverableGateway = verifiedLauncher && environmentReason === 'evaluation_codex_gateway_unavailable'
         && valid && receipt.success === false
         && receipt.modelCalls.some(c => c.success === false && [502, 503, 504].includes(c.httpStatus));
+      const recoverableOverload = overloadWithoutReceipt || verifiedLauncher && environmentReason === 'evaluation_codex_server_overloaded'
+        && valid && receipt.success === false && receipt.modelCalls.some(c => c.success === false && c.httpStatus === 200);
       // Auth/quota, all other HTTP statuses and integrity errors still stop.
-      // Send/read and gateway errors share the unchanged five replacements;
-      // missing worker usage stays explicitly unknown.
+      // Send/read, gateway and exact failed-response overload share five
+      // replacements; overloaded request usage remains explicitly unknown.
+      if (environmentReason === 'evaluation_codex_server_overloaded') callsUnavailable = true;
       if (environmentReason) {
         row.status = 'error'; row.checks = null; row.reason = environmentReason;
         if (transport.state().diagnostic) row.environmentDiagnostic = transport.state().diagnostic;
-        stopped = !alternating || !(recoverableProxy || recoverableGateway) || fatal; fatal = stopped;
+        stopped = !alternating || !(recoverableProxy || recoverableGateway || recoverableOverload) || fatal; fatal = stopped;
       }
       // Trace tool checks add non-scoring invalid attempts. Share the existing
       // five replacements with environment errors, never buy extra valid slots.
@@ -442,7 +465,7 @@ async function runComparison(config, options = {}) {
         && runs.filter(r => r.status === 'error' && !isWikiJudgeTechnicalError(r.assessment)).length >= 5) {
         stopped = true; fatal = true; row.stopReason = 'environment_replacements_exhausted';
       }
-      row.tokenUsage = tokenUsage(row.modelCalls, { callsUnavailable: !valid });
+      row.tokenUsage = tokenUsage(row.modelCalls, { callsUnavailable: !valid || environmentReason === 'evaluation_codex_server_overloaded' });
       runs.push(row); const { modelCalls: omitted, ...eventRow } = row; emit({ event: 'run', ...eventRow });
   }
   const totals = Object.fromEntries(variants.map(v => {

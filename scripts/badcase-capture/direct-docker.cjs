@@ -156,7 +156,7 @@ async function runCodexDockerTask(image, files, options = {}) {
   } catch { throw fail('evaluation_codex_mailbox_limits_mismatch'); }
   if (!options.runDocker && process.platform !== 'linux') throw fail('evaluation_linux_required');
   if (options.signal?.aborted) throw fail('evaluation_aborted');
-  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, limits, options.signal);
+  const run = relayDockerTransport(options.runDocker || docker, options.sendNativeRequest, limits, options.signal, options.onDiagnostic);
   return runDockerTask(image, files, { ...options, runDocker: run, network: 'none' }, undefined);
 }
 // Credential-free classifier relay: explicit host-owned exchange and bounded
@@ -201,7 +201,7 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
   assert.ok((img.Config.Env || []).every(e => !/^(?:CAFF_|PI_|OPENAI_|ANTHROPIC_|AWS_|NODE_OPTIONS=|NODE_PATH=|LD_|.*(?:KEY|TOKEN|PASSWORD)=)/i.test(e)));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-direct-')), archiveFile = root + '.tar', owner = crypto.randomUUID(), name = 'caff-direct-' + owner;
   const command = ['-c', 'tar --no-same-owner -xf - && exec timeout -k 2 ' + Math.ceil(timeoutMs / 1000) + ' node probe.cjs'];
-  let id = '', created = false, result, proof;
+  let id = '', created = false, result, proof, cleanupCompleted = false;
   try {
     for (const f of [...files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(manifest)) }]) {
       const target = path.join(root, f.path); fs.mkdirSync(path.dirname(target), { recursive: true }); writeChunks(target, f.sourceFile ? fileChunks(f.sourceFile) : bufferChunks(f.bytes));
@@ -266,7 +266,11 @@ async function runDockerTask(image, files, options, key, dependencyOutput) {
         const remaining = await run(['ps', '-a', '--filter', 'name=^/' + name + '$', '--format', '{{.ID}}']);
         assert.ok(good(remaining) && !remaining.stdout.trim(), 'evaluation_cleanup_failed');
       }
-    } finally { fs.rmSync(archiveFile, { force: true }); fs.rmSync(root, { recursive: true, force: true }); }
+      cleanupCompleted = true;
+    } finally {
+      fs.rmSync(archiveFile, { force: true }); fs.rmSync(root, { recursive: true, force: true });
+      options.onDiagnostic?.({ phase: 'cleanup', errorCode: cleanupCompleted ? 'none' : 'cleanup_failed', cleanup: { attempted: created, completed: cleanupCompleted } });
+    }
   }
   return { ...result, containerId: id, cleaned: true, isolation: proof, timeoutMs, inputHash: manifest.inputHash, runtimeHash: manifest.runtimeHash };
 }

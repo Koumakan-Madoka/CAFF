@@ -4,7 +4,7 @@
 // Gate-only v4 and v1-v3 remain on their strict, byte-preserving readers.
 import { planWikiHoldoutGate, type WikiHoldoutGateSelection } from './wiki-holdout-gate';
 import { createWikiHoldoutExperimentPlan, validateWikiHoldoutExperimentPlan, decideWikiHoldoutExperimentGate,
-  type WikiHoldoutExperimentDefinition, type WikiHoldoutExperimentPlan } from './wiki-holdout-plan';
+  WIKI_HOLDOUT_GATE_WORST_CASE_POLICY, type WikiHoldoutExperimentDefinition, type WikiHoldoutExperimentPlan } from './wiki-holdout-plan';
 import { planWikiHoldoutValidation, validateWikiHoldoutValidationSelection, decideWikiHoldoutValidation,
   type WikiHoldoutValidationSelection } from './wiki-holdout-validation';
 import { bindWikiHoldoutCase, validateWikiHoldoutCaseBinding, type WikiHoldoutCaseBinding } from './wiki-holdout-case';
@@ -62,7 +62,7 @@ export function createWikiHoldoutFullExperimentPlan(definition: WikiHoldoutExper
       ...bindWikiHoldoutCase(source, row, choice.judge, () => eligibleJudges ??= readWikiEligibleJudges(process.env.CAFF_WIKISKILL_JUDGES_CONFIG)) };
   });
   const { planHash, ...payload } = gate;
-  return validateWikiHoldoutFullExperimentPlan(hashPlan({ ...payload, validation, cases: [...gate.cases, ...controls] }));
+  return validateWikiHoldoutFullExperimentPlan(hashPlan({ ...payload, decision: { ...WIKI_HOLDOUT_GATE_WORST_CASE_POLICY }, validation, cases: [...gate.cases, ...controls] }));
 }
 export function assertWikiHoldoutFullExperimentPlan(plan: WikiHoldoutFullExperimentPlan, definition: WikiHoldoutExperimentDefinition, catalog: WikiExperimentCase[],
   current: Parameters<typeof planWikiHoldoutValidation>[0]): void {

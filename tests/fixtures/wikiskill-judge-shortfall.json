@@ -1,0 +1,11 @@
+{
+  "variant": "candidate",
+  "iteration": 3,
+  "status": "error",
+  "reason": "judge_backend_failed",
+  "assessment": {
+    "kind": "wiki-score-v2",
+    "status": "error",
+    "reason": "judge_backend_failed"
+  }
+}

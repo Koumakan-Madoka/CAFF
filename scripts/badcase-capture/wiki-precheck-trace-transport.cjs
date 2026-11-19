@@ -55,7 +55,10 @@ function createBudgetedTraceTransport(config, guards, { budget, append, knownVal
         const bytes = Buffer.from(await response.arrayBuffer());
         if (bytes.length > MAX_RESPONSE_BYTES || hasKnown(bytes)) throw fail('wiki_precheck_trace_response_invalid');
         append({ event: 'trace_response', index, status: response.status, bodyHash: hash(bytes), bodyBase64: bytes.toString('base64') });
-        return { status: response.status, bytes, usage: usage(bytes, response.status) };
+        return { status: response.status, bytes, usage: usage(bytes, response.status),
+          // Only the exact transport classification crosses to an opt-in formal
+          // budget. Existing precheck budgets still stop on any unknown usage.
+          ...(transport.state().reason === 'evaluation_codex_server_overloaded' ? { environmentReason: 'evaluation_codex_server_overloaded' } : {}) };
       }, result => result.usage);
       return new Response(exchange.bytes, { status: exchange.status, headers: { 'content-type': exchange.status === 200 ? 'text/event-stream' : 'application/json' } });
     },
