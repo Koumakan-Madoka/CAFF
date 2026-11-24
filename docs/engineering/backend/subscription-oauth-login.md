@@ -5,8 +5,20 @@ pi-ai's OAuth login flows for the `anthropic` (Claude Pro/Max) and
 `openai-codex` (ChatGPT Codex) providers and persists credentials into the
 shared agentDir `auth.json` consumed by the pi runtime.
 
-Research source: `@earendil-works/pi-ai@0.85.1` and
-`@earendil-works/pi-coding-agent@0.85.1` (the exact versions CAFF pins).
+Original research source: `@earendil-works/pi-ai@0.85.1` and
+`@earendil-works/pi-coding-agent@0.85.1`. The current top-level pi-ai is pinned
+at **1.6.0** for OAuth flow loading and Codex catalog registration; coding-agent
+and its nested pi-ai remain **0.85.1**. See the
+[top-level upgrade audit](../runtime/agent-runtime.md#8-top-level-pi-ai-130---160-audit).
+
+The 1.6.0 `openai` and `openai-codex` catalogs include `gpt-6.2-astra` and
+`gpt-6.2-sol`. Automated tests register the actual Codex catalog through CAFF
+with a fake login and load it in the credential-blind old SDK, preserving cost,
+reasoning and compatibility metadata. OAuth module imports and the existing
+login/cancel/logout tests are offline checks, not proof of a real login or
+account model entitlement. Installing this dependency alone does not refresh
+an existing persisted Codex provider entry: registration runs on successful
+login. Existing configuration/credential changes require separate authorization.
 
 ## Login flow modules
 

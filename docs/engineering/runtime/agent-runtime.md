@@ -18,7 +18,9 @@
 
 - Trigger: changing `@earendil-works/pi-coding-agent`, its PI AI companion,
   SDK host construction, model-catalog validation, or a direct PI AI consumer.
-- The audited runtime baseline is coding-agent 0.85.1 plus PI AI 0.85.1.
+- The audited Agent runtime baseline is coding-agent 0.85.1 plus its nested
+  PI AI 0.85.1. The separate top-level PI AI is exactly 1.6.0 for subscription
+  login/catalog registration and direct digest/title completion.
   Dependency upgrades require a new release-note/API audit and updated exact
   version assertions; do not silently float either dependency.
 
@@ -42,12 +44,13 @@
 ### 3. Contracts
 
 - No `@mariozechner/pi-ai` dependency or production import is allowed.
-- Every resolved `@earendil-works/pi-ai` package instance must have the same
-  audited version as coding-agent's declared companion, even when the published
-  coding-agent shrinkwrap retains a physical nested copy.
-- Runtime identity does not cross the two allowed consumers: Agent execution
-  stays inside coding-agent's package graph; digest completion stays inside the
-  direct compat graph. Plain JSON text/model configuration may cross CAFF
+- The top-level `@earendil-works/pi-ai` must resolve to exactly 1.6.0; all
+  nested PI AI nodes must remain at coding-agent's 0.85.1 companion version.
+  The coding-agent shrinkwrap and its dependency subtree must not change in a
+  top-level-only upgrade.
+- Runtime identity does not cross the consumer graphs: Agent execution stays
+  inside coding-agent's package graph; digest completion and subscription login
+  stay inside the direct PI AI graph. Plain JSON text/model configuration may cross CAFF
   boundaries, but class instances, streams, provider registrations, credential
   stores, messages, and TypeBox runtime values may not.
 - Direct digest and Recovery Scribe requests may include one TypeBox-produced,
@@ -65,9 +68,9 @@
 
 | Condition | Required result |
 | --- | --- |
-| exact coding-agent and direct PI AI versions match | install, build, and runtime tests proceed |
-| lockfile contains multiple physical PI AI nodes at the same audited version | allowed only with the isolated-consumer boundary above |
-| any PI AI node resolves to another version | dependency test fails before runtime acceptance |
+| coding-agent/nested PI AI are 0.85.1 and direct PI AI is 1.6.0 | install, build, and runtime tests proceed |
+| lockfile contains the audited direct/nested PI AI split | allowed only with the isolated-consumer boundary above |
+| any PI AI node resolves outside that split | dependency test fails before runtime acceptance |
 | deprecated `@mariozechner/pi-ai` appears in dependencies or production imports | dependency test fails |
 | digest imports PI AI root instead of `/compat` and `complete()` is absent | build/smoke must fail; restore the official compat import |
 | capability extension imports PI AI for `Type` | boundary test fails; use exact `typebox` |
@@ -76,9 +79,9 @@
 
 ### 5. Good / Base / Bad Cases
 
-- Good: coding-agent and direct PI AI are both exactly 0.85.1; the lockfile's
-  physical copies are all 0.85.1; Agent runtime objects and digest runtime
-  objects remain isolated.
+- Good: coding-agent/nested PI AI stay at 0.85.1 while direct PI AI is 1.6.0;
+  Agent runtime objects and direct-consumer objects remain isolated. Codex
+  catalog entries cross the boundary only as validated models.json data.
 - Base: a PI release changes built-in model capability metadata. Update audited
   model snapshots and UI fixtures without changing persisted user provider
   configuration.
@@ -90,8 +93,8 @@
 ### 6. Tests Required
 
 - `tests/runtime/pi-model-config-validator.test.js` asserts exact direct
-  versions, zero deprecated package nodes/imports, one version across every PI
-  AI lockfile node, `/compat` digest import, and `typebox` extension import.
+  versions, zero deprecated package nodes/imports, the audited direct/nested
+  PI AI version split, `/compat` digest import, and `typebox` extension import.
 - `tests/runtime/pi-model-catalog-host.test.js` and
   `tests/ui/model-family-roles-ui-gate.test.js` pin audited model capabilities.
 - `tests/runtime/pi-sdk-host.test.js`, `tests/runtime/pi-runtime.test.js`, and
@@ -99,8 +102,17 @@
   image compatibility.
 - `tests/runtime/pi-model-config-validator.test.js` resolves the real default
   digest compat entry and asserts `complete()` / `completeSimple()` / `getModel()` exports without
-  network access. Server smoke covers digest behavior and PI/Trellis host
+  network access, and tests real compat text/structured-tool completion with
+  fake HTTP responses. Server smoke covers digest behavior and PI/Trellis host
   startup.
+- `tests/runtime/subscription-login.test.js` checks the real 1.6.0 OpenAI and
+  Codex GPT-6.2 catalogs, OAuth module imports, and CAFF registration of the full
+  Codex catalog followed by credential-blind 0.85.1 ModelRuntime loading.
+- `tests/runtime/badcase-codex-transport.test.js` must use the pinned 0.85.1
+  serializer and `wiki-run-client` model descriptor, matching production replay.
+  Using top-level PI AI here tests a different wire protocol: 1.6 changes
+  Codex effort serialization and is rejected by the fixed replay policy.
+  Do not relax that policy to make an unrelated catalog upgrade pass.
 - Run `npm ls`, `npm run check`, both typechecks, build, focused runtime tests,
   DAG/Goal/private/image/handoff regression, and smoke before freezing an
   upgrade candidate.
@@ -127,6 +139,36 @@ const piAi = await import('@earendil-works/pi-ai/compat');
 Schemas use the documented TypeBox package; isolated digest completion uses the
 official compatibility entry while Agent execution remains owned by
 coding-agent.
+
+### 8. Top-Level PI AI 1.3.0 -> 1.6.0 Audit
+
+Source: [upstream AI changelog at v1.6.0](https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/CHANGELOG.md),
+release sections 1.4.0 through 1.6.0, and the installed 1.6.0 README/API modules.
+
+- 1.4 changes telemetry and transcript helper signatures; CAFF's direct
+  consumers do not call those APIs. Agent execution keeps its old SDK graph.
+- 1.5 replaces PI AI's TypeBox dependency/exports with pi-schema. CAFF imports
+  TypeBox directly and submits only JSON-schema-shaped tools to `/compat`;
+  Agent tool argument validation remains on nested PI AI 0.85.1.
+- 1.5.1 changes empty-tool history requests and adds Anthropic message threads;
+  direct text/title calls have no tool history, while structured digest calls
+  retain their isolated per-generation context. These are upstream changes,
+  not CAFF retry or session-policy changes.
+- 1.6 adds `gpt-6.2-astra` and `gpt-6.2-sol`. Native reasoning efforts `none`
+  and `minimal` are unsupported: `off` is disabled, and the Codex catalog maps
+  Pi's `minimal` level to `low`. Codex context windows are 272K/500K respectively.
+  Registration preserves cost, thinkingLevelMap and compat for the old SDK.
+- Required transitive updates are pi-schema/telemetry 1.6.0, OpenAI 7.59.0 and
+  Google GenAI 2.32.0; the old top-level PI AI's nested TypeBox is removed.
+  No coding-agent subtree or unrelated dependency is upgraded.
+- This is **not** a full Agent transport upgrade: 1.6's Codex system-prompt
+  caching fix, mid-conversation effort updates, and WebSocket fixes do not
+  reach Agent execution on 0.85.1. Catalog/config loading does not establish
+  account entitlement or live upstream request compatibility.
+- Installing the package does not rewrite an already persisted models.json.
+  Codex registration uses the new catalog on the next successful login;
+  changing an existing account's model configuration requires separate user
+  authorization. No default model or stored credential is changed here.
 
 ## Expected Completion Assistant Tail Suppression
 
