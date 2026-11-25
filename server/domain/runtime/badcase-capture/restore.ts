@@ -44,7 +44,11 @@ function inspectRestorePath(value: string, rejectLinks = false) {
     const parent = path.dirname(current); if (parent === current) break; current = parent;
   }
   // A dangling link must be refused too, without trying to resolve its target.
-  return { linked, realPath: linked && rejectLinks ? absolute : path.resolve(fs.realpathSync(existing), ...suffix) };
+  if (linked && rejectLinks) return { linked, realPath: absolute };
+  // Native Windows realpath also expands 8.3 aliases. Otherwise an empty
+  // destination beneath the source can hide overlap behind a short ancestor.
+  const real = process.platform === 'win32' ? fs.realpathSync.native(existing) : fs.realpathSync(existing);
+  return { linked, realPath: path.resolve(real, ...suffix) };
 }
 
 export function restoreCheckpoint(options: any = {}) {

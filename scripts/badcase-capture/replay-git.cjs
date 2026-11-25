@@ -16,6 +16,13 @@ function gitEnvironment() {
     GIT_AUTHOR_NAME: 'GPT', GIT_AUTHOR_EMAIL: 'gpt@caff.local', GIT_COMMITTER_NAME: 'GPT', GIT_COMMITTER_EMAIL: 'gpt@caff.local',
     GIT_AUTHOR_DATE: '2000-01-01T00:00:00+00:00', GIT_COMMITTER_DATE: '2000-01-01T00:00:00+00:00' };
 }
+function canonicalSourceRoot(value) {
+  const literal = path.resolve(value), stat = fs.lstatSync(literal);
+  // Keep the literal-path link/ancestor checks before native realpath expands
+  // Windows 8.3 names; resolving first would erase a rejected junction.
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(literal) !== literal) throw Error();
+  return process.platform === 'win32' ? fs.realpathSync.native(literal) : literal;
+}
 function validRecipe(recipe) {
   return recipe && Object.keys(recipe).every(k => ['head', 'sourceRoot', 'refState'].includes(k)) && hex(recipe.head)
     && path.isAbsolute(recipe.sourceRoot || '');
@@ -68,8 +75,7 @@ function prepareSanitizedReplayGit(recipe, input, { knownValues = [] } = {}) {
       || knownValues.some(v => typeof v !== 'string')) throw Error();
     const allowed = new Set([...input.files.map(f => f.path), ...input.deletions]);
     if ([...allowed].some(p => !safePath(p))) throw Error();
-    const source = path.resolve(recipe.sourceRoot), sourceStat = fs.lstatSync(source);
-    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink() || fs.realpathSync(source) !== source) throw Error();
+    const source = canonicalSourceRoot(recipe.sourceRoot);
     const env = gitEnvironment();
     // No ambient Git selectors/auth, replacement objects, lazy fetch, hooks,
     // credential prompts or network protocols. Never return Git stderr/stdout
@@ -140,8 +146,7 @@ function prepareReplayGit(recipe, input, { knownValues = [] } = {}) {
     if (!validRecipe(recipe) || !Array.isArray(input?.files) || input.files.length > 8192
       || !Array.isArray(input.deletions) || input.deletions.length > 2048 || !Array.isArray(knownValues)
       || knownValues.some(v => typeof v !== 'string') || [...input.files.map(f => f.path), ...input.deletions].some(p => !safePath(p))) throw Error();
-    const source = path.resolve(recipe.sourceRoot), stat = fs.lstatSync(source);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(source) !== source) throw Error();
+    const source = canonicalSourceRoot(recipe.sourceRoot);
     const env = gitEnvironment(), git = (cwd, args, options = {}) => execFileSync('git', ['--no-replace-objects', '-C', cwd,
       '-c', 'protocol.allow=never', '-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
       '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', ...args],
