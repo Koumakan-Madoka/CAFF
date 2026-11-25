@@ -298,6 +298,7 @@ function createFakeSdkHostHeartbeatOnly(baseDir, capturePath, assistantError = '
 function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
   const completeAfterRecovery = options.completeAfterRecovery !== false;
   const recoveryDelayMs = Number.isFinite(options.recoveryDelayMs) ? options.recoveryDelayMs : 0;
+  const initialToolDelayMs = options.initialToolDelayMs || 0;
   const stopHeartbeatOnRecovery = options.stopHeartbeatOnRecovery === true;
   // Mirrors the real SDK host: session.abort() during tool recovery writes an
   // aborted-invocation assistant error entry into the session before the
@@ -312,7 +313,9 @@ function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
     "process.on('message', (command) => {",
     "  if (command?.type === 'start') {",
     "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    initialToolDelayMs ? "    setTimeout(() => {" : '',
     "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash', args: { command: 'sensitive command' } } });",
+    initialToolDelayMs ? "    }, " + String(initialToolDelayMs) + ");" : '',
     "    return;",
     "  }",
     "  if (command?.type === 'recover') {",
@@ -2276,52 +2279,88 @@ test('pi runtime keeps a nonzero process exit authoritative during recovery', as
   });
 });
 
-test('pi runtime keeps user cancellation authoritative during recovery', async (t) => {
-  if (!requireSpawn(t)) {
-    return;
-  }
+for (const initialToolDelayMs of [0, 150]) {
+  const suffix = initialToolDelayMs ? ' with delayed tool readiness' : '';
+  test(`pi runtime keeps user cancellation authoritative during recovery${suffix}`, { timeout: 10000 }, async (t) => {
+    if (!requireSpawn(t)) return;
 
-  const tempDir = withTempDir('caff-pi-runtime-cancel-recovery-');
-  const capturePath = path.join(tempDir, 'cancel-recovery.json');
-  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { recoveryDelayMs: 200 });
-  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
-  let handle = null;
+    const tempDir = withTempDir('caff-pi-runtime-cancel-recovery-');
+    const capturePath = path.join(tempDir, 'cancel-recovery.json');
+    const sqlitePath = path.join(tempDir, 'pi-runtime-cancel-recovery.sqlite');
+    const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { recoveryDelayMs: 200, initialToolDelayMs });
+    const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+    let handle = null;
+    let result;
 
-  t.after(() => {
-    try {
-      handle && handle.cancel('test cleanup');
-    } catch {}
-
-    restore();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  handle = runtime.startRun('test-provider', 'test-model', 'cancel the recovering tool', {
-    agentDir: tempDir,
-    sqlitePath: path.join(tempDir, 'pi-runtime-cancel-recovery.sqlite'),
-    heartbeatIntervalMs: 10,
-    heartbeatTimeoutMs: 500,
-    progressTimeoutMs: 50,
-    timeoutMs: 1000,
-    terminateGraceMs: 500,
-    toolProgressRecovery: true,
-    streamOutput: false,
-  });
-
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('run_recovering was not emitted')), 500);
-    handle.once('run_recovering', () => {
-      clearTimeout(timer);
-      handle.cancel('Stopped by user');
-      resolve();
+    // Only control parent watchdogs; child startup/IPC and its 150ms delay stay real.
+    // This tests cancellation during recovery, not a 50ms process-startup deadline.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    t.after(async () => {
+      handle?.cancel('test cleanup');
+      t.mock.timers.tick(500); // Allow the termination grace timer to clean up on failure.
+      t.mock.timers.reset();
+      await result;
+      restore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     });
-  });
 
-  await assert.rejects(handle.resultPromise, (error) => {
-    assert.equal(error.terminationReason.type, 'cancelled');
-    return true;
+    handle = runtime.startRun('test-provider', 'test-model', 'cancel the recovering tool', {
+      agentDir: tempDir,
+      sqlitePath,
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 500,
+      progressTimeoutMs: 50,
+      timeoutMs: 1000,
+      terminateGraceMs: 500,
+      toolProgressRecovery: true,
+      streamOutput: false,
+    });
+    // Observe both outcomes immediately, but assert the rejection below, never swallow it.
+    result = handle.resultPromise.then(value => ({ value }), error => ({ error }));
+    const phases = [];
+    const toolReady = new Promise(resolve => handle.on('pi_event', event => {
+      if (event.piEvent.type === 'tool_execution_start') {
+        phases.push('tool_ready');
+        resolve(event.piEvent);
+      }
+    }));
+    const recovering = new Promise(resolve => handle.once('run_recovering', event => {
+      phases.push('recovering');
+      resolve(event);
+    }));
+    handle.on('run_terminating', () => phases.push('terminating'));
+
+    const tool = await Promise.race([toolReady, result.then(outcome => {
+      throw outcome.error || new Error('run settled before tool readiness');
+    })]);
+    assert.equal(tool.toolCallId, 'tool-1');
+    t.mock.timers.tick(49);
+    assert.deepEqual(phases, ['tool_ready']);
+    t.mock.timers.tick(1);
+    assert.deepEqual(phases, ['tool_ready', 'recovering']);
+    const recovery = await recovering;
+    assert.equal(recovery.attempt, 1);
+    assert.equal(recovery.reason.type, 'progress_timeout');
+    assert.equal(recovery.toolName, 'bash');
+    handle.cancel('Stopped by user');
+
+    const outcome = await result;
+    assert.ok(outcome.error, 'user cancellation must reject the run');
+    assert.equal(outcome.error.terminationReason.type, 'cancelled');
+    assert.equal(outcome.error.terminationReason.message, 'Stopped by user');
+    assert.deepEqual(phases, ['tool_ready', 'recovering', 'terminating']);
+    const commands = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+    assert.deepEqual(commands.map(command => command.type), ['recover', 'abort']);
+    const db = new Database(sqlitePath, { readonly: true });
+    try {
+      const run = db.prepare('SELECT termination_type, error_message FROM runs WHERE id = ?').get(handle.runId);
+      assert.equal(run.termination_type, 'cancelled');
+      assert.equal(run.error_message, 'Stopped by user');
+    } finally {
+      db.close();
+    }
   });
-});
+}
 
 test('pi runtime keeps a watchdog timeout authoritative after an earlier assistant error', async (t) => {
   if (!requireSpawn(t)) {
