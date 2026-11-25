@@ -12,6 +12,18 @@ if (process.argv.length !== 3 || !command) {
 const env = { ...process.env };
 delete env.CAFF_WIKISKILL_DATA_DIR;
 delete env.CAFF_BADCASE_CAPTURE_DIR;
+// Windows runners may supply an 8.3 TEMP alias. Native legacy fixtures require
+// a canonical authorization root; use the same directory's long spelling only
+// in the child, not weaker production path/pin checks or another data location.
+// Explicit short-path regression fixtures still construct and exercise aliases.
+if (process.platform === 'win32') {
+  try {
+    const temp = require('node:fs').realpathSync.native(require('node:os').tmpdir());
+    env.TEMP = temp; env.TMP = temp;
+  } catch {
+    console.error('test temp directory is unavailable'); process.exit(1);
+  }
+}
 const result = spawnSync(command, { shell: true, stdio: 'inherit', env });
 if (result.error) console.error('test command could not start');
 process.exit(result.status ?? 1);

@@ -45,7 +45,7 @@ test('project root, existing and new worktrees share one switch without native a
 test('new coverage is common-dir based even for a DAG-style worktree with no Room binding record', async t => {
   const h = fixture(t), cwd = h.room('dag-node', 'repo/.worktrees/dag/plan/node'); h.enable();
   const result = await h.capture(cwd); assert.equal(result.captured, true, result.reason);
-  assert.equal(result.checkpoint.gitSnapshot.commonDir, path.join(h.root, '.git'));
+  assert.equal(result.checkpoint.gitSnapshot.commonDir, path.join(fs.realpathSync.native(h.root), '.git'));
   assert.equal(result.checkpoint.schemaVersion, 2);
 });
 
@@ -291,7 +291,7 @@ test('snapshot Git honors normal user ignore rules but cannot be redirected by i
   try {
     const before = JSON.stringify(process.env), result = await h.capture(); assert.equal(result.captured, true, result.reason);
     assert.deepEqual(Object.keys(result.checkpoint.files), ['ordinary.txt']);
-    assert.equal(result.checkpoint.gitSnapshot.sourceRepository, h.root);
+    assert.equal(result.checkpoint.gitSnapshot.sourceRepository, fs.realpathSync.native(h.root));
     assert.equal(JSON.stringify(process.env), before, 'only Git child environments change');
     assert.deepEqual(fs.readFileSync(path.join(h.root, '.git', 'index')), index);
     assert.equal(fs.existsSync(updates.GIT_INDEX_FILE), false);

@@ -53,6 +53,27 @@ test('npm test entry removes inherited capture configuration before running a ch
   assert.match(child.stdout, /capture-isolated/);
   assert.deepEqual(fs.readdirSync(h.sentinel), [], 'inherited capture directory must remain completely empty');
 });
+test('Windows npm test entry expands the same TEMP directory without changing its parent environment',
+  { skip: process.platform !== 'win32' }, t => {
+  const h = fixture(t), long = fs.realpathSync.native(h.root);
+  const alias = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$fso = New-Object -ComObject Scripting.FileSystemObject; $fso.GetFolder($env:CAFF_TEST_LONG_PATH).ShortPath'],
+  { encoding: 'utf8', env: { ...process.env, CAFF_TEST_LONG_PATH: long }, timeout: 15000, windowsHide: true });
+  assert.equal(alias.status, 0, alias.stderr);
+  const short = alias.stdout.trim();
+  if (path.basename(short).toLowerCase() === path.basename(long).toLowerCase()) return t.skip('No 8.3 fixture alias');
+  assert.equal(fs.realpathSync.native(short), long);
+  const probe = path.join(long, 'temp-probe.cjs');
+  fs.writeFileSync(probe, "console.log(JSON.stringify({ temp: require('node:os').tmpdir(), tmp: process.env.TMP }));");
+  const before = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+  const child = spawnSync(process.execPath, [path.resolve('scripts/test-entry.cjs'),
+    JSON.stringify(process.execPath) + ' ' + JSON.stringify(probe)],
+  { encoding: 'utf8', env: { ...process.env, TEMP: short, TMP: short } });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { temp: long, tmp: long });
+  assert.deepEqual({ TEMP: process.env.TEMP, TMP: process.env.TMP }, before);
+});
+
 test('npm test entry removes inherited WikiSkill configuration before running a child', t => {
   const h = fixture(t), entry = path.resolve('scripts/test-entry.cjs');
   const probe = path.join(h.root, 'probe.cjs');

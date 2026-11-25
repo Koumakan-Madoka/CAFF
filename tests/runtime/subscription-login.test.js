@@ -2,14 +2,65 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const {
   SubscriptionLoginError,
   buildCodexProviderEntry,
   createSubscriptionLoginService,
+  loadOpenAICodexModels,
+  loadPiAiOAuthFlow,
   resolveCallbackHost,
 } = require('../../build/server/domain/models/subscription-login');
 const { withTempDir } = require('../helpers/temp-dir');
+
+test('installed pi-ai exposes both official GPT 6.2 catalogs and the OAuth loaders without network access', async (t) => {
+  t.mock.method(globalThis, 'fetch', () => { throw new Error('unexpected network access'); });
+  const { getModel } = await import('@earendil-works/pi-ai/compat');
+  const codexModels = await loadOpenAICodexModels();
+  for (const id of ['gpt-6.2-astra', 'gpt-6.2-sol']) {
+    assert.equal(codexModels[id]?.id, id);
+    assert.equal(getModel('openai', id)?.id, id);
+    assert.equal(getModel('openai-codex', id)?.id, id);
+  }
+  for (const channel of ['anthropic', 'openai-codex']) {
+    const flow = await loadPiAiOAuthFlow(channel);
+    assert.equal(typeof flow.login, 'function');
+    assert.equal(typeof flow.refresh, 'function');
+    assert.equal(typeof flow.toAuth, 'function');
+  }
+});
+
+test('the real Codex catalog registers through CAFF and loads in the pinned 0.85.1 SDK', async (t) => {
+  t.mock.method(globalThis, 'fetch', () => { throw new Error('unexpected network access'); });
+  const codexModels = await loadOpenAICodexModels();
+  const harness = createHarness(t, { codexModels });
+  t.after(() => harness.service.dispose());
+  harness.registerFlow('openai-codex', async () => oauthCredential({ accountId: 'test-account' }));
+  const session = await harness.service.startLogin('openai-codex');
+  const settled = await waitForSessionState(harness.service, session.id, ['success', 'error', 'cancelled']);
+  assert.equal(settled.state, 'success', settled.error);
+
+  const modelsPath = path.join(harness.agentDir, 'models.json');
+  const registered = readJson(modelsPath).providers['openai-codex'];
+  assert.equal(registered.models.length, Object.keys(codexModels).length);
+  assert.equal(Object.hasOwn(registered, 'apiKey'), false);
+  const validator = await import(pathToFileURL(path.resolve(__dirname, '../../lib/pi-model-config-validator.mjs')).href);
+  const source = validator.resolvePinnedPiModelConfigSource();
+  assert.equal(source.codingAgent.version, '0.85.1');
+  assert.equal(source.piAi.version, '0.85.1');
+  const runtime = await validator.createPinnedCredentialBlindModelRuntime(modelsPath, source);
+  assert.equal(runtime.getError(), undefined);
+  for (const id of ['gpt-6.2-astra', 'gpt-6.2-sol']) {
+    const model = runtime.getModel('openai-codex', id);
+    assert.ok(model, `old SDK must resolve registered ${id}`);
+    assert.equal(model.api, 'openai-codex-responses');
+    assert.equal(model.baseUrl, 'https://chatgpt.com/backend-api');
+    for (const field of ['input', 'reasoning', 'cost', 'thinkingLevelMap', 'compat', 'contextWindow', 'maxTokens']) {
+      assert.deepEqual(model[field], codexModels[id][field], `${id}.${field} must survive registration`);
+    }
+  }
+});
 
 function oauthCredential(overrides = {}) {
   return {

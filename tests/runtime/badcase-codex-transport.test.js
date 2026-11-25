@@ -3,6 +3,17 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const zlib = require('node:zlib');
+const { pathToFileURL } = require('node:url');
+// Replay uses coding-agent's frozen 0.85.1 graph, not the independently upgraded
+// login/digest package. Match wiki-run-client and the staged replay runtime.
+async function loadPinnedCodexSerializer() {
+  const validator = await import(pathToFileURL(path.resolve(__dirname, '../../lib/pi-model-config-validator.mjs')).href);
+  const source = validator.resolvePinnedPiModelConfigSource();
+  validator.assertPinnedPiModelConfigSource(source);
+  const { stream } = await import(pathToFileURL(path.join(path.dirname(source.piAiModelsPath), 'api/openai-codex-responses.js')).href);
+  const { MODEL: model } = require('../../scripts/badcase-capture/wiki-run-client.cjs');
+  return { stream, model };
+}
 const load = () => require('../../scripts/badcase-capture/codex-transport.cjs');
 const hostProxy = require('../../scripts/badcase-capture/host-proxy.cjs');
 test('shared host proxy is the immutable fixed policy, not an environment-selected endpoint', () => {
@@ -195,15 +206,13 @@ test('HTTP-200 SSE quota error stops, but ordinary answer text mentioning quota 
 });
 test('batch4 HTTP-200 response.failed/server_is_overloaded permits only a new bounded host attempt, never an in-turn retry', async t => {
   const event = require('../fixtures/wikiskill-provider-overload.json');
-  const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
-  const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');
-  const { normalizeContext } = await import('@earendil-works/pi-ai/utils/transcript');
+  const { stream, model } = await loadPinnedCodexSerializer();
   // Batch4 emitted an error event BEFORE response.failed, both with this code.
   const f = fixture(t), bytes = [{type:'error',error:event.response.error},event].map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''); let sends = 0;
   const g = fakeTransport(f, { send: () => new Response(++sends === 1 ? bytes : sse()) });
-  const output = await streamSimple(OPENAI_CODEX_MODELS['gpt-6.1-sol'], normalizeContext({ systemPrompt: 'Synthetic system.',
-    messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] }),
-    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoning: 'xhigh', maxRetries: 0 }).result();
+  const output = await stream(model, { systemPrompt: 'Synthetic system.',
+    messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] },
+    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoningEffort: 'xhigh', maxRetries: 0 }).result();
   assert.equal(output.stopReason, 'error'); assert.equal(sends, 1);
   assert.equal(g.transport.state().reason, 'evaluation_codex_server_overloaded'); assert.equal(g.transport.state().stopped, false);
   g.transport.beginAttempt(); assert.equal(g.transport.state().reason, null);
@@ -231,14 +240,12 @@ test('overload exception cannot match ordinary answer text, a different event, o
   }
 });
 test('real pi-ai Codex parser does not retry an upstream gateway error inside a turn', async t => {
-  const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
-  const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');
-  const { normalizeContext } = await import('@earendil-works/pi-ai/utils/transcript');
+  const { stream, model } = await loadPinnedCodexSerializer();
   for (const status of [502, 503, 504]) {
     const f = fixture(t), g = fakeTransport(f, { send: () => new Response('PRIVATE-UPSTREAM', { status }) });
-    const output = await streamSimple(OPENAI_CODEX_MODELS['gpt-6.1-sol'], normalizeContext({ systemPrompt: 'Synthetic system.',
-      messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] }),
-    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoning: 'xhigh', maxRetries: 0 }).result();
+    const output = await stream(model, { systemPrompt: 'Synthetic system.',
+      messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }] },
+    { apiKey: jwt(), fetch: g.transport.fetch, transport: 'sse', reasoningEffort: 'xhigh', maxRetries: 0 }).result();
     assert.equal(output.stopReason, 'error'); assert.equal(g.calls.length, 1);
     assert.equal(g.transport.state().reason, 'evaluation_codex_gateway_unavailable');
     assert.equal(g.transport.state().stopped, false); assert.doesNotMatch(output.errorMessage, /PRIVATE-UPSTREAM/);
@@ -304,13 +311,11 @@ test('real undici transport uses only the dedicated proxy dispatcher; proxy CONN
 });
 test('real pi-ai Codex serializer/parser uses gpt-6.1-sol xhigh, native tool schema, compressed bytes and token usage', async t => {
   const f = fixture(t), g = fakeTransport(f); t.after(() => g.transport.close());
-  const { OPENAI_CODEX_MODELS } = await import('@earendil-works/pi-ai/providers/openai-codex.models');
-  const { streamSimple } = await import('@earendil-works/pi-ai/api/openai-codex-responses');
-  const { normalizeContext } = await import('@earendil-works/pi-ai/utils/transcript');
-  const model = OPENAI_CODEX_MODELS['gpt-6.1-sol']; assert.equal(model.api, 'openai-codex-responses');
-  const output = await streamSimple(model, normalizeContext({ systemPrompt: 'Synthetic system.', messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }],
-    tools: [{ name: 'read', description: 'Synthetic read.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] }),
-  { apiKey: jwt(epoch / 1000 + 1000, 'inert-container-placeholder'), fetch: g.transport.fetch, transport: 'sse', reasoning: 'xhigh', maxRetries: 0 }).result();
+  const { stream, model } = await loadPinnedCodexSerializer();
+  assert.equal(model.api, 'openai-codex-responses');
+  const output = await stream(model, { systemPrompt: 'Synthetic system.', messages: [{ role: 'user', content: 'Synthetic task.', timestamp: 1 }],
+    tools: [{ name: 'read', description: 'Synthetic read.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] },
+  { apiKey: jwt(epoch / 1000 + 1000, 'inert-container-placeholder'), fetch: g.transport.fetch, transport: 'sse', reasoningEffort: 'xhigh', maxRetries: 0 }).result();
   assert.equal(output.stopReason, 'stop', output.errorMessage); assert.equal(g.calls.length, 1);
   const { headers, body } = g.calls[0].options;
   const decoded = headers.get('content-encoding') === 'zstd' ? zlib.zstdDecompressSync(body) : body;

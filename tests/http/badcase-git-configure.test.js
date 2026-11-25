@@ -43,6 +43,91 @@ const rejected = (fn, code, status = 409) => assert.rejects(fn, error => {
   assert.equal(error.statusCode, status); assert.equal(error.issues?.[0]?.code, code); return true;
 });
 
+// Query the actual filesystem alias; never guess an 8.3 spelling or change
+// volume settings. This also works when the runner's TEMP already is short.
+function shortTempOrSkip(t, temp) {
+  const long = fs.realpathSync.native(temp);
+  const short = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$fso = New-Object -ComObject Scripting.FileSystemObject; $fso.GetFolder($env:CAFF_TEST_LONG_PATH).ShortPath'],
+  { encoding: 'utf8', env: { ...process.env, CAFF_TEST_LONG_PATH: long }, timeout: 15000, windowsHide: true }).trim();
+  if (path.basename(short).toLowerCase() === path.basename(long).toLowerCase()) {
+    t.skip('Fixture volume does not generate 8.3 short names'); return null;
+  }
+  assert.equal(fs.realpathSync.native(short).toLowerCase(), long.toLowerCase());
+  return short;
+}
+const windowsOnly = { skip: process.platform !== 'win32' ? 'Windows 8.3 path regression' : false };
+
+test('Windows short project/worktree paths enable and capture the same Git repository', windowsOnly, async t => {
+  const h = fixture(t), shortTemp = shortTempOrSkip(t, h.temp); if (!shortTemp) return;
+  const root = fs.realpathSync.native(h.root), shortRoot = path.join(shortTemp, 'repo');
+  const worktree = fs.realpathSync.native(h.room('existing')), shortWorktree = path.join(shortTemp, 'existing');
+  h.project.path = shortRoot;
+  assert.equal((await h.invoke({ confirmed: true, enabled: true })).body.policy.status, 'enabled');
+  for (const target of [root, shortRoot, worktree, shortWorktree]) {
+    const result = await h.capture(target);
+    assert.equal(result.captured, true, result.reason);
+    assert.equal(result.checkpoint.targetDir, target, 'keep the invocation spelling in the checkpoint');
+    assert.equal(result.checkpoint.gitSnapshot.commonDir, path.join(root, '.git'));
+  }
+  h.project.path = shortWorktree;
+  assert.equal((await h.invoke({ confirmed: true, enabled: true })).body.policy.status, 'enabled');
+  assert.equal((await h.capture(shortRoot)).captured, true, 'worktree project still covers its common repository');
+});
+
+test('Windows short aliases do not admit subdirectories, unrelated repositories or junction ancestors', windowsOnly, async t => {
+  const h = fixture(t), shortTemp = shortTempOrSkip(t, h.temp); if (!shortTemp) return;
+  h.project.path = fs.realpathSync.native(h.root);
+  await h.invoke({ confirmed: true, enabled: true });
+  fs.mkdirSync(path.join(h.root, 'sub'));
+  const other = path.join(h.temp, 'other'); h.git(h.temp, 'clone', '-q', '--no-local', h.root, other);
+  assert.equal((await h.capture(path.join(shortTemp, 'repo', 'sub'))).reason, 'target_not_repository_root');
+  assert.equal((await h.capture(path.join(shortTemp, 'other'))).reason, 'repository_not_covered');
+  const link = path.join(h.temp, 'linked'); fs.symlinkSync(h.root, link, 'junction');
+  const ancestor = path.join(h.temp, 'ancestor'); fs.symlinkSync(h.temp, ancestor, 'junction');
+  t.after(() => { for (const name of [link, ancestor]) {
+    try { fs.unlinkSync(name); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } });
+  for (const target of [path.join(shortTemp, 'linked'), path.join(shortTemp, 'ancestor', 'repo')]) {
+    assert.equal((await h.capture(target)).captured, false, 'short spelling must not hide a junction');
+  }
+  assert.equal(h.service.store.listCheckpoints('p').length, 0);
+});
+
+test('Windows short restore destinations cannot hide overlap with the captured source', windowsOnly, async t => {
+  const h = fixture(t), shortTemp = shortTempOrSkip(t, h.temp); if (!shortTemp) return;
+  const root = fs.realpathSync.native(h.root); h.project.path = root;
+  await h.invoke({ confirmed: true, enabled: true });
+  const captured = await h.capture(root); assert.equal(captured.captured, true, captured.reason);
+  const targetDir = path.join(shortTemp, 'repo', 'must-not-be-created');
+  const restored = h.service.restoreCheckpoint({ projectId: 'p', checkpointId: captured.checkpointId, targetDir });
+  assert.equal(restored.reason, 'restore_target_overlaps_source');
+  assert.equal(fs.existsSync(targetDir), false, 'reject before any source write');
+  const destination = path.join(fs.realpathSync.native(h.temp), 'destination'); fs.mkdirSync(destination);
+  const overlap = h.service.restoreCheckpoint({ projectId: 'p', checkpointId: captured.checkpointId,
+    targetDir: destination, projectSkillsDir: path.join(shortTemp, 'destination', 'skills') });
+  assert.equal(overlap.reason, 'restore_targets_overlap');
+  assert.deepEqual(fs.readdirSync(destination), [], 'two writable roots must remain disjoint across aliases');
+});
+
+test('Windows short replay recipe roots keep HEAD and redaction rules without admitting junctions', windowsOnly, t => {
+  const h = fixture(t), shortTemp = shortTempOrSkip(t, h.temp); if (!shortTemp) return;
+  const { prepareReplayGit } = require('../../scripts/badcase-capture/replay-git.cjs');
+  const head = h.git(h.root, 'rev-parse', 'HEAD'), sourceRoot = path.join(shortTemp, 'repo');
+  const input = { files: [{ path: 'tracked.txt', base64: Buffer.from('base\n').toString('base64') }], deletions: [] };
+  const preserved = prepareReplayGit({ sourceRoot, head }, input, { knownValues: [] });
+  assert.equal(preserved.report.restoredHead, head);
+  const redacted = prepareReplayGit({ sourceRoot, head }, input, { knownValues: ['base'] });
+  assert.equal(redacted.report.fallbackReason, 'known_key_in_reachable_object');
+  assert.notEqual(redacted.report.restoredHead, head);
+  const sub = path.join(sourceRoot, 'sub'); fs.mkdirSync(sub);
+  const linked = path.join(h.temp, 'linked'); fs.symlinkSync(h.root, linked, 'junction');
+  for (const target of [sub, path.join(shortTemp, 'linked')]) {
+    assert.throws(() => prepareReplayGit({ sourceRoot: target, head }, input),
+      error => error.code === 'evaluation_repository_unavailable_or_invalid');
+  }
+});
+
 test('one switch defaults to the registered project root; existing/new worktrees capture, disable stops all without scanning', async t => {
   const h = fixture(t), existing = h.room('existing');
   h.service.authorizeProject = () => { assert.fail('new configure must never install/use a native helper or pin'); };

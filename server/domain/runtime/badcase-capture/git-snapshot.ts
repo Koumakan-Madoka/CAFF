@@ -54,11 +54,23 @@ export async function readSnapshotGit(cwd: string, args: string[], budget?: Capt
   }
 }
 
+function matchesSnapshotRoot(root: string, cwd: string): boolean {
+  if (pathsEqual(root, cwd)) return true;
+  if (process.platform !== 'win32') return false;
+  try {
+    // Git expands Windows 8.3 names, path.resolve does not. First retain the
+    // ordinary realpath check: unlike native realpath it preserves short names
+    // but resolves junctions/symlinks, which must not gain admission here.
+    if (!pathsEqual(fs.realpathSync(cwd), cwd)) return false;
+    return pathsEqual(root, fs.realpathSync.native(cwd));
+  } catch { return false; }
+}
+
 export async function inspectSnapshotRepository(cwd: string, budget?: CaptureTimeBudget): Promise<any> {
   try {
     const root = (await readSnapshotGit(cwd, ['rev-parse', '--show-toplevel'], budget)).toString('utf8').trim();
     if (!root) return { ok: false, reason: 'not_git_repository' };
-    if (!pathsEqual(root, cwd)) return { ok: false, reason: 'target_not_repository_root' };
+    if (!matchesSnapshotRoot(root, cwd)) return { ok: false, reason: 'target_not_repository_root' };
     const commonDir = (await readSnapshotGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'], budget)).toString('utf8').trim();
     return { ok: true, root: path.resolve(root), commonDir: path.resolve(commonDir) };
   } catch (error) {
